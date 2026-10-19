@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
+import { PlanTile } from "../components/PlanTile";
 import { readChecked } from "../components/polaris-events";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import {
@@ -11,12 +12,8 @@ import {
   optionalScopeUnlocks,
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
+import { PLAN_TILE_META, planTileBullets, planTileCta, TILE_PLANS } from "../lib/plan-tiles";
 import { PLANS } from "../lib/plans";
-import {
-  FREE_SPEED_TEST_BULLET,
-  MONTHLY_SPEED_REPORT_BULLET,
-  WEEKLY_SPEED_REPORT_BULLET,
-} from "../lib/speed-report";
 import {
   SUMMARY_CARD_HEADING,
   SUMMARY_COMING_SOON,
@@ -29,7 +26,7 @@ import {
   summaryLiveParagraph,
   summaryToggleLabel,
 } from "../lib/summary-email-copy";
-import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
+import { upgradeCtaLabel } from "../lib/trial-cta";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
@@ -38,13 +35,16 @@ import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
-  BORDER_DEFAULT,
-  BG_WHITE,
-  COLOR_INFO,
   groundStyle,
   hairline,
+  sectionCard,
+  sectionHeader,
+  styles,
+  SUCCESS_TEXT_STRONG,
+  TABLE_BG_STRIPE,
   TEXT_PRIMARY,
-  TEXT_SUBDUED,
+  textSubdued,
+  textSubduedSm,
 } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
@@ -87,11 +87,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // speed change, but only while the speed report is live.
       speedInSummary: isSpeedReportLive() && features.speedReport === true,
     },
-    // Free speed test: the tiles list it while the speed report is live,
+    // Free speed test: the Free tile lists it while the speed report is live,
     // straight from the plan matrix (Free only since gc-d0ui).
     freeSpeedTestTiles: {
       free: isSpeedReportLive() && getPlanFeatures(PLANS.FREE).freeSpeedTest === true,
-      standard: isSpeedReportLive() && getPlanFeatures(PLANS.STANDARD).freeSpeedTest === true,
     },
     // The full speed report's bullet (gc-d0ui): Standard monthly, Professional
     // weekly, from the plan matrix, while the speed report is live.
@@ -141,6 +140,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
+// Page sections (gc-4wvb): an h2 section header above a white section card
+// ---------------------------------------------------------------------------
+
+const h2Style: React.CSSProperties = { ...sectionHeader, marginTop: 0 };
+const cardStyle: React.CSSProperties = { ...sectionCard, marginBottom: 0 };
+const subdued: React.CSSProperties = { ...textSubdued, margin: 0, lineHeight: 1.45 };
+
+// ---------------------------------------------------------------------------
 // Summary emails card (gc-syz.6, copy per gc-ol95)
 // ---------------------------------------------------------------------------
 
@@ -167,10 +174,10 @@ function SummaryEmailsCard({
   const cadence = alerts.cadence === "weekly" ? "weekly" : "monthly";
 
   return (
-    <div style={{ marginTop: "16px" }}>
-      <s-card>
+    <section>
+      <h2 style={h2Style}>{SUMMARY_CARD_HEADING}</h2>
+      <div style={cardStyle}>
         <s-stack direction="block" gap="base">
-          <s-heading>{SUMMARY_CARD_HEADING}</s-heading>
           {alerts.canReceive ? (
             <>
               <s-checkbox
@@ -184,11 +191,11 @@ function SummaryEmailsCard({
                   )
                 }
               />
-              <s-paragraph>
+              <p style={subdued}>
                 {alerts.configured
                   ? summaryLiveParagraph(alerts.email, alerts.speedInSummary)
                   : SUMMARY_COMING_SOON}
-              </s-paragraph>
+              </p>
               {fetcher.data && "error" in fetcher.data && (
                 <s-banner tone="critical">{fetcher.data.error}</s-banner>
               )}
@@ -204,7 +211,7 @@ function SummaryEmailsCard({
             </>
           ) : (
             <>
-              <s-paragraph>{SUMMARY_FREE_PARAGRAPH}</s-paragraph>
+              <p style={subdued}>{SUMMARY_FREE_PARAGRAPH}</p>
               <div>
                 <a href={pricingPlansUrl} target="_top" rel="noreferrer">
                   <s-button variant="primary">
@@ -215,8 +222,8 @@ function SummaryEmailsCard({
             </>
           )}
         </s-stack>
-      </s-card>
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -241,6 +248,16 @@ export function scopeBadge(
     : { tone: "warning", text: "Not granted" };
 }
 
+/** Zebra striping: every even row (1-based) gets the stripe background. */
+function rowCell(index: number, extra?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...styles.tableCell,
+    padding: "10px 12px",
+    ...(index % 2 === 1 ? { backgroundColor: TABLE_BG_STRIPE } : {}),
+    ...extra,
+  };
+}
+
 /**
  * Live granted-scope state for the optional per-audit scopes, with a re-consent
  * button that opens the App Bridge permission modal for only the missing scopes
@@ -250,79 +267,75 @@ export function scopeBadge(
  * permission, so a plan without it says so instead of implying a grant adds it.
  */
 export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: boolean }) {
-  const { granted, unsupported, failed, requesting, requestMissing } = useOptionalScopes();
+  const { granted, unsupported, failed, requesting, missing, requestMissing } = useOptionalScopes();
+  const allGranted = granted !== null && allOptionalScopesGranted(granted);
 
   return (
-    <div style={{ marginTop: "16px" }}>
-      <s-card>
+    <section>
+      <h2 style={h2Style}>Permissions</h2>
+      <div style={cardStyle}>
         <s-stack direction="block" gap="base">
-          <s-heading>Permissions</s-heading>
-          <s-paragraph>
-            Some checks (products, pages, redirects, and translations) need extra read-only
-            permissions. Grant them to include those checks in your scans.
-          </s-paragraph>
-          {!brokenLinksIncluded && (
-            <s-paragraph>
-              <span style={{ color: TEXT_SUBDUED }}>{BROKEN_LINKS_STANDARD_NOTE}</span>
-            </s-paragraph>
-          )}
+          <p style={subdued}>
+            Some checks need extra read-only access. GhostCode never changes your store.
+          </p>
+          {!brokenLinksIncluded && <p style={subdued}>{BROKEN_LINKS_STANDARD_NOTE}</p>}
 
           {unsupported ? (
-            <s-paragraph>
-              <span style={{ color: TEXT_SUBDUED }}>
-                Permission status is unavailable in this view. Reload the app from your Shopify
-                admin to manage permissions.
-              </span>
-            </s-paragraph>
+            <p style={subdued}>
+              Permission status is unavailable in this view. Reload the app from your Shopify admin
+              to manage permissions.
+            </p>
           ) : granted === null && !failed ? (
-            <s-paragraph>
-              <span style={{ color: TEXT_SUBDUED }}>Checking permissions…</span>
-            </s-paragraph>
+            <p style={subdued}>Checking permissions…</p>
           ) : (
             <>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "8px",
-                  borderTop: `1px solid ${BORDER_DEFAULT}`,
-                  paddingTop: "12px",
-                }}
-              >
-                {OPTIONAL_SCOPES.map((scope) => {
-                  // When the query failed (granted === null) this renders a
-                  // neutral "Status unavailable" badge instead of a false
-                  // "Not granted" — we couldn't read the real grant state.
-                  const badge = scopeBadge(granted, scope);
-                  const info = OPTIONAL_SCOPE_INFO[scope];
-                  return (
-                    <div
-                      key={scope}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        justifyContent: "space-between",
-                        gap: "12px",
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 600, color: TEXT_PRIMARY }}>{info.label}</div>
-                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                          {optionalScopeUnlocks(scope, brokenLinksIncluded)}
-                        </div>
-                      </div>
-                      <s-badge tone={badge.tone}>{badge.text}</s-badge>
-                    </div>
-                  );
-                })}
-              </div>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th scope="col" style={styles.tableHeader}>
+                      Permission and what it checks
+                    </th>
+                    <th scope="col" style={{ ...styles.tableHeader, ...statusColumn }}>
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {OPTIONAL_SCOPES.map((scope, i) => {
+                    // When the query failed (granted === null) this renders a
+                    // neutral "Status unavailable" badge instead of a false
+                    // "Not granted": we couldn't read the real grant state.
+                    const badge = scopeBadge(granted, scope);
+                    return (
+                      <tr key={scope}>
+                        <td style={rowCell(i, { overflowWrap: "anywhere" })}>
+                          <div style={{ fontWeight: 600, color: TEXT_PRIMARY }}>
+                            {OPTIONAL_SCOPE_INFO[scope].label}
+                          </div>
+                          <div style={{ ...textSubduedSm, marginTop: "2px" }}>
+                            {optionalScopeUnlocks(scope, brokenLinksIncluded)}
+                          </div>
+                        </td>
+                        <td style={rowCell(i, statusColumn)}>
+                          <s-badge tone={badge.tone}>{badge.text}</s-badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
 
-              {granted !== null && allOptionalScopesGranted(granted) ? (
-                <s-banner tone="success">
-                  All permissions granted, so these checks run on your scans.
-                </s-banner>
+              {allGranted ? (
+                <p style={{ ...subdued, color: SUCCESS_TEXT_STRONG }}>
+                  <span aria-hidden="true">✓</span> All granted. These checks run on every scan.
+                </p>
               ) : (
-                <div>
+                <div style={permissionsFooter}>
+                  {granted !== null && (
+                    <p style={subdued}>
+                      {`${missing.length} of ${OPTIONAL_SCOPES.length} not granted. Those checks are skipped on your scans.`}
+                    </p>
+                  )}
                   <s-button
                     variant="primary"
                     onClick={requestMissing}
@@ -341,10 +354,25 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
             </>
           )}
         </s-stack>
-      </s-card>
-    </div>
+      </div>
+    </section>
   );
 }
+
+/** Status column: right-aligned, at least 120px, never truncating "Status unavailable". */
+const statusColumn: React.CSSProperties = {
+  textAlign: "right",
+  width: "120px",
+  whiteSpace: "nowrap",
+};
+
+const permissionsFooter: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: "16px",
+  flexWrap: "wrap",
+};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -361,26 +389,15 @@ export default function Settings() {
     speedReportTiles,
   } = useLoaderData<typeof loader>();
 
-  const isFree = shop.plan === PLANS.FREE;
-  const isStandard = shop.plan === PLANS.STANDARD;
-  const isProfessional = shop.plan === PLANS.PROFESSIONAL;
+  // An unrecognised stored plan gates like Free, so the Free tile is current.
+  const currentPlan = TILE_PLANS.find((p) => p === shop.plan) ?? PLANS.FREE;
 
-  // The trial bullet follows the same eligibility as the buttons (gc-97k.8
-  // follow-up): never promise a trial the "Upgrade to ..." button won't give.
-  const trialBullet = trialEligible ? (
-    <s-list-item>{`${FREE_TRIAL_DAYS}-day free trial`}</s-list-item>
-  ) : null;
-  const freeSpeedTestBullet = <s-list-item>{FREE_SPEED_TEST_BULLET}</s-list-item>;
-
-  function planButton(label: string, variant: "primary" | "secondary" = "primary") {
-    return (
-      <div style={{ marginTop: "16px" }}>
-        <a href={pricingPlansUrl} target="_top" rel="noreferrer">
-          <s-button variant={variant}>{label}</s-button>
-        </a>
-      </div>
-    );
-  }
+  // Each tile's speed bullet shows only while that plan's speed feature is live.
+  const speedLive = {
+    [PLANS.FREE]: freeSpeedTestTiles.free,
+    [PLANS.STANDARD]: speedReportTiles.standard,
+    [PLANS.PROFESSIONAL]: speedReportTiles.professional,
+  };
 
   return (
     <s-page heading="Settings">
@@ -388,161 +405,33 @@ export default function Settings() {
         Back to Dashboard
       </Link>
       <div style={hairline} />
-      <div style={groundStyle}>
-        {/* Plan Tiles — 3 columns, responsive */}
-        <style>{`
-        .plan-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-          gap: 16px;
-          margin-top: 8px;
-        }
-        .plan-tile {
-          border: 1px solid ${BORDER_DEFAULT};
-          border-radius: 12px;
-          padding: 24px;
-          background: ${BG_WHITE};
-          display: flex;
-          flex-direction: column;
-          min-height: 300px;
-        }
-        .plan-tile--current {
-          border: 2px solid ${COLOR_INFO};
-          box-shadow: 0 0 0 1px ${COLOR_INFO};
-        }
-        .plan-tile__header {
-          height: 100px;
-          margin-bottom: 4px;
-        }
-        .plan-tile__name {
-          font-size: 22px;
-          font-weight: 700;
-          color: ${TEXT_PRIMARY};
-          margin: 0;
-        }
-        .plan-tile__price {
-          font-size: 16px;
-          font-weight: 600;
-          color: ${TEXT_SUBDUED};
-          margin: 4px 0 0 0;
-        }
-        .plan-tile__badge {
-          display: inline-block;
-          background: ${COLOR_INFO};
-          color: ${BG_WHITE};
-          font-size: 12px;
-          font-weight: 600;
-          padding: 3px 10px;
-          border-radius: 12px;
-          margin-top: 8px;
-        }
-        .plan-tile__divider {
-          border: none;
-          border-top: 1px solid ${BORDER_DEFAULT};
-          margin: 16px 0;
-        }
-        .plan-tile__features {
-          flex: 1;
-        }
-      `}</style>
-        <s-heading>Plans</s-heading>
-        <div className="plan-grid">
-          {/* Free Plan */}
-          <div className={`plan-tile${isFree ? " plan-tile--current" : ""}`}>
-            <div className="plan-tile__header">
-              <p className="plan-tile__name">Free</p>
-              <p className="plan-tile__price">$0 / month</p>
-              {isFree && <span className="plan-tile__badge">Current plan</span>}
-            </div>
-            <hr className="plan-tile__divider" />
-            <div className="plan-tile__features">
-              <s-unordered-list>
-                <s-list-item>First scan always free</s-list-item>
-                <s-list-item>1 scan per month after first</s-list-item>
-                <s-list-item>Findings grouped by impact, with counts</s-list-item>
-                <s-list-item>Up to 5 findings shown in full</s-list-item>
-                <s-list-item>Single theme scanning</s-list-item>
-                {freeSpeedTestTiles.free && freeSpeedTestBullet}
-              </s-unordered-list>
-            </div>
+      <div style={{ ...groundStyle, gap: "28px" }}>
+        <section>
+          <h2 style={h2Style}>Plan</h2>
+          <div style={planGrid}>
+            {TILE_PLANS.map((plan) => {
+              const current = currentPlan === plan;
+              const cta = planTileCta(plan, shop.plan, (target) =>
+                upgradeCtaLabel(target, trialEligible),
+              );
+              return (
+                <PlanTile
+                  key={plan}
+                  name={PLAN_TILE_META[plan].name}
+                  price={PLAN_TILE_META[plan].price}
+                  features={planTileBullets(plan, { speedLive: speedLive[plan], trialEligible })}
+                  current={current}
+                  badge={current ? "Current plan" : undefined}
+                  cta={cta ? { ...cta, url: pricingPlansUrl } : undefined}
+                />
+              );
+            })}
           </div>
-
-          {/* Standard Plan */}
-          <div className={`plan-tile${isStandard ? " plan-tile--current" : ""}`}>
-            <div className="plan-tile__header">
-              <p className="plan-tile__name">Standard</p>
-              <p className="plan-tile__price">$9 / month</p>
-              {isStandard && <span className="plan-tile__badge">Current plan</span>}
-            </div>
-            <hr className="plan-tile__divider" />
-            <div className="plan-tile__features">
-              <s-unordered-list>
-                <s-list-item>All features in Free</s-list-item>
-                {freeSpeedTestTiles.standard && freeSpeedTestBullet}
-                {speedReportTiles.standard && (
-                  <s-list-item>{MONTHLY_SPEED_REPORT_BULLET}</s-list-item>
-                )}
-                <s-list-item>Full finding details with code</s-list-item>
-                <s-list-item>1 manual scan per week</s-list-item>
-                <s-list-item>Monthly automatic scan</s-list-item>
-                <s-list-item>Findings trend over time</s-list-item>
-                {trialBullet}
-              </s-unordered-list>
-            </div>
-            {!isStandard &&
-              planButton(
-                isFree
-                  ? upgradeCtaLabel(PLANS.STANDARD, trialEligible)
-                  : isProfessional
-                    ? "Downgrade to Standard"
-                    : "Select",
-                isProfessional ? "secondary" : "primary",
-              )}
-          </div>
-
-          {/* Professional Plan */}
-          <div className={`plan-tile${isProfessional ? " plan-tile--current" : ""}`}>
-            <div className="plan-tile__header">
-              <p className="plan-tile__name">Professional</p>
-              <p className="plan-tile__price">$29 / month</p>
-              {isProfessional && <span className="plan-tile__badge">Current plan</span>}
-            </div>
-            <hr className="plan-tile__divider" />
-            <div className="plan-tile__features">
-              <s-unordered-list>
-                <s-list-item>All features in Standard</s-list-item>
-                <s-list-item>Up to 5 scans a day</s-list-item>
-                <s-list-item>Unlimited theme scanning</s-list-item>
-                {speedReportTiles.professional && (
-                  <s-list-item>{WEEKLY_SPEED_REPORT_BULLET}</s-list-item>
-                )}
-                <s-list-item>Weekly automatic scans</s-list-item>
-                <s-list-item>Auto-rescan on theme publish</s-list-item>
-                <s-list-item>Scan diffing (New/Resolved)</s-list-item>
-                {trialBullet}
-              </s-unordered-list>
-            </div>
-            {!isProfessional && planButton(upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligible))}
-          </div>
-        </div>
-
-        {/* Manage subscription */}
-        <div style={{ marginTop: "32px" }}>
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <s-heading>Manage Subscription</s-heading>
-              <s-paragraph>
-                Select a plan above to upgrade or downgrade. To cancel your subscription and return
-                to the Free plan, use the link below.
-              </s-paragraph>
-              <div>
-                <a href={pricingPlansUrl} target="_top" rel="noreferrer">
-                  <s-button>Manage subscription in Shopify</s-button>
-                </a>
-              </div>
-            </s-stack>
-          </s-card>
-        </div>
+          <p style={{ ...textSubduedSm, margin: "12px 2px 0" }}>
+            Plan changes and cancellations happen on Shopify&apos;s pricing page, and GhostCode is
+            billed on your Shopify invoice.
+          </p>
+        </section>
 
         <SummaryEmailsCard
           alerts={alerts}
@@ -554,25 +443,17 @@ export default function Settings() {
           Free scans too; Broken links stays a Standard feature by plan. */}
         <PermissionsCard brokenLinksIncluded={features.canDetectDanglingReferences} />
 
-        {/* About */}
-        <div style={{ marginTop: "16px" }} />
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>About GhostCode</s-heading>
-            <s-paragraph>
-              GhostCode scans your Shopify themes for leftover code from uninstalled apps. This
-              orphaned code can slow down your store, break functionality, and create security
-              risks.
-            </s-paragraph>
-            <s-paragraph>
-              <s-text>Version: 1.0.0</s-text>
-            </s-paragraph>
-          </s-stack>
-        </s-card>
+        <p style={{ ...textSubduedSm, margin: 0, textAlign: "center" }}>GhostCode 1.0.0</p>
       </div>
     </s-page>
   );
 }
+
+const planGrid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+  gap: "16px",
+};
 
 // ---------------------------------------------------------------------------
 // Error Boundary

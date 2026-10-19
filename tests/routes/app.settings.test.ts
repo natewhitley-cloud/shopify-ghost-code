@@ -71,6 +71,7 @@ vi.mock("../../app/lib/plans", () => ({
 import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.server";
 import { BROKEN_LINKS_STANDARD_NOTE } from "../../app/lib/optional-scopes";
 import { canReceiveAlerts } from "../../app/lib/plan-gating.server";
+import { PLAN_LISTING_BULLETS, TRIAL_BULLET } from "../../app/lib/plan-tiles";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import { setSummaryEmailsEnabled } from "../../app/models/merchant-alert.server";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -192,28 +193,18 @@ describe("app.settings loader", () => {
     });
 
     it.each([
-      [
-        "live, both plans have it",
-        "true",
-        { free: true, standard: true },
-        { free: true, standard: true },
-      ],
-      [
-        "live, narrowed to Free",
-        "true",
-        { free: true, standard: false },
-        { free: true, standard: false },
-      ],
-      ["dark", undefined, { free: true, standard: true }, { free: false, standard: false }],
+      ["live, Free has it", "true", true, { free: true }],
+      ["live, Free narrowed out", "true", false, { free: false }],
+      ["dark", undefined, true, { free: false }],
     ] as const)("%s", async (_label, flag, has, expected) => {
       if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
       else process.env.SPEED_REPORT_LIVE_ENABLED = flag;
       mockGetPlanFeatures.mockImplementation((plan: string) => ({
         ...FREE_FEATURES,
-        freeSpeedTest: plan === "Standard" ? has.standard : has.free,
+        freeSpeedTest: plan === "free" ? has : false,
       }));
       const result = (await loader(makeLoaderArgs())) as {
-        freeSpeedTestTiles: { free: boolean; standard: boolean };
+        freeSpeedTestTiles: { free: boolean };
       };
       expect(result.freeSpeedTestTiles).toEqual(expected);
     });
@@ -325,17 +316,20 @@ describe("scopeBadge (PermissionsCard)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plan tile buttons (gc-97k.8): trial vs previously-paid copy
+// Plan section (gc-97k.8, gc-4wvb): PlanTiles, a CTA on every non-current tile
 // ---------------------------------------------------------------------------
 
-describe("Settings plan tile buttons", () => {
+describe("Settings plan section", () => {
+  type Tiles = { free: boolean; standard: boolean; professional: boolean };
+  const LIVE: Tiles = { free: true, standard: true, professional: true };
+  const DARK: Tiles = { free: false, standard: false, professional: false };
+
   /** Render the real Settings page with the given loader data. */
   function renderSettings(
     plan: string,
     trialEligible: boolean,
     alerts: Partial<AlertsData> = {},
-    freeSpeedTestTiles = { free: true, standard: false },
-    speedReportTiles = { standard: true, professional: true },
+    speed: Tiles = LIVE,
   ): string {
     const loaderData = {
       shop: { plan, domain: SHOP_DOMAIN },
@@ -343,8 +337,8 @@ describe("Settings plan tile buttons", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
-      freeSpeedTestTiles,
-      speedReportTiles,
+      freeSpeedTestTiles: { free: speed.free },
+      speedReportTiles: { standard: speed.standard, professional: speed.professional },
     };
     const Stub = createRoutesStub([
       {
@@ -362,52 +356,112 @@ describe("Settings plan tile buttons", () => {
     );
   }
 
-  /** Every plan-tile / manage button label, in page order. */
-  function buttonLabels(html: string): string[] {
-    return [...html.matchAll(/<s-button[^>]*>([^<]*)<\/s-button>/g)].map((m) => m[1]);
+  /** Every button on the page (label + variant), in page order. */
+  function buttons(html: string): { label: string; variant: string }[] {
+    return [...html.matchAll(/<s-button([^>]*)>([^<]*)<\/s-button>/g)].map((m) => ({
+      label: m[2],
+      variant: /variant="([^"]+)"/.exec(m[1])?.[1] ?? "",
+    }));
   }
-
-  it("never-paid Free shop: both paid tiles offer the 7-day trial", () => {
-    // The Summary emails card (always rendered, gc-ol95) adds its Free CTA last.
-    expect(buttonLabels(renderSettings("free", true))).toEqual([
-      "Start 7-day free trial",
-      "Start 7-day free trial",
-      "Manage subscription in Shopify",
-      "Start 7-day free trial",
-    ]);
-  });
-
-  it("previously-paid Free shop: plain upgrade labels, no trial promise on a button", () => {
-    expect(buttonLabels(renderSettings("free", false))).toEqual([
-      "Upgrade to Standard",
-      "Upgrade to Professional",
-      "Manage subscription in Shopify",
-      "Upgrade to Standard",
-    ]);
-  });
-
-  it("Standard shop: unchanged (Upgrade to Professional)", () => {
-    expect(buttonLabels(renderSettings("Standard", false, { canReceive: true }))).toEqual([
-      "Upgrade to Professional",
-      "Manage subscription in Shopify",
-    ]);
-  });
-
-  it("Professional shop: unchanged (Downgrade to Standard)", () => {
-    expect(buttonLabels(renderSettings("Professional", false, { canReceive: true }))).toEqual([
-      "Downgrade to Standard",
-      "Manage subscription in Shopify",
-    ]);
-  });
 
   /** Every plan-tile feature bullet, in page order. */
   function bullets(html: string): string[] {
     return [...html.matchAll(/<s-list-item[^>]*>([^<]*)<\/s-list-item>/g)].map((m) => m[1]);
   }
-  const TRIAL_BULLET = "7-day free trial";
 
-  it("never-paid Free shop: both paid tiles list the 7-day free trial bullet", () => {
-    expect(bullets(renderSettings("free", true)).filter((b) => b === TRIAL_BULLET)).toHaveLength(2);
+  const TRIAL = "Start 7-day free trial";
+
+  it("never-paid Free shop: both paid tiles offer the 7-day trial (primary)", () => {
+    // The Summary emails card adds its Free CTA last.
+    expect(buttons(renderSettings("free", true))).toEqual([
+      { label: TRIAL, variant: "primary" },
+      { label: TRIAL, variant: "primary" },
+      { label: TRIAL, variant: "primary" },
+    ]);
+  });
+
+  it("previously-paid Free shop: plain upgrade labels, no trial promise on a button", () => {
+    expect(buttons(renderSettings("free", false))).toEqual([
+      { label: "Upgrade to Standard", variant: "primary" },
+      { label: "Upgrade to Professional", variant: "primary" },
+      { label: "Upgrade to Standard", variant: "primary" },
+    ]);
+  });
+
+  it("Standard shop: secondary Downgrade to Free, primary Upgrade to Professional", () => {
+    expect(buttons(renderSettings("Standard", false, { canReceive: true }))).toEqual([
+      { label: "Downgrade to Free", variant: "secondary" },
+      { label: "Upgrade to Professional", variant: "primary" },
+    ]);
+  });
+
+  it("Professional shop: two secondary downgrades, no upgrade", () => {
+    expect(buttons(renderSettings("Professional", false, { canReceive: true }))).toEqual([
+      { label: "Downgrade to Free", variant: "secondary" },
+      { label: "Downgrade to Standard", variant: "secondary" },
+    ]);
+  });
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: no Manage Subscription card; the one subdued billing line instead",
+    (plan) => {
+      const html = renderSettings(plan, false, { canReceive: plan !== "free" });
+      expect(html).not.toMatch(/manage subscription/i);
+      expect(html).toContain(
+        "Plan changes and cancellations happen on Shopify&#x27;s pricing page, and GhostCode is billed on your Shopify invoice.",
+      );
+      expect(html).toContain(">Plan</h2>");
+      expect(html.match(/Current plan/g)).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["free", true, 3],
+    ["Standard", false, 2],
+    ["Professional", false, 2],
+  ] as const)("%s: every CTA links top-level to the Managed Pricing page", (plan, eligible, n) => {
+    const html = renderSettings(plan, eligible, { canReceive: plan !== "free" });
+    const anchors = html.match(/<a [^>]*>/g) ?? [];
+    const pricing = anchors.filter((a) => a.includes("pricing_plans"));
+    expect(pricing).toHaveLength(n);
+    expect(pricing).toHaveLength(buttons(html).length);
+    for (const a of pricing) {
+      expect(a).toContain(`href="${PRICING_PLANS_URL}"`);
+      expect(a).toContain('target="_top"');
+    }
+  });
+
+  it("an unrecognised stored plan reads as Free: Free tile current, upgrades on both paid tiles", () => {
+    const html = renderSettings("legacy", false);
+    expect(html.match(/Current plan/g)).toHaveLength(1);
+    expect(html.indexOf("Current plan")).toBeLessThan(html.indexOf(">Standard</h3>"));
+    expect(buttons(html).map((b) => b.label)).toEqual([
+      "Upgrade to Standard",
+      "Upgrade to Professional",
+      "Upgrade to Standard",
+    ]);
+  });
+
+  it("the plan tiles have no inline stylesheet (PlanTile carries its own styles)", () => {
+    expect(renderSettings("free", true)).not.toContain("<style");
+  });
+
+  it("all plans, speed live, not trial-eligible: the tiles show exactly the listing bullets", () => {
+    expect(bullets(renderSettings("Standard", false))).toEqual([
+      ...PLAN_LISTING_BULLETS.free,
+      ...PLAN_LISTING_BULLETS.Standard,
+      ...PLAN_LISTING_BULLETS.Professional,
+    ]);
+  });
+
+  it("never-paid Free shop: both paid tiles add the trial bullet last, the Free tile none", () => {
+    expect(bullets(renderSettings("free", true))).toEqual([
+      ...PLAN_LISTING_BULLETS.free,
+      ...PLAN_LISTING_BULLETS.Standard,
+      TRIAL_BULLET,
+      ...PLAN_LISTING_BULLETS.Professional,
+      TRIAL_BULLET,
+    ]);
   });
 
   it.each([
@@ -416,118 +470,79 @@ describe("Settings plan tile buttons", () => {
     ["Professional", "Professional shop"],
   ])("%s (%s): no trial bullet anywhere, matching the buttons", (plan) => {
     const html = renderSettings(plan, false);
-
     expect(bullets(html)).not.toContain(TRIAL_BULLET);
     expect(html).not.toMatch(/free trial/i);
-    // The other feature bullets are untouched.
-    expect(bullets(html)).toContain("Full finding details with code");
-    expect(bullets(html)).toContain("Scan diffing (New/Resolved)");
-  });
-
-  it("paid tiles state the scheduled-scan cadence (gc-iefo): Standard monthly, Professional weekly", () => {
-    const all = bullets(renderSettings("free", false));
-    expect(all).toContain("Monthly automatic scan");
-    expect(all).toContain("Weekly automatic scans");
-    expect(all.indexOf("Monthly automatic scan")).toBeLessThan(
-      all.indexOf("Weekly automatic scans"),
-    );
-    expect(all.join(" ")).not.toMatch(/daily/i);
-  });
-
-  it("the Free tile lists the owner-approved bullets, identical to the doc's App listing features", async () => {
-    const freeTile = bullets(renderSettings("free", true)).slice(0, 6);
-    expect(freeTile).toEqual([
-      "First scan always free",
-      "1 scan per month after first",
-      "Findings grouped by impact, with counts",
-      "Up to 5 findings shown in full",
-      "Single theme scanning",
-      "One-time homepage speed test",
-    ]);
-    expect(freeTile).not.toContain("Preview of top finding in full");
-    for (const b of freeTile) {
-      expect(b.length).toBeLessThanOrEqual(40); // Managed Pricing card limit
-      expect(b).not.toMatch(/[\u2013\u2014]/);
-    }
-
-    // Kept in sync with docs/pricing-and-plans.md, which the owner pastes into
-    // the Managed Pricing Free plan card.
-    const { readFileSync } = await import("node:fs");
-    const doc = readFileSync(new URL("../../docs/pricing-and-plans.md", import.meta.url), "utf8");
-    const listing = doc.slice(doc.indexOf("**App listing features (max 40 chars each):**"));
-    const docBullets = [...listing.matchAll(/^\d\. (.+)$/gm)].slice(0, 6).map((m) => m[1]);
-    expect(docBullets).toEqual(freeTile);
   });
 
   const FREE_TEST_BULLET = "One-time homepage speed test";
   const MONTHLY_BULLET = "Monthly store speed report, cost per app";
   const WEEKLY_BULLET = "Weekly store speed report, cost per app";
 
-  it("free speed test (gc-d0ui): listed on the Free tile only while live, never on Standard's or Professional's", () => {
-    const all = bullets(renderSettings("free", false));
-    expect(all.filter((b) => b === FREE_TEST_BULLET)).toHaveLength(1);
-    expect(all.indexOf(FREE_TEST_BULLET)).toBeLessThan(all.indexOf("All features in Free"));
-    expect(all.join(" ")).not.toContain("One free homepage speed test");
-  });
-
-  it("free speed test: absent while the speed report is dark", () => {
-    expect(
-      bullets(
-        renderSettings(
-          "free",
-          false,
-          {},
-          { free: false, standard: false },
-          { standard: false, professional: false },
-        ),
-      ),
-    ).not.toContain(FREE_TEST_BULLET);
-  });
-
-  it("speed report bullets (gc-d0ui): Standard monthly right after 'All features in Free', Professional weekly", () => {
-    const all = bullets(renderSettings("free", false));
-    expect(all[all.indexOf("All features in Free") + 1]).toBe(MONTHLY_BULLET);
-    const proStart = all.indexOf("All features in Standard");
-    expect(all.indexOf(MONTHLY_BULLET)).toBeLessThan(proStart);
-    expect(all.slice(proStart)).toContain(WEEKLY_BULLET);
-    expect(all.slice(proStart)).not.toContain(MONTHLY_BULLET);
+  it("speed report dark: each tile drops only its speed bullet", () => {
+    const all = bullets(renderSettings("free", false, {}, DARK));
     for (const b of [FREE_TEST_BULLET, MONTHLY_BULLET, WEEKLY_BULLET]) {
-      expect(b.length).toBeLessThanOrEqual(40); // Managed Pricing card limit
+      expect(all).not.toContain(b);
     }
+    expect(all).toHaveLength(
+      PLAN_LISTING_BULLETS.free.length +
+        PLAN_LISTING_BULLETS.Standard.length +
+        PLAN_LISTING_BULLETS.Professional.length -
+        3,
+    );
   });
 
-  it("speed report bullets: absent while the speed report is dark", () => {
+  it("speed bullets follow each plan's own flag", () => {
     const all = bullets(
-      renderSettings(
-        "free",
-        false,
-        {},
-        { free: false, standard: false },
-        { standard: false, professional: false },
-      ),
+      renderSettings("free", false, {}, { free: false, standard: true, professional: false }),
     );
-    expect(all).not.toContain(MONTHLY_BULLET);
+    expect(all).not.toContain(FREE_TEST_BULLET);
+    expect(all).toContain(MONTHLY_BULLET);
     expect(all).not.toContain(WEEKLY_BULLET);
   });
 
-  it("the Professional tile says 'Up to 5 scans a day' (gc-d0ui), never unlimited scans", () => {
+  it("never claims unlimited scans; Professional's cap is stated", () => {
     const all = bullets(renderSettings("free", false));
-    const pro = all.slice(all.indexOf("All features in Standard"));
-    expect(pro[1]).toBe("Up to 5 scans a day");
-    expect(all.join(" ")).not.toMatch(/unlimited scans/i);
-    expect(pro).toContain("Unlimited theme scanning");
+    expect(all.join(" ")).not.toMatch(/unlimited/i);
+    expect(all).toContain("Up to 5 manual theme scans a day");
   });
 
-  it("every plan button links top-level to the Managed Pricing page", () => {
-    const html = renderSettings("free", true);
-    const pricingAnchors = (html.match(/<a [^>]*>/g) ?? []).filter((a) =>
-      a.includes("pricing_plans"),
-    );
-    // Standard tile, Professional tile, Manage subscription, Summary emails card.
-    expect(pricingAnchors).toHaveLength(4);
-    for (const a of pricingAnchors) {
-      expect(a).toContain(`href="${PRICING_PLANS_URL}"`);
-      expect(a).toContain('target="_top"');
+  it("the About card is gone; a GhostCode 1.0.0 footer line instead", () => {
+    const html = renderSettings("Professional", false);
+    expect(html).not.toContain("About GhostCode");
+    expect(html).toMatch(/text-align:center[^>]*>GhostCode 1\.0\.0<\/p>/);
+  });
+});
+
+describe("plan listing bullets equal docs/pricing-and-plans.md 'App listing features'", () => {
+  it("every plan's doc list equals the constants, in order", async () => {
+    const { readFileSync } = await import("node:fs");
+    const doc = readFileSync(new URL("../../docs/pricing-and-plans.md", import.meta.url), "utf8");
+    const marker = "**App listing features (max 40 chars each):**";
+    const lists = doc
+      .split(marker)
+      .slice(1)
+      .map((chunk) => {
+        const out: string[] = [];
+        for (const line of chunk.split("\n").slice(1)) {
+          const m = /^\d+\. (.+)$/.exec(line);
+          if (m) out.push(m[1]);
+          else if (out.length > 0) break;
+        }
+        return out;
+      });
+    expect(lists).toEqual([
+      PLAN_LISTING_BULLETS.free,
+      PLAN_LISTING_BULLETS.Standard,
+      PLAN_LISTING_BULLETS.Professional,
+    ]);
+  });
+
+  it("every bullet fits the Managed Pricing 40-char limit, with no em or en dash", () => {
+    for (const list of Object.values(PLAN_LISTING_BULLETS)) {
+      for (const b of list) {
+        expect(b.length).toBeLessThanOrEqual(40);
+        expect(b).not.toMatch(/[\u2013\u2014]/);
+      }
     }
   });
 });
@@ -734,7 +749,7 @@ describe("the page is called Settings, matching the notice, email and policy (Na
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible: true,
       alerts: DARK_ALERTS,
-      freeSpeedTestTiles: { free: false, standard: false },
+      freeSpeedTestTiles: { free: false },
       speedReportTiles: { standard: false, professional: false },
     };
     const Stub = createRoutesStub([
@@ -771,7 +786,7 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
-      freeSpeedTestTiles: { free: true, standard: false },
+      freeSpeedTestTiles: { free: true },
       speedReportTiles: { standard: true, professional: true },
     };
     const Stub = createRoutesStub([
@@ -913,7 +928,7 @@ describe("Settings Permissions card (gc-4n0y)", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible: true,
       alerts: DARK_ALERTS,
-      freeSpeedTestTiles: { free: false, standard: false },
+      freeSpeedTestTiles: { free: false },
       speedReportTiles: { standard: false, professional: false },
     };
     const Stub = createRoutesStub([
@@ -934,14 +949,14 @@ describe("Settings Permissions card (gc-4n0y)", () => {
 
   it("renders for a Free shop, with the Broken links plan note", () => {
     const html = render("free", false);
-    expect(html).toContain("<s-heading>Permissions</s-heading>");
+    expect(html).toContain(">Permissions</h2>");
     expect(html).toContain("need extra read-only");
     expect(html).toContain(BROKEN_LINKS_STANDARD_NOTE.replace(/'/g, "&#x27;"));
   });
 
   it.each(["Standard", "Professional"])("renders for %s without the plan note", (plan) => {
     const html = render(plan, true);
-    expect(html).toContain("<s-heading>Permissions</s-heading>");
+    expect(html).toContain(">Permissions</h2>");
     expect(html).not.toContain("Broken-link checks come with the Standard plan");
   });
 
