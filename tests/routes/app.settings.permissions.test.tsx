@@ -54,7 +54,7 @@ describe("PermissionsCard", () => {
     const html = render(state({ granted: [...OPTIONAL_SCOPES] }));
     expect(html).toMatch(/<th scope="col"[^>]*>Permission and what it checks<\/th>/);
     expect(html).toMatch(
-      /<th scope="col" style="text-align:right;[^"]*width:120px;white-space:nowrap">Status<\/th>/,
+      /<th scope="col" style="text-align:left;[^"]*width:120px;white-space:nowrap">Status<\/th>/,
     );
     expect(html.match(/<tr>/g)).toHaveLength(OPTIONAL_SCOPES.length + 1);
     expect(badges(html)).toEqual(OPTIONAL_SCOPES.map(() => "success:Granted"));
@@ -64,6 +64,28 @@ describe("PermissionsCard", () => {
     expect(html).not.toContain("<s-banner");
     expect(html).not.toContain("<s-button");
     expect(html).not.toContain("not granted.");
+  });
+
+  // Prod bug: a right-aligned "Status" header over badges that sit at the
+  // column's left edge (an s-badge ignores its cell's text-align).
+  it.each([
+    ["all granted", [...OPTIONAL_SCOPES]],
+    ["some missing", OPTIONAL_SCOPES.filter((s) => s !== "read_locales")],
+    ["query failed", null],
+  ] as const)("%s: the Status header and every status cell share left alignment", (_, granted) => {
+    const html = render(
+      state({ granted: granted === null ? null : [...granted], failed: granted === null }),
+    );
+    const header = html.match(/<th scope="col" style="([^"]*)">Status<\/th>/)?.[1] ?? "";
+    expect(header).toMatch(/text-align:left/);
+    expect(header).toMatch(/width:120px/);
+    const cells = [...html.matchAll(/<td style="([^"]*)"><s-badge/g)].map((m) => m[1]);
+    expect(cells).toHaveLength(OPTIONAL_SCOPES.length);
+    for (const cell of cells) {
+      expect(cell).toMatch(/text-align:left/);
+      expect(cell).not.toMatch(/text-align:right/);
+      expect(cell).toMatch(/width:120px/);
+    }
   });
 
   it("zebra rows: every second row carries the stripe background", () => {

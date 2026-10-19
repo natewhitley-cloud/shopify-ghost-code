@@ -359,9 +359,14 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
   );
 }
 
-/** Status column: right-aligned, at least 120px, never truncating "Status unavailable". */
+/**
+ * Status column: left-aligned, at least 120px, never truncating "Status
+ * unavailable". Header and cells share it. Left, not right: an s-badge does not
+ * follow its cell's text-align, so a right-aligned header sat 120px away from
+ * left-sitting badges.
+ */
 const statusColumn: React.CSSProperties = {
-  textAlign: "right",
+  textAlign: "left",
   width: "120px",
   whiteSpace: "nowrap",
 };
