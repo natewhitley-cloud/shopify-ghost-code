@@ -19,13 +19,15 @@ Place it after "Store speed report".
 > description of what it costs you), any known malicious code with its theme
 > file, line, app name if known and our description, and your theme health
 > summary (which checks came back clean or did not fully run, your theme's
-> name, version and type, and how many themes your store has). On the Free
+> name, version and type, and how many themes your store has), how many app
+> security advisories your latest scan found, and the names of the unpublished
+> themes you have scanned with how many findings each had in its last scan. On the Free
 > plan, the findings listed are only those the App already shows you in full;
 > known malicious code is listed on every plan. The speed summary contains the
 > date of your latest speed result, the pages tested, their speed score and
 > timings, and the apps that used the most processing time and data. On the
-> Professional plan that is up to five apps per tested page; on the Free and
-> Standard plans it is your free homepage test and the one app that used the
+> Standard and Professional plans that is up to five apps per tested page; on
+> the Free plan it is your free homepage test and the one app that used the
 > most processing time. It never contains your theme's code, information
 > about your visitors or customers, or access tokens. GhostCode does not
 > receive your questions or Sidekick's replies, and it does not store the
@@ -49,9 +51,11 @@ Place it after "Store speed report".
   assistant under Shopify's terms, not by us."
 - Retention: no summary is stored. A failed Sidekick request records a
   server-side error event (error code and shop domain only, no message text)
-  in the same `api_error` records every other server error uses; shop/redact
-  deletes them. The policy's "Technical error reports" bullet covers only
-  browser-side errors, so decide whether server-side error records need their
-  own line (this is not new to Sidekick: every server error is recorded the
-  same way today).
+  in the same `api_error` records every other server error uses; they are
+  never pruned and shop/redact deletes them. Release 1 adds a "Server error
+  records" bullet and retention line to the policy for this.
+- Release 1 also corrects the live policy for gc-d0ui (Standard monthly speed
+  report, Standard speed section in the summary email) and gc-vgqc (Pro email
+  names up to 3 new or costlier apps). The full patched policy was prepared
+  2026-10-19 alongside this draft for owner review.
 - Effective date: bump it when publishing.
