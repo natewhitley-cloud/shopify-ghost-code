@@ -903,6 +903,20 @@ describe("affected-app advisory in the export (gc-14x5)", () => {
     },
   );
 
+  it("flag off (gc-5nok kill switch): a stored advisory is left out of the export", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY, FINDINGS[1]]);
+    const types = async () =>
+      (await (await callLoader("scan-abc", "json")).json()).findings.map(
+        (f: { type: string }) => f.type,
+      );
+
+    // Non-vacuous: the same stored rows with the flag on export the advisory.
+    expect(await types()).toEqual(["APP_INCIDENT_ADVISORY", FINDINGS[1].findingType]);
+
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+    expect(await types()).toEqual([FINDINGS[1].findingType]);
+  });
+
   it("Free: export stays a paid feature for every type (403), exactly as for malicious code", async () => {
     mockCanViewFindingDetails.mockReturnValue(false);
     mockGetFindingsForScan.mockResolvedValue([ADVISORY]);

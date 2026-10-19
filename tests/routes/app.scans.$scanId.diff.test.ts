@@ -559,4 +559,34 @@ describe("app.scans.$scanId.diff loader: an affected-app advisory (gc-14x5)", ()
 
     expect(scanDiff).toMatchObject({ newFindings: [], resolvedFindings: [], unchangedCount: 0 });
   });
+
+  it("flag off (gc-5nok kill switch): the hidden advisory is neither new nor fixed", async () => {
+    const types = (rows: Array<{ findingType: string }>) => rows.map((f) => f.findingType);
+    const asNew = async () => {
+      mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...PREVIOUS_SCAN,
+        ...live(ALL_TYPES),
+        findings: [],
+      });
+      return (await load()).scanDiff;
+    };
+    const asFixed = async () => {
+      mockGetFindingsForScan.mockResolvedValue([]);
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...PREVIOUS_SCAN,
+        ...live(ALL_TYPES),
+        findings: [ADVISORY],
+      });
+      return (await load()).scanDiff;
+    };
+
+    // Non-vacuous: the same scans with the flag on report it new, then fixed.
+    expect(types((await asNew()).newFindings)).toEqual(["APP_INCIDENT_ADVISORY"]);
+    expect(types((await asFixed()).resolvedFindings)).toEqual(["APP_INCIDENT_ADVISORY"]);
+
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+    expect(await asNew()).toMatchObject({ newFindings: [], resolvedFindings: [] });
+    expect(await asFixed()).toMatchObject({ newFindings: [], resolvedFindings: [] });
+  });
 });
