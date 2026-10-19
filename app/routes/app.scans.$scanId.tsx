@@ -826,10 +826,11 @@ export function FindingRow({
       : null;
   const typeLabel =
     FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ");
-  const impact = getFindingImpact(finding.findingType);
+  const impact = getFindingImpact(finding.findingType, finding.filename);
   // Per-type card presentation: the defaults for every type but an
-  // affected-app advisory (see getFindingCardCopy).
-  const cardCopy = getFindingCardCopy(finding.findingType);
+  // affected-app advisory, whose embed match has its own variant (see
+  // getFindingCardCopy).
+  const cardCopy = getFindingCardCopy(finding.findingType, finding.filename);
   // The stored snippet is the finding's line plus its neighbours. Preview the
   // finding's own line when it can be derived for certain, so the box does not
   // lead with the line above it; otherwise the snippet as stored. The Copy
@@ -934,7 +935,7 @@ export function FindingRow({
             ))}
           </ol>
         ) : (
-          getFindingRemediation(finding.findingType)
+          getFindingRemediation(finding.findingType, finding.filename)
         )}
       </div>
       {/* Actions, in order: open the place to fix it (primary, when the finding

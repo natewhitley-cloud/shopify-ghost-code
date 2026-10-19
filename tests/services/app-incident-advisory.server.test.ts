@@ -55,6 +55,7 @@ const detect = (
 const OTHER: AppIncidentAdvisory = {
   appName: "Example Reviews",
   scriptHosts: ["widgets.example-reviews.test", "legacy.example-reviews.test"],
+  embedHandles: [],
   incidentDate: "2026-09-01",
   sourceUrl: "https://example.test/report",
   summary: "named in a public report of a redirect on product pages",
@@ -66,30 +67,56 @@ const OTHER: AppIncidentAdvisory = {
 // ---------------------------------------------------------------------------
 
 describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
-  it("holds exactly the one verified entry, with the owner's fields", () => {
+  it("holds exactly the verified entries, with the owner's fields", () => {
     expect(APP_INCIDENT_ADVISORIES).toEqual([
       {
         appName: "Hulk Product Options",
         scriptHosts: ["productoption.hulkapps.com"],
+        embedHandles: [],
         incidentDate: "2026-10-10",
         sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
         summary: "named in a public report of shoppers being sent to a fake checkout page",
         reviewBy: "2027-01-08",
       },
+      {
+        appName: "Swym Wishlist Plus",
+        scriptHosts: [],
+        embedHandles: ["shopify://apps/wishlist-plus/blocks/wishlist-app-embed"],
+        incidentDate: "2026-10-14",
+        sourceUrl: "https://www.getswym.com/resources/security-response",
+        summary:
+          "whose developer reported that an unauthorized change to its configuration made a script load on some storefronts that could send shoppers to a fake checkout page",
+        reviewBy: "2027-01-12",
+      },
+      {
+        appName: "Selleasy",
+        scriptHosts: ["upsell-app.logbase.io"],
+        embedHandles: ["shopify://apps/selleasy/blocks/app-embed"],
+        incidentDate: "2026-10-13",
+        sourceUrl: "https://www.logbase.io/selleasy/updates/incident-20261013",
+        summary:
+          "whose developer reported that an unauthorized script on some stores sent shoppers to a phishing page",
+        reviewBy: "2027-01-11",
+      },
     ]);
   });
 
-  it("the Hulk review date is 90 days after the incident", () => {
-    const days =
-      (Date.parse(`${HULK.reviewBy}T00:00:00Z`) - Date.parse(`${HULK.incidentDate}T00:00:00Z`)) /
-      86_400_000;
-    expect(days).toBe(90);
-  });
+  it.each(APP_INCIDENT_ADVISORIES)(
+    "$appName: the review date is 90 days after the incident",
+    (entry) => {
+      const days =
+        (Date.parse(`${entry.reviewBy}T00:00:00Z`) -
+          Date.parse(`${entry.incidentDate}T00:00:00Z`)) /
+        86_400_000;
+      expect(days).toBe(90);
+    },
+  );
 
   it.each(APP_INCIDENT_ADVISORIES)("$appName: every field is well formed", (entry) => {
     expect(entry.appName.trim()).toBe(entry.appName);
     expect(entry.appName.length).toBeGreaterThan(0);
-    expect(entry.scriptHosts.length).toBeGreaterThan(0);
+    // At least one match key: a script host or an app embed handle.
+    expect(entry.scriptHosts.length + entry.embedHandles.length).toBeGreaterThan(0);
     for (const date of [entry.incidentDate, entry.reviewBy]) {
       expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       // A real calendar date (2026-02-30 would round-trip to something else).
@@ -140,13 +167,21 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
     },
   );
 
-  it("no advisory app name is also an app signature name (an advisory is not leftover code)", () => {
+  it("no advisory app name is also an app signature name (an advisory is not leftover code), except the allowlisted ones", () => {
     // app-removal detection and the active-app pass key on signature app names.
-    // The advisory finding carries no appName, and this keeps the two lists
-    // from ever being confused for one another.
+    // The advisory finding carries no appName (pinned by the detector tests),
+    // and this keeps the two lists from being confused for one another.
+    // Allowlisted: "Selleasy" is both the app's public name (merchant-facing,
+    // so the advisory keeps it) and a leftover-code signature. Harmless while
+    // the advisory finding carries no appName.
+    const ALLOWED_SHARED_NAMES = new Set(["Selleasy"]);
     const signatureNames = new Set(APP_SIGNATURES.map((s) => s.appName));
     for (const entry of APP_INCIDENT_ADVISORIES) {
+      if (ALLOWED_SHARED_NAMES.has(entry.appName)) continue;
       expect(signatureNames.has(entry.appName), entry.appName).toBe(false);
+    }
+    for (const name of ALLOWED_SHARED_NAMES) {
+      expect(signatureNames.has(name), `${name} is still a signature name`).toBe(true);
     }
   });
 });
@@ -1322,7 +1357,7 @@ describe("activeAdvisories", () => {
   it("uses the real list by default and never mutates it", () => {
     expect(activeAdvisories(ACTIVE)).toEqual([...APP_INCIDENT_ADVISORIES]);
     expect(activeAdvisories(new Date("2030-01-01T00:00:00Z"))).toEqual([]);
-    expect(APP_INCIDENT_ADVISORIES).toHaveLength(1);
+    expect(APP_INCIDENT_ADVISORIES).toHaveLength(3);
   });
 });
 

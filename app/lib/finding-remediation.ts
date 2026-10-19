@@ -44,14 +44,49 @@ interface Remediation {
  * The affected-app advisory's checkout self-check (gc-14x5), one entry per
  * step. The ONE source: the card renders it as an ordered list, and the type's
  * `howTo` string (copy action, exports) is these steps numbered and joined.
+ * The last step depends on the signal that matched (gc-14x5.1): remove a
+ * script line (host) or turn off an app embed (embed).
  */
-const ADVISORY_STEPS: readonly string[] = [
+const ADVISORY_CHECK_STEPS: readonly string[] = [
   "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
   "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
   "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
   "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
+];
+const ADVISORY_STEPS: readonly string[] = [
+  ...ADVISORY_CHECK_STEPS,
   "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
 ];
+const ADVISORY_EMBED_STEPS: readonly string[] = [
+  ...ADVISORY_CHECK_STEPS,
+  "If you no longer use the app, uninstall it, or turn off its embed in Online Store, Themes, Customize, App embeds. If you still use it, ask the developer whether this affects you.",
+];
+
+/** What the public report says, and what GhostCode cannot know. Shared by both advisory signals. */
+const ADVISORY_REPORT_IMPACT =
+  "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.";
+
+/**
+ * True for an affected-app advisory matched by its app EMBED (gc-14x5.1). The
+ * detector anchors an embed match to config/settings_data.json and a script
+ * host match to the Liquid file that loads it, so the filename says which
+ * signal matched, on the client too.
+ */
+export function isAdvisoryEmbedFinding(finding: {
+  findingType: string;
+  filename: string;
+}): boolean {
+  return (
+    finding.findingType === "APP_INCIDENT_ADVISORY" &&
+    finding.filename === "config/settings_data.json"
+  );
+}
+
+/** The advisory remediation for the embed signal (see isAdvisoryEmbedFinding). */
+const ADVISORY_EMBED_REMEDIATION: Remediation = {
+  impact: `Your theme has this app's embed turned on. ${ADVISORY_REPORT_IMPACT}`,
+  howTo: numberedSteps(ADVISORY_EMBED_STEPS),
+};
 
 /** "1. First 2. Second ...": steps as the one-string how-to. */
 function numberedSteps(steps: readonly string[]): string {
@@ -257,9 +292,9 @@ const REMEDIATION: Record<string, Remediation> = {
   // app. Never says the store was affected. The steps are a checkout self-check
   // first, removal last. Static per type: the finding's stored description
   // names the app and the date.
+  // An embed match uses ADVISORY_EMBED_REMEDIATION instead (pass the filename).
   APP_INCIDENT_ADVISORY: {
-    impact:
-      "Your theme loads a script from this app. A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
+    impact: `Your theme loads a script from this app. ${ADVISORY_REPORT_IMPACT} This script loads whether or not the app is still installed.`,
     howTo: numberedSteps(ADVISORY_STEPS),
   },
 
@@ -282,8 +317,15 @@ const DEFAULT_REMEDIATION =
  * Returns safe, actionable removal guidance for a finding type. Always returns
  * a non-empty string: unknown or unmapped types fall back to generic guidance.
  */
-export function getFindingRemediation(findingType: string): string {
-  return REMEDIATION[findingType]?.howTo ?? DEFAULT_REMEDIATION;
+export function getFindingRemediation(findingType: string, filename = ""): string {
+  return remediationFor(findingType, filename)?.howTo ?? DEFAULT_REMEDIATION;
+}
+
+/** The type's remediation, or the advisory's embed variant (see isAdvisoryEmbedFinding). */
+function remediationFor(findingType: string, filename: string): Remediation | undefined {
+  return isAdvisoryEmbedFinding({ findingType, filename })
+    ? ADVISORY_EMBED_REMEDIATION
+    : REMEDIATION[findingType];
 }
 
 /**
@@ -291,8 +333,8 @@ export function getFindingRemediation(findingType: string): string {
  * the type has no distinct agent-facing consequence beyond removal. Rendered
  * above the removal step in the finding row.
  */
-export function getFindingImpact(findingType: string): string | null {
-  return REMEDIATION[findingType]?.impact ?? null;
+export function getFindingImpact(findingType: string, filename = ""): string | null {
+  return remediationFor(findingType, filename)?.impact ?? null;
 }
 
 /**
@@ -364,8 +406,23 @@ const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
   },
 };
 
-/** The finding card's presentation for a type: the defaults for every type but the overrides above. */
-export function getFindingCardCopy(findingType: string): FindingCardCopy {
+/**
+ * An advisory matched by its app embed (gc-14x5.1): the same card, but the
+ * match is an embed in the theme settings, and the last step turns it off.
+ */
+const ADVISORY_EMBED_CARD_COPY: FindingCardCopy = {
+  ...CARD_COPY_OVERRIDES.APP_INCIDENT_ADVISORY,
+  confidence: "Matched this app's embed in your theme settings.",
+  steps: ADVISORY_EMBED_STEPS,
+};
+
+/**
+ * The finding card's presentation for a type: the defaults for every type but
+ * the overrides above. Pass the finding's filename so an advisory matched by
+ * its app embed gets its own variant (see isAdvisoryEmbedFinding).
+ */
+export function getFindingCardCopy(findingType: string, filename = ""): FindingCardCopy {
+  if (isAdvisoryEmbedFinding({ findingType, filename })) return ADVISORY_EMBED_CARD_COPY;
   return CARD_COPY_OVERRIDES[findingType] ?? DEFAULT_CARD_COPY;
 }
 
@@ -476,9 +533,16 @@ export function matchedLineFromContextSnippet(
  * the finding card's snippet box so the two never disagree.
  */
 export function findingMatchedLine(
-  finding: Pick<RemovalInstructionFinding, "findingType" | "lineNumber" | "codeSnippet">,
+  finding: Pick<RemovalInstructionFinding, "findingType" | "lineNumber" | "codeSnippet"> & {
+    filename?: string;
+  },
 ): string | null {
   if (!LINE_CONTEXT_SNIPPET_TYPES.has(finding.findingType)) return null;
+  // An embed-matched advisory's snippet is a settings_data.json entry, not a line.
+  if (
+    isAdvisoryEmbedFinding({ findingType: finding.findingType, filename: finding.filename ?? "" })
+  )
+    return null;
   return matchedLineFromContextSnippet(finding.codeSnippet, finding.lineNumber);
 }
 
@@ -530,7 +594,7 @@ export function buildRemovalInstructions(
   typeLabel: string,
 ): string {
   const lines: string[] = [`GhostCode finding: ${typeLabel}`];
-  const howTo = getFindingRemediation(finding.findingType);
+  const howTo = getFindingRemediation(finding.findingType, finding.filename);
   // An affected-app advisory (gc-14x5): its description is the only thing
   // that names the app, so whoever receives the copied text knows which app.
   if (finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description) {
@@ -562,7 +626,11 @@ export function buildRemovalInstructions(
     );
     const snippet = finding.codeSnippet.trim();
     if (snippet.length > 0) {
-      if (LINE_CONTEXT_SNIPPET_TYPES.has(finding.findingType) && finding.lineNumber > 0) {
+      if (
+        LINE_CONTEXT_SNIPPET_TYPES.has(finding.findingType) &&
+        !isAdvisoryEmbedFinding(finding) &&
+        finding.lineNumber > 0
+      ) {
         const matched = matchedLineFromContextSnippet(finding.codeSnippet, finding.lineNumber);
         if (matched !== null) lines.push("The finding is this line:", matched);
         if (snippet !== matched) {

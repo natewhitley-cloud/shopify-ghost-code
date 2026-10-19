@@ -82,6 +82,7 @@ import {
   activeAdvisories,
   advisoryDescription,
   APP_INCIDENT_ADVISORIES,
+  matchAdvisoryEmbedType,
   matchAdvisoryScriptHost,
   type AppIncidentAdvisory,
 } from "../data/app-incident-advisories.server";
@@ -2500,7 +2501,10 @@ function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset:
  * Emit at most ONE APP_INCIDENT_ADVISORY finding per entry of the curated
  * APP_INCIDENT_ADVISORIES list (gc-14x5) whose script the theme LOADS,
  * anchored to the first load: first file in scan order, first position.
- * Never one per line or per file.
+ * Never one per line or per file. An entry with no such load still fires when
+ * the theme has one of its app embeds ENABLED in config/settings_data.json
+ * (gc-14x5.1), anchored to that embed entry; the host signal wins when both
+ * match, and the description says which signal matched.
  *
  * The finding states two facts (the theme loads this app's code, and a public
  * report names the app). It never claims the store was affected. "Loads" is
@@ -2512,6 +2516,10 @@ function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset:
  *     settings_data, locales or assets: a URL there is a string, not a load.
  *     A file that does not contain a listed host at all is skipped before any
  *     parsing.
+ *     The embed signal reads only the parsed app embed blocks of
+ *     config/settings_data.json (comment header stripped by parseThemeJson):
+ *     a listed block type with `disabled` not `true`. Malformed JSON or a
+ *     missing `current.blocks` map gives no embed match.
  *   - Reference forms: a `<script src>` tag or a `script_tag` filter on the
  *     host, and nothing else (see scriptLoadsInLiquidFile, which also leaves
  *     out comments, Liquid that never executes and the bodies of elements
@@ -2563,6 +2571,29 @@ export function detectAppIncidentAdvisories(
         filename: file.filename,
         lineNumber,
         codeSnippet: file.content.slice(from, Math.min(lineEnd, from + MALICIOUS_SNIPPET_MAX)),
+        findingType: FindingType.APP_INCIDENT_ADVISORY,
+        severity: Severity.HIGH,
+        appName: undefined,
+        description: advisoryDescription(match),
+      });
+      pending = pending.filter((a) => a !== match.advisory);
+      if (pending.length === 0) break;
+    }
+  }
+
+  // Embed signal (gc-14x5.1): an entry not already found by its script host
+  // fires on an ENABLED app embed of a listed type in settings_data.json. A
+  // disabled embed loads nothing and never fires. Anchored to the embed's
+  // entry, like APP_EMBED_OFF (the file is JSON, so no real line: line 1).
+  if (pending.some((a) => a.embedHandles.length > 0)) {
+    for (const embed of parseAppEmbedEntries(files)) {
+      if (embed.disabled) continue;
+      const match = matchAdvisoryEmbedType(embed.type, pending);
+      if (!match) continue;
+      found.set(match.advisory, {
+        filename: SETTINGS_DATA_PATH,
+        lineNumber: 1,
+        codeSnippet: embed.codeSnippet,
         findingType: FindingType.APP_INCIDENT_ADVISORY,
         severity: Severity.HIGH,
         appName: undefined,
@@ -4054,6 +4085,8 @@ interface AppEmbedEntry {
   key: string;
   /** The extension handle: the segment after `shopify://apps/`. */
   handle: string;
+  /** The full block type, `shopify://apps/<handle>/blocks/<block>/<uuid>`. */
+  type: string;
   disabled: boolean;
   /** The entry JSON, truncated to 300 chars. */
   codeSnippet: string;
@@ -4084,6 +4117,7 @@ function parseAppEmbedEntries(files: ThemeFile[]): AppEmbedEntry[] {
     entries.push({
       key,
       handle,
+      type,
       disabled: (value as Record<string, unknown>).disabled === true,
       codeSnippet: JSON.stringify({ [key]: value }, null, 2).slice(0, 300),
     });

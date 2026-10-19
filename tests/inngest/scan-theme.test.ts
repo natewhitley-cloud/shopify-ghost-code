@@ -3677,11 +3677,85 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
       expect(savedFindings().some(isAdvisory)).toBe(false);
       expect(unknownUrls()).toEqual([`https://${HOST}/hulk.css`]);
     });
+
+    // gc-14x5.1: the embed signal through the same worker gates.
+    describe("embed signal (an enabled app embed in settings_data.json)", () => {
+      const SWYM_TYPE =
+        "shopify://apps/wishlist-plus/blocks/wishlist-app-embed/80c3b1fc-3a8f-407e-8367-ffdeebb8b612";
+      const embedTheme = (disabled: boolean) => [
+        { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
+        {
+          filename: "config/settings_data.json",
+          content:
+            "/*\n * IMPORTANT: The contents of this file are auto-generated.\n */\n" +
+            JSON.stringify({
+              current: { blocks: { "123": { type: SWYM_TYPE, disabled, settings: {} } } },
+            }),
+        },
+      ];
+
+      it("flag on, published theme, embed enabled: stored once, with the embed wording", async () => {
+        process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+        mockFetchThemeFiles.mockResolvedValue(embedTheme(false));
+
+        await runScanTheme();
+
+        const advisories = savedFindings().filter(isAdvisory);
+        expect(advisories).toHaveLength(1);
+        expect(advisories[0]).toMatchObject({
+          filename: "config/settings_data.json",
+          lineNumber: 1,
+          severity: "HIGH",
+        });
+        expect(advisories[0].description).toMatch(
+          /^Has the Swym Wishlist Plus app embed turned on, an app whose developer reported /,
+        );
+        expect(advisories[0].appName).toBeUndefined();
+      });
+
+      it("flag on, published theme, embed DISABLED: nothing stored", async () => {
+        process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+        mockFetchThemeFiles.mockResolvedValue(embedTheme(true));
+
+        await runScanTheme();
+
+        expect(savedFindings().some(isAdvisory)).toBe(false);
+      });
+
+      it("flag OFF: nothing stored", async () => {
+        mockFetchThemeFiles.mockResolvedValue(embedTheme(false));
+
+        await runScanTheme();
+
+        expect(savedFindings().some(isAdvisory)).toBe(false);
+      });
+
+      it("flag on, DRAFT theme: nothing stored", async () => {
+        process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+        publishTheme("gid://shopify/Theme/OTHER");
+        mockFetchThemeFiles.mockResolvedValue(embedTheme(false));
+
+        await runScanTheme();
+
+        expect(savedFindings().some(isAdvisory)).toBe(false);
+      });
+
+      it("flag on, entry EXPIRED (day after its reviewBy): nothing stored", async () => {
+        process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+        vi.setSystemTime(new Date("2027-01-13T00:00:00Z"));
+        mockFetchThemeFiles.mockResolvedValue(embedTheme(false));
+
+        await runScanTheme();
+
+        expect(savedFindings().some(isAdvisory)).toBe(false);
+      });
+    });
   });
 
   it("flag on but every list entry EXPIRED: not persisted, and the type is not recorded as live", async () => {
     process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
-    vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+    // The day after the LAST reviewBy in the list (Swym Wishlist Plus, 2027-01-12).
+    vi.setSystemTime(new Date("2027-01-13T00:00:00Z"));
     arrange();
 
     await runScanTheme();

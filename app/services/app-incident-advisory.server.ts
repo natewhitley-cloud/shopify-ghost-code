@@ -5,7 +5,7 @@
  */
 import {
   activeAdvisories,
-  advisoryDescription,
+  advisoryDescriptions,
   APP_INCIDENT_ADVISORIES,
   matchAdvisoryScriptHost,
   type AppIncidentAdvisory,
@@ -18,7 +18,8 @@ import { hostnameFromUrl } from "../lib/url.server";
  * A finding stores no reference to its list entry, so the entry is resolved
  * by rebuilding each entry's description (advisoryDescription, the detector's
  * own builder) and comparing it with the stored one. That is exact: the
- * description holds the entry's app name, matched host, summary and date.
+ * description holds the entry's app name, the matched signal (host, or app
+ * embed), summary and date.
  *
  * Null (the card then shows no link) when the finding is another type, when
  * the entry was removed or reworded since the scan, or when it has passed its
@@ -38,12 +39,10 @@ function advisoryForFinding(
   advisories: ReadonlyArray<AppIncidentAdvisory>,
 ): AppIncidentAdvisory | null {
   if (finding.findingType !== "APP_INCIDENT_ADVISORY") return null;
-  for (const advisory of advisories) {
-    for (const scriptHost of advisory.scriptHosts) {
-      if (advisoryDescription({ advisory, scriptHost }) === finding.description) return advisory;
-    }
-  }
-  return null;
+  return (
+    advisories.find((advisory) => advisoryDescriptions(advisory).includes(finding.description)) ??
+    null
+  );
 }
 
 /**
@@ -54,7 +53,8 @@ function advisoryForFinding(
  * "Reporting" means an advisory finding for that entry is among
  * `persistedFindings` (the findings this scan will store: the check is live,
  * the theme is the published one, the entry is unexpired and the theme really
- * loads the script). With no such finding nothing is dropped, so a host that
+ * loads the script or has the app's embed turned on). With no such finding
+ * nothing is dropped, so a host that
  * is only mentioned, an expired entry or a dark check leaves the rows exactly
  * as they were.
  */
