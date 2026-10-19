@@ -1458,8 +1458,8 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
       expect(block).toContain(">Security risk</span>");
       expect(block).toContain("layout/theme.liquid, line 42");
       expect(block).toContain("A security incident report names this app.");
-      expect(block).toContain(
-        '<s-button variant="secondary" href="/app/scans/scan-1#finding-adv" accessibilityLabel="See what to check: An app in your theme was named in a security incident report, layout/theme.liquid, line 42">See what to check</s-button>',
+      expect(block).toMatch(
+        /<a aria-label="See what to check: An app in your theme was named in a security incident report, layout\/theme\.liquid, line 42"[^>]*href="\/app\/scans\/scan-1#finding-adv"[^>]*><s-button variant="secondary">See what to check<\/s-button><\/a>/,
       );
       expect(block).not.toContain("See how to fix");
       expect(block).not.toMatch(/Still tracking you|removed app|leftover|malicious/i);

@@ -8,13 +8,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { describe, it, expect } from "vitest";
 
-import {
-  SECURITY_RISK_LABEL,
-  TopFindings,
-  topFindingsIntro,
-} from "../../app/components/TopFindings";
+import { TopFindings, topFindingsIntro } from "../../app/components/TopFindings";
 import { LANES } from "../../app/lib/finding-consequence";
 import type { LaneKey } from "../../app/lib/finding-consequence";
+import { SECURITY_RISK_LABEL } from "../../app/lib/security-risk";
 import type { TopFindingView } from "../../app/lib/top-findings";
 import { LANE_COLOR, SECURITY_RISK_COLOR } from "../../app/styles/lane-colors";
 
@@ -78,6 +75,12 @@ describe("TopFindings", () => {
     expect(html).toMatch(/\.top-findings__grid \{[^}]*list-style: none;/);
   });
 
+  it("cards get a 1px border with a 4px top stripe from the class (colours inline)", () => {
+    expect(render([view(1)])).toMatch(
+      /\.top-findings__card \{[^}]*border: 1px solid;\s*border-top-width: 4px;/,
+    );
+  });
+
   it("each card shows its number, title, cost, and location", () => {
     const html = render([view(1), view(2)]);
     const [first, second] = cards(html);
@@ -98,13 +101,12 @@ describe("TopFindings", () => {
   });
 
   describe("See how to fix button", () => {
-    it("is a secondary Polaris button to the finding's row, with the full accessible label", () => {
+    it("is a secondary Polaris button in an in-app Link to the finding's row, with the full accessible label", () => {
       const html = render([view(1)]);
-      expect(html).toContain(
-        '<s-button variant="secondary" href="/app/scans/scan-1#finding-f1" accessibilityLabel="See how to fix: Type 1, snippets/file-1.liquid, line 1">See how to fix</s-button>',
+      expect(html).toMatch(
+        /<a aria-label="See how to fix: Type 1, snippets\/file-1\.liquid, line 1" href="\/app\/scans\/scan-1#finding-f1"[^>]*><s-button variant="secondary">See how to fix<\/s-button><\/a>/,
       );
-      // No plain anchor: the s-button carries the in-app navigation.
-      expect(html).not.toContain("<a ");
+      expect(html.match(/<a /g)).toHaveLength(1);
     });
 
     it("keeps a type's own link text and title (an advisory)", () => {
@@ -116,8 +118,8 @@ describe("TopFindings", () => {
           linkLabel: "See what to check",
         }),
       ]);
-      expect(html).toContain(
-        'accessibilityLabel="See what to check: Hulk is in your theme and was named in a security incident, snippets/file-1.liquid, line 1">See what to check</s-button>',
+      expect(html).toMatch(
+        /<a aria-label="See what to check: Hulk is in your theme and was named in a security incident, snippets\/file-1\.liquid, line 1"[^>]*><s-button variant="secondary">See what to check<\/s-button><\/a>/,
       );
     });
 
@@ -134,8 +136,9 @@ describe("TopFindings", () => {
         const c = LANE_COLOR[lane];
         const [card] = cards(render([view(1, { lane })]));
         expect(card).toContain(`background:${hex(c.tint)}`);
-        expect(card).toContain(`border:1px solid ${hex(c.bd)}`);
-        expect(card).toContain(`border-top:4px solid ${hex(c.fill)}`);
+        expect(card).toContain(
+          `border-top-color:${hex(c.fill)};border-right-color:${hex(c.bd)};border-bottom-color:${hex(c.bd)};border-left-color:${hex(c.bd)}`,
+        );
         // Number circle and chip dot in the fill; chip text in the ink.
         expect(card).toMatch(
           new RegExp(`class="top-findings__num" style="background:${hex(c.fill)}"`),
@@ -163,7 +166,7 @@ describe("TopFindings", () => {
     it("an advisory (no lane) is a red Security risk card", () => {
       const [card] = cards(render([view(1, { lane: null, securityRisk: true })]));
       expect(card).toContain(`background:${hex(SECURITY_RISK_COLOR.tint)}`);
-      expect(card).toContain(`border-top:4px solid ${hex(SECURITY_RISK_COLOR.fill)}`);
+      expect(card).toContain(`border-top-color:${hex(SECURITY_RISK_COLOR.fill)}`);
       expect(card).toContain(`color:${hex(SECURITY_RISK_COLOR.ink)}`);
       expect(card).toContain(`${SECURITY_RISK_LABEL}</span>`);
       expect(SECURITY_RISK_LABEL).toBe("Security risk");
@@ -171,7 +174,7 @@ describe("TopFindings", () => {
 
     it("malicious code (primary lane privacy) is a Security risk card, not the privacy lane", () => {
       const [card] = cards(render([view(1, { lane: "privacy", securityRisk: true })]));
-      expect(card).toContain(`border-top:4px solid ${hex(SECURITY_RISK_COLOR.fill)}`);
+      expect(card).toContain(`border-top-color:${hex(SECURITY_RISK_COLOR.fill)}`);
       expect(card).toContain(`${SECURITY_RISK_LABEL}</span>`);
       expect(card).not.toContain("Still tracking you");
       expect(card).not.toContain(hex(LANE_COLOR.privacy.tint));
@@ -217,7 +220,6 @@ describe("TopFindings", () => {
         view(2, { severity: "MEDIUM" }),
         view(3, { severity: "LOW" }),
       ]);
-      expect(html).toContain("<p");
       expect(html).toMatch(/>Fix these 3 first\.<\/p>/);
       const [a, b, c] = cards(html);
       expect(a).toMatch(

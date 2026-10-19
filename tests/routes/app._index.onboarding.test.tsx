@@ -530,14 +530,14 @@ describe("Home Start here (gc-bn0x)", () => {
     expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
     expect(block).toContain('<s-badge tone="warning">MEDIUM</s-badge>');
     // Each card in its own lane's colour and chip (shared with the lane cards).
-    expect(block).toContain(`border-top:4px solid ${LANE_COLOR.speed.fill.toLowerCase()}`);
-    expect(block).toContain(`border-top:4px solid ${LANE_COLOR.privacy.fill.toLowerCase()}`);
+    expect(block).toContain(`border-top-color:${LANE_COLOR.speed.fill.toLowerCase()}`);
+    expect(block).toContain(`border-top-color:${LANE_COLOR.privacy.fill.toLowerCase()}`);
     expect(block).toMatch(/aria-hidden="true"><\/span>Speed<\/span>/);
     expect(block).toMatch(/aria-hidden="true"><\/span>Still tracking you<\/span>/);
     expect(block).toContain('<span class="top-findings__app"> from Privy</span>');
     expect(block.match(/ from /g)).toHaveLength(1);
-    expect(block).toContain(
-      '<s-button variant="secondary" href="/app/scans/scan-1#finding-f-1" accessibilityLabel="See how to fix: Scripts, layout/theme.liquid, line 12">See how to fix</s-button>',
+    expect(block).toMatch(
+      /<a aria-label="See how to fix: Scripts, layout\/theme\.liquid, line 12" href="\/app\/scans\/scan-1#finding-f-1"[^>]*><s-button variant="secondary">See how to fix<\/s-button><\/a>/,
     );
   });
 

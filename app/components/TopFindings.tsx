@@ -1,5 +1,8 @@
+import { Link } from "react-router";
+
 import { newlyInactiveBadge } from "../lib/app-removal-notice";
 import { laneLabelForLane } from "../lib/finding-consequence";
+import { SECURITY_RISK_LABEL } from "../lib/security-risk";
 import { TOP_FINDINGS_MAX } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { LANE_COLOR, SECURITY_RISK_COLOR } from "../styles/lane-colors";
@@ -22,14 +25,11 @@ const SEVERITY_TONE: Record<Severity, "critical" | "warning" | "info"> = {
   LOW: "info",
 };
 
-/** The chip text on a security finding's card (it has no lane label). */
-export const SECURITY_RISK_LABEL = "Security risk";
-
 /**
  * True when every shown finding has the same severity: the intro then says
  * it once and the cards carry no severity badge.
  */
-export function hasUniformSeverity(severities: readonly Severity[]): boolean {
+function hasUniformSeverity(severities: readonly Severity[]): boolean {
   return severities.every((s) => s === severities[0]);
 }
 
@@ -82,6 +82,8 @@ ${GRID_COLUMN_RULES}
   flex-direction: column;
   gap: 10px;
   padding: 16px;
+  border: 1px solid;
+  border-top-width: 4px;
   border-radius: 10px;
   min-width: 0;
 }
@@ -165,16 +167,16 @@ ${GRID_COLUMN_RULES}
  * affected-app advisory) is red with a "Security risk" chip. A card shows the
  * title ("from {App}" when known), what it costs, where it lives, and a "See
  * how to fix" button to its row on the scan page. Severity is said once in the
- * intro when all cards share it, else each card carries a badge after its title. Shared by
- * the scan page and Home. Renders nothing for an empty list, so a clean scan
- * keeps its existing state.
+ * intro when all cards share it, else each card carries a badge after its
+ * title. Shared by the scan page and Home. Renders nothing for an empty list,
+ * so a clean scan keeps its existing state.
  *
  * A finding from an app the scan found no longer active (gc-frda) carries
  * the shared NEW badge style with the app's name, next to its title.
  *
- * Navigation: an `s-button` with a relative `href`. polaris.js turns its click
- * into a `shopify:navigate` event, which the app's AppProvider routes through
- * React Router (the same path as the `s-link` app nav), so it stays in-app.
+ * Navigation: a react-router `Link` around an `s-button`, the app's pattern for
+ * an in-app button (SecurityRiskBanner, Home's banners); the Link carries the
+ * full accessible label.
  *
  * Accessibility: a labelled region with a real heading and an ordered list.
  * Not a live region: Home revalidates every 3s while a scan runs, and this block
@@ -216,8 +218,10 @@ export function TopFindings({
               className="top-findings__card"
               style={{
                 background: palette.tint,
-                border: `1px solid ${palette.bd}`,
-                borderTop: `4px solid ${palette.fill}`,
+                borderTopColor: palette.fill,
+                borderRightColor: palette.bd,
+                borderBottomColor: palette.bd,
+                borderLeftColor: palette.bd,
               }}
             >
               <div className="top-findings__top">
@@ -252,13 +256,9 @@ export function TopFindings({
               <div className="top-findings__cost">{f.cost}</div>
               <div className="top-findings__foot">
                 <div className="top-findings__location">{f.location}</div>
-                <s-button
-                  variant="secondary"
-                  href={f.href}
-                  accessibilityLabel={`${linkLabel}: ${title}, ${f.location}`}
-                >
-                  {linkLabel}
-                </s-button>
+                <Link to={f.href} aria-label={`${linkLabel}: ${title}, ${f.location}`}>
+                  <s-button variant="secondary">{linkLabel}</s-button>
+                </Link>
               </div>
             </li>
           );
