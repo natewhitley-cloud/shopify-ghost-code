@@ -57,8 +57,10 @@ import {
   SPEED_TEASER_BODY,
   SPEED_TEASER_HEADING,
   nextMonthlySpeedReportAt,
+  speedAppRegressions,
   speedFailureMessage,
   speedPageDelta,
+  speedRegressionBadges,
   speedScoreTone,
 } from "../lib/speed-report";
 import type {
@@ -233,7 +235,16 @@ function MetricTile({
   );
 }
 
-function CostTable({ rows, nameHeading }: { rows: SpeedCostRow[]; nameHeading: string }) {
+function CostTable({
+  rows,
+  nameHeading,
+  badges,
+}: {
+  rows: SpeedCostRow[];
+  nameHeading: string;
+  /** gc-vgqc: badges by app name ("New", "Up 0.5 s", "Up 120 KB"). */
+  badges?: ReadonlyMap<string, string[]>;
+}) {
   return (
     <table className={TABLE_CLASS}>
       <thead>
@@ -247,7 +258,18 @@ function CostTable({ rows, nameHeading }: { rows: SpeedCostRow[]; nameHeading: s
       <tbody>
         {rows.map((row) => (
           <tr key={row.name}>
-            <td>{row.name}</td>
+            <td>
+              {row.name}
+              {badges?.has(row.name) && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
+                  {badges.get(row.name)!.map((b) => (
+                    <s-badge key={b} tone="warning">
+                      {b}
+                    </s-badge>
+                  ))}
+                </div>
+              )}
+            </td>
             <td>{formatSeconds(row.mainThreadMs)}</td>
             <td>{formatBytes(row.transferBytes)}</td>
             <td>{row.unusedPct === null ? "Not measured" : `${row.unusedPct}% unused`}</td>
@@ -270,9 +292,12 @@ function pathOf(url: string | null): string | null {
 export function SpeedPageSection({
   page,
   previous,
+  showRegressions = false,
 }: {
   page: SpeedPageResult;
   previous: SpeedPageResult | undefined;
+  /** Badge new / costlier apps (Professional's weekly report only, gc-vgqc). */
+  showRegressions?: boolean;
 }) {
   const label = SPEED_PAGE_LABELS[page.page];
   const path = pathOf(page.url);
@@ -305,6 +330,13 @@ export function SpeedPageSection({
   const apps = page.apps ?? [];
   const others = page.otherThirdParty ?? [];
   const headline = appCostHeadline(apps, page.page);
+  // The same apps the summary email names (one pure function, gc-vgqc).
+  const badges = new Map(
+    (showRegressions ? speedAppRegressions(page, previous) : []).map((r) => [
+      r.name,
+      speedRegressionBadges(r),
+    ]),
+  );
 
   return (
     <div style={{ ...sectionCard, marginBottom: 0 }}>
@@ -346,7 +378,7 @@ export function SpeedPageSection({
       </h3>
       {headline && <s-paragraph>{headline}</s-paragraph>}
       {apps.length > 0 ? (
-        <CostTable rows={apps} nameHeading="App" />
+        <CostTable rows={apps} nameHeading="App" badges={badges} />
       ) : (
         <s-paragraph>No known app added measurable load to this page.</s-paragraph>
       )}
@@ -701,6 +733,7 @@ export default function StoreSpeed() {
                 key={`${data.lastResults!.id}-${page.page}`}
                 page={page}
                 previous={data.previousResults?.pages.find((p) => p.page === page.page)}
+                showRegressions={data.cadence === "weekly"}
               />
             ))}
             {data.lastResults && <div style={textSubduedSm}>{SPEED_CAVEAT}</div>}

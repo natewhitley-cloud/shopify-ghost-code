@@ -573,6 +573,85 @@ describe("rendering", () => {
     expect(html).not.toContain("—");
   });
 
+  describe("regression badges (gc-vgqc)", () => {
+    // Previous: Klaviyo 4,123 ms / 1,851 KB, Recharge 140 ms / 169 KB (so
+    // Recharge's 640 ms now is +500 ms). Current adds PushOwl (new).
+    const previousHome: SpeedPageResult = {
+      ...HOME_PAGE,
+      apps: [HOME_PAGE.apps![0], { ...HOME_PAGE.apps![1], mainThreadMs: 140 }],
+    };
+    const currentHome: SpeedPageResult = {
+      ...HOME_PAGE,
+      apps: [
+        ...HOME_PAGE.apps!,
+        {
+          name: "PushOwl",
+          mainThreadMs: 300,
+          transferBytes: 140_000,
+          unusedPct: null,
+          requestCount: 1,
+        },
+      ],
+    };
+    const latest = report("COMPLETED", [currentHome]);
+    const badgeOf = (html: string, name: string) => {
+      const cell = html.match(new RegExp(`<td>${name}(.*?)</td>`))?.[1] ?? "";
+      return [...cell.matchAll(/<s-badge tone="warning">([^<]+)<\/s-badge>/g)].map((m) => m[1]);
+    };
+
+    it("Professional: New / Up badges next to the same apps the email names", () => {
+      const html = render(
+        pro({ latest, lastResults: latest, previousResults: report("COMPLETED", [previousHome]) }),
+      );
+      expect(badgeOf(html, "PushOwl")).toEqual(["New"]);
+      expect(badgeOf(html, "Recharge")).toEqual(["Up 0.5 s"]);
+      expect(badgeOf(html, "Klaviyo")).toEqual([]);
+      // Unmatched hosts never get a badge.
+      expect(badgeOf(html, "fonts.gstatic.com")).toEqual([]);
+    });
+
+    it("no baseline, or a different URL tested: no badges", () => {
+      const first = render(pro({ latest, lastResults: latest, previousResults: null }));
+      expect(first).not.toContain("<s-badge");
+      const moved = render(
+        pro({
+          latest,
+          lastResults: latest,
+          previousResults: report("COMPLETED", [{ ...previousHome, url: "https://x.example/" }]),
+        }),
+      );
+      expect(moved).not.toContain("<s-badge");
+    });
+
+    it("previous homepage failed: no badges (never 'New' because a page failed)", () => {
+      const failed: SpeedPageResult = {
+        page: "home",
+        status: "FAILED",
+        url: HOME_PAGE.url,
+        failureCode: "timeout",
+        runsAttempted: 3,
+        runsOk: 0,
+        apps: [],
+      };
+      const html = render(
+        pro({ latest, lastResults: latest, previousResults: report("PARTIAL", [failed]) }),
+      );
+      expect(html).not.toContain("<s-badge");
+    });
+
+    it("Standard (monthly): no badges for the same reports", () => {
+      const html = render(
+        standard({
+          latest,
+          lastResults: latest,
+          previousResults: report("COMPLETED", [previousHome]),
+        }),
+      );
+      expect(html).toContain("PushOwl");
+      expect(html).not.toContain("<s-badge");
+    });
+  });
+
   it("a failed latest run still shows the last good results under the failure banner", () => {
     const good = report("COMPLETED", [HOME_PAGE]);
     const html = render(
