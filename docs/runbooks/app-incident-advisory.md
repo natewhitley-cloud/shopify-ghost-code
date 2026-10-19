@@ -3,9 +3,27 @@
 What it is: one in-app notice per app on the curated list in
 `app/data/app-incident-advisories.server.ts`, shown when the PUBLISHED theme
 loads that app's script (a `<script src>` tag or a `script_tag` filter in a
-Liquid theme file). It states two facts: the theme loads the app's code, and a
-public report names the app. It never says the store was affected. In-app
-only, every plan, no email.
+Liquid theme file) or, failing that, has the app's theme app embed turned on
+in `config/settings_data.json` (gc-14x5.1). It states two facts: the theme
+loads the app's code (or has its embed on), and a public report names the
+app. It never says the store was affected. In-app only, every plan, no email.
+
+Current entries (2026-10-19): Hulk Product Options (host only; embed handle
+not yet verified), Swym Wishlist Plus (embed only), Selleasy (host and embed).
+
+The finding records which signal matched:
+
+- host: anchored to the Liquid line that loads the script; description
+  "Loads code from <App> (<host>), an app <summary> (<date>)"; the card says
+  "Your theme loads a script from this app" and its last step is removing the
+  script line.
+- embed: anchored to `config/settings_data.json`, line 1, with the embed's
+  JSON entry as the snippet; description "Has the <App> app embed turned on,
+  an app <summary> (<date>)"; the card says "Your theme has this app's embed
+  turned on" and its last step is uninstalling the app or turning the embed
+  off in Online Store, Themes, Customize, App embeds.
+
+When both match, the host signal wins (one finding per entry).
 
 ## Turn it on
 
@@ -29,6 +47,12 @@ only, every plan, no email.
    - only in an unpublished copy of the theme: scan that copy and expect none;
    - mentioned but not loaded (a link, a stylesheet): expect none, and the
      stylesheet still listed under "Unrecognized Scripts".
+   - For each entry with `embedHandles`: install the app on the dev store,
+     turn its app embed ON and confirm the `type` in `settings_data.json`
+     starts with the listed handle (expect ONE advisory with the embed
+     wording), then turn the embed OFF (expect none), then uninstall the app.
+     This dev-store install is REQUIRED before the flag goes on, even though
+     the handles were taken from public `settings_data.json` files.
      Then ignore the advisory on a Free dev store and confirm it leaves the
      scan page and Home.
 4. Set `APP_INCIDENT_ADVISORY_LIVE_ENABLED=true` (exactly `true`) in
@@ -47,10 +71,29 @@ nothing reads as fixed), and it is back on the next good scan.
 
 Inclusion bar, all required:
 
-- A concrete, citable PUBLIC incident report (`sourceUrl`).
-- Match keys (`scriptHosts`) that are VERIFIED: seen in the report itself or
-  in real theme code. Never guessed from a vendor name or a CDN path. List the
-  exact host the app loads from, never a vendor's base domain.
+- A concrete, citable PUBLIC incident report (`sourceUrl`), preferably the
+  vendor's own statement read at source. Record its URL and date in the
+  entry's comment; facts that only appear elsewhere (a press article, a
+  relayed merchant email, such as an exact time window) go in the comment,
+  never in the merchant copy.
+- Match keys that are VERIFIED, never guessed from a vendor name or a CDN
+  path. At least one of:
+  - `scriptHosts`: seen in the report itself or in real theme code. The
+    EXACT host the app loads from (e.g. `upsell-app.logbase.io`), never a
+    vendor's base domain (`logbase.io`) or a host shared by the vendor's other
+    apps (`swymrelay.com`, `hextom.com`). Matching covers that host and its
+    own subdomains only: a sibling subdomain (`cdn.logbase.io`), the parent
+    domain or a lookalike (`evil-upsell-app.logbase.io`) never matches.
+  - `embedHandles`: the app embed block type WITHOUT its uuid,
+    `shopify://apps/<app-handle>/blocks/<block-name>`, lower-case. Verification
+    bar: seen in the `current.blocks` of at least one real public
+    `settings_data.json` (record where in the comment), and confirmed by a
+    dev-store install before the flag goes on (see "Turn it on"). A match is
+    that prefix plus one segment (the uuid); another block or another app of
+    the same vendor never matches. Only an ENABLED embed (no
+    `"disabled": true`) fires.
+- If no key can be verified, leave the field empty with a TODO comment
+  rather than guess (Hulk's embed handle today).
 - `reviewBy`: 90 days after the incident, or after the renewal.
 - `summary`: what the report says, nothing about the merchant's store, no
   dashes, no trailing period.
@@ -167,5 +210,16 @@ False negatives (the script loads but no advisory is shown):
   read;
 - the tag follows an empty comment written `<!-->`: nothing is read until the
   next `-->`;
-- the script is injected by the app at runtime (a theme app embed or a
-  ScriptTag): theme files do not hold it. The embed handle is not matched yet.
+- the script is injected by the app at runtime through a ScriptTag, or
+  through a theme app embed whose handle is not listed for the entry (Hulk
+  Product Options today): theme files do not hold it.
+
+Embed signal limits:
+
+- `disabled` is read as off only when it is the boolean `true` (what Shopify
+  writes); an embed block in `presets` but not in `current` is not on.
+- An enabled embed of an app that has since been uninstalled is still
+  reported (Shopify keeps the block in `settings_data.json` but does not
+  render it); the wording only says the embed is turned on.
+- A `settings_data.json` that is missing, not valid JSON after the comment
+  header, or has no `current.blocks` map gives no embed match.
