@@ -126,7 +126,8 @@ async function buildRows(input: LoadThemeHealthInput): Promise<HealthRow[]> {
     scriptTagsStopped: input.now.getTime() >= SCRIPT_TAG_SUNSET_AT_MS,
   });
   // The "App security advisories" check (gc-q5z8), from the ignore-filtered
-  // advisory count: an advisory honours ignores.
+  // advisory count: an advisory honours ignores, and with its flag off the
+  // count is already 0 (finding-aggregation's kill switch, gc-5nok).
   const advisory = advisoryHealthRow(scan.id, typeCounts.APP_INCIDENT_ADVISORY ?? 0, coverage);
   return advisory ? [...rows, advisory] : rows;
 }

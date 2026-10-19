@@ -5399,9 +5399,12 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+    // Stored advisories are shown only while their flag is on (gc-5nok).
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
   });
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
   });
 
   function row(
@@ -5647,6 +5650,35 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(data.maliciousFindings).toEqual([]);
     });
 
+    it("kill switch (gc-5nok): flag off, a stored advisory is shown nowhere; on, unchanged", async () => {
+      const mal = row("mal", "MALICIOUS_SCRIPT", "LOW", 59);
+      scanWith([...SCRIPTS, ADVISORY, mal]);
+      delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+
+      const off = await load();
+      const offHtml = await renderPage();
+
+      expect(off.alwaysShownFindings).toEqual([]);
+      expect(off.topFindings.map((f) => f.id)).not.toContain("adv");
+      expect(off.findingSummary.total).toBe(5);
+      expect(off.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(0);
+      expect(offHtml).not.toContain('id="finding-adv"');
+      expect(offHtml).not.toContain("Hulk Product Options");
+      // Only the malicious code is a security risk now: 1, not 2.
+      expect(offHtml).toContain("1 security risk (above)");
+      expect(offHtml).not.toContain("2 security risks");
+      // Malicious code is untouched: still its banner and still first.
+      expect(off.maliciousFindings.map((f) => f.id)).toEqual(["mal"]);
+      expect(off.topFindings[0].id).toBe("mal");
+      expect(offHtml).toContain(">Security risk</span>");
+
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      const on = await load();
+      expect(on.alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+      expect(on.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(1);
+      expect(card(await renderPage(), "adv")).toContain(">Security risk</span>");
+    });
+
     it("two embed advisories: ignoring Swym leaves Selleasy's banner (each has its own fingerprint)", async () => {
       // Real detector output, so the snippets are what a scan stores.
       const settings = {
@@ -5828,6 +5860,27 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1", {
           findingType: "APP_INCIDENT_ADVISORY",
         });
+      },
+    );
+
+    it.each(["Standard", "Professional"])(
+      "%s, kill switch (gc-5nok): flag off, no banner, no list row, not counted",
+      async (plan) => {
+        mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+        scanWith([...SCRIPTS, ADVISORY]);
+        servePage([...SCRIPTS, ADVISORY]);
+        delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+
+        const data = await load();
+        const html = await renderPage();
+
+        expect(data.alwaysShownFindings).toEqual([]);
+        expect(data.findings.map((f) => f.id)).not.toContain("adv");
+        expect(data.topFindings.map((f) => f.id)).not.toContain("adv");
+        expect(data.findingSummary.total).toBe(SCRIPTS.length);
+        expect(html).not.toContain('id="finding-adv"');
+        expect(html).not.toContain(">Security risk</span>");
+        expect(html).not.toContain("Hulk Product Options");
       },
     );
 

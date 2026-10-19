@@ -48,8 +48,21 @@ export function isSoftLaunchLive(type: FindingType): boolean {
  * leaves the type live, so that one finding does read as resolved.
  */
 export function isAdvisoryCheckLive(now: Date = new Date()): boolean {
+  return areStoredAdvisoriesShown() && activeAdvisories(now).length > 0;
+}
+
+/**
+ * The read-time kill switch for the affected-app advisory (gc-5nok): whether
+ * STORED APP_INCIDENT_ADVISORY findings may be shown anywhere. The one read of
+ * its flag (isAdvisoryCheckLive builds on it). With the flag off, every read
+ * path drops them (finding-aggregation.server's choke point), whatever is
+ * stored. Deliberately the flag alone, not isAdvisoryCheckLive: an entry past
+ * its review date keeps showing on the scans that hold it until the next scan
+ * (see the runbook's "After reviewBy").
+ */
+export function areStoredAdvisoriesShown(): boolean {
   const flag = SOFT_LAUNCH_FLAGS[FindingType.APP_INCIDENT_ADVISORY];
-  return process.env[flag!] === "true" && activeAdvisories(now).length > 0;
+  return process.env[flag!] === "true";
 }
 
 /**

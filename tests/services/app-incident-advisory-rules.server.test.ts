@@ -331,6 +331,14 @@ describe("never paywalled: the Free always-shown list (getOwnSectionFindings)", 
 });
 
 describe("never paywalled: Free's Start here (getFreeTopFindings)", () => {
+  // Stored advisories are shown only while their flag is on (gc-5nok kill switch).
+  beforeEach(() => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  });
+
   it("a Free shop's top findings include the advisory, ranked first", async () => {
     // 10 paywalled findings -> 5 preview rows; the advisory is outside them.
     const rows = [
@@ -530,6 +538,14 @@ describe("ranking: the bounded Start here reads (top-findings.server.ts)", () =>
 // ---------------------------------------------------------------------------
 
 describe("honours ignores", () => {
+  // Stored advisories are shown only while their flag is on (gc-5nok kill switch).
+  beforeEach(() => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  });
+
   it("an instance-ignored advisory is ignored like any other finding", () => {
     const adv = advisory();
     expect(isFindingIgnored(adv, ignoring(adv))).toBe(true);

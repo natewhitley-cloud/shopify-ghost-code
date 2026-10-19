@@ -10,7 +10,7 @@ import { FindingType } from "@prisma/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
@@ -54,12 +54,19 @@ vi.mock("../../app/models/app-removal.server", () => ({
   getRemovalNoticeRows: vi.fn(async () => []),
 }));
 
-vi.mock("../../app/models/finding.server", () => ({
-  getSeverityCountsForScans: vi.fn(),
-  getTypeCountsForScan: vi.fn(),
-  // gc-q5z8: the Security risk banners read malicious findings (none by default).
-  getFindingsForScan: vi.fn().mockResolvedValue([]),
-}));
+vi.mock("../../app/models/finding.server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../app/models/finding.server")>();
+  return {
+    // Pure helpers, for the kill-switch test's real aggregation (gc-5nok).
+    createZeroSeverityCounts: actual.createZeroSeverityCounts,
+    createZeroTypeCounts: actual.createZeroTypeCounts,
+    getFindingSummary: vi.fn(),
+    getSeverityCountsForScans: vi.fn(),
+    getTypeCountsForScan: vi.fn(),
+    // gc-q5z8: the Security risk banners read malicious findings (none by default).
+    getFindingsForScan: vi.fn().mockResolvedValue([]),
+  };
+});
 
 vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
@@ -104,6 +111,7 @@ import {
 } from "../../app/lib/plan-gating.server";
 import type { HealthRow } from "../../app/lib/theme-health";
 import {
+  getFindingSummary,
   getFindingsForScan,
   getSeverityCountsForScans,
   getTypeCountsForScan,
@@ -664,6 +672,11 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     "%s: the REAL checklist, with findings in every category, shows no score of any kind",
     async (plan) => {
       setPlan(plan);
+      // The advisory is shown only while its flag is on (gc-5nok kill switch).
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      onTestFinished(() => {
+        delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+      });
       // A finding of every type, a vintage theme and unpublished themes: every
       // row and every piece of cost copy is on the page.
       mockTypeCounts.mockResolvedValue(
@@ -1623,6 +1636,114 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
 
   // gc-q5z8: the summary line replaces round 3's "N app security advisories
   // to review" link (and the leftover-items lead while a risk is present).
+  // gc-5nok: APP_INCIDENT_ADVISORY_LIVE_ENABLED is the kill switch for what
+  // is already stored, too. Runs the REAL ignore-aggregation choke point.
+  describe("kill switch: flag off hides a stored advisory everywhere on Home (gc-5nok)", () => {
+    const SELLEASY = APP_INCIDENT_ADVISORIES.find((a) => a.appName === "Selleasy")!;
+    const base = {
+      scanId: "scan-1",
+      severity: "HIGH",
+      lineNumber: 1,
+      createdAt: new Date("2026-10-11T10:00:00Z"),
+    };
+    const ROWS = [
+      {
+        ...base,
+        id: "adv-sell",
+        findingType: "APP_INCIDENT_ADVISORY",
+        filename: "config/settings_data.json",
+        appName: null,
+        codeSnippet: "shopify://apps/selleasy/blocks/app-embed\n{}",
+        description: advisoryDescription({
+          advisory: SELLEASY,
+          embedHandle: "shopify://apps/selleasy/blocks/app-embed",
+        }),
+      },
+      ...[1, 2].map((i) => ({
+        ...base,
+        id: `s${i}`,
+        findingType: "GHOST_SCRIPT",
+        filename: `snippets/s${i}.liquid`,
+        appName: "OldApp",
+        codeSnippet: `<script src="https://old.example/${i}.js"></script>`,
+        description: "Leftover script",
+      })),
+    ];
+
+    beforeEach(async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+      const real = await vi.importActual<
+        typeof import("../../app/services/finding-aggregation.server")
+      >("../../app/services/finding-aggregation.server");
+      mockFiltered.mockImplementation(real.getFilteredFindingSummaryAndKept as never);
+      (getFindingSummary as ReturnType<typeof vi.fn>).mockResolvedValue({
+        total: 3,
+        bySeverity: { HIGH: 3, MEDIUM: 0, LOW: 0 },
+        byType: { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 },
+      });
+      (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_id: string, f?: { findingType?: string }) =>
+          ROWS.filter((r) => !f?.findingType || r.findingType === f.findingType),
+      );
+    });
+
+    type KillData = {
+      securityRisks: unknown[];
+      advisoryCount: number;
+      findingsTile: { total: number; tone: string; securityRisks: number };
+      themeHealth: HealthRow[];
+    };
+
+    it.each(["free", "Standard", "Professional"])(
+      "%s: no banner, tile not critical and not counting it, no chip, no red verdict, no line, not in Start here",
+      async (plan) => {
+        setPlan(plan);
+        delete process.env[ADVISORY_FLAG];
+
+        const data = (await runLoader()) as unknown as KillData;
+        const html = renderDashboard(data);
+        const section = sectionOf(html);
+
+        expect(data.securityRisks).toEqual([]);
+        expect(html).not.toContain(">Security risk<");
+        expect(html).not.toContain("Selleasy");
+        expect(data.advisoryCount).toBe(0);
+        expect(data.findingsTile.total).toBe(2);
+        expect(data.findingsTile.securityRisks).toBe(0);
+        expect(data.findingsTile.tone).not.toBe("critical");
+        expect(tileOf(html).tileTone).not.toBe("critical");
+        expect(html).not.toMatch(/security risk|app security advisor/i);
+        expect(rowOf(data.themeHealth, "app-advisories")).toBeUndefined();
+        expect(chipsOf(section).map((c) => c.label)).not.toContain("App security advisories");
+        expect(verdictOf(section)?.text).not.toBe(
+          "An app named in a security incident is in your theme.",
+        );
+        // Start here ranks from the kept rows, which leave the advisory out.
+        const topCalls = [
+          ...(getFullListTopFindings as ReturnType<typeof vi.fn>).mock.calls,
+          ...(getFreeTopFindings as ReturnType<typeof vi.fn>).mock.calls,
+        ];
+        expect(topCalls).toHaveLength(1);
+        const kept = topCalls[0].find(Array.isArray) as Array<{ id: string }>;
+        expect(kept.map((r) => r.id)).toEqual(["s1", "s2"]);
+      },
+    );
+
+    it("flag on: the same stored rows are a security risk, unchanged", async () => {
+      const data = (await runLoader()) as unknown as KillData;
+      const html = renderDashboard(data);
+
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({ kind: "advisory", appName: "Selleasy" }),
+      ]);
+      expect(data.findingsTile).toEqual({ total: 3, tone: "critical", securityRisks: 1 });
+      expect(rowOf(data.themeHealth, "app-advisories")?.status).toBe("issues");
+      expect(html).toContain("1 app security advisory, 2 leftover items.");
+      // No ignores and the flag on: the lean path, no full read for counts.
+      expect(mockFiltered).not.toHaveBeenCalled();
+    });
+  });
+
   describe("top card: one summary line for security risks (gc-q5z8)", () => {
     const topCard = (html: string) => {
       const start = html.indexOf('<div class="health-read">');

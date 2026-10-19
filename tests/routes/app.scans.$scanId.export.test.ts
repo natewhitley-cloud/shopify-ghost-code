@@ -10,7 +10,7 @@
  */
 
 import type { LoaderFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -797,6 +797,14 @@ describe("ignored malicious findings are still exported (gc-j8xq)", () => {
 // ---------------------------------------------------------------------------
 
 describe("affected-app advisory in the export (gc-14x5)", () => {
+  // Stored advisories are shown only while their flag is on (gc-5nok kill switch).
+  beforeEach(() => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  });
+
   const ADVISORY = {
     id: "finding-adv",
     scanId: "scan-abc",

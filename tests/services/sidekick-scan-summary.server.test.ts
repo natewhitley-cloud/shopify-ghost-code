@@ -7,7 +7,7 @@
  * database is touched.
  */
 import type { FindingType, Severity } from "@prisma/client";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../app/models/finding.server")>();
@@ -216,6 +216,14 @@ async function okSummary() {
 }
 
 describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () => {
+  // Stored advisories are shown only while their flag is on (gc-5nok kill switch).
+  beforeEach(() => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  });
+
   it.each(["Standard", "Professional"])(
     "%s: date, theme, counts by impact area, top findings and an app:// link",
     async (plan) => {
@@ -316,6 +324,22 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
     expect(r.appSecurityAdvisories).toBe(1);
     expect(r.topFindings[0]).toMatchObject({ impact: "Security advisory", app: "BadVendor" });
     expect(r.byImpact.map((i) => i.area)).toEqual(["Speed"]);
+  });
+
+  it("kill switch (gc-5nok): with the flag off a stored advisory is not reported at all", async () => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+    serveScan([
+      f("v1", "APP_INCIDENT_ADVISORY", "HIGH", { appName: "BadVendor" }),
+      f("m1", "MALICIOUS_SCRIPT", "HIGH"),
+      f("a2", "GHOST_STYLE", "LOW"),
+    ]);
+    const r = await okSummary();
+    expect(r.appSecurityAdvisories).toBe(0);
+    expect(r.topFindings.map((t) => t.impact)).not.toContain("Security advisory");
+    expect(r.topFindings.map((t) => t.app)).not.toContain("BadVendor");
+    // The advisory is out of the total; malicious code is untouched.
+    expect(r.totalFindings).toBe(2);
+    expect(r.maliciousCode.found).toBe(1);
   });
 });
 

@@ -42,6 +42,7 @@
 import type { FindingType, Severity } from "@prisma/client";
 
 import { fingerprintFinding } from "./scan-differ.server";
+import { areStoredAdvisoriesShown } from "./soft-launch-flags.server";
 import {
   createZeroSeverityCounts,
   createZeroTypeCounts,
@@ -70,6 +71,22 @@ const APP_IGNORE_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   "SCRIPT_TAG_SUNSET",
   "LIQUID_ERROR_RENDERED",
 ]);
+
+/**
+ * The affected-app advisory's read-time kill switch (gc-5nok): with
+ * APP_INCIDENT_ADVISORY_LIVE_ENABLED off (areStoredAdvisoriesShown), stored
+ * advisories are dropped, whatever the shop's ignores, so turning the flag off
+ * hides them on every surface at once (Home, the scan page, Sidekick, the
+ * export, the diff). Applied by every entry point of this module; known
+ * malicious code is never touched. Returns the input array itself when
+ * nothing is dropped. Not a merchant ignore: a dropped advisory is in neither
+ * the `kept` nor the `ignored` partition.
+ */
+export function withoutHiddenAdvisories<T extends { findingType: string }>(findings: T[]): T[] {
+  if (areStoredAdvisoriesShown()) return findings;
+  if (!findings.some((f) => f.findingType === "APP_INCIDENT_ADVISORY")) return findings;
+  return findings.filter((f) => f.findingType !== "APP_INCIDENT_ADVISORY");
+}
 
 /**
  * True iff `finding` is suppressed for a shop: its `appName` is APP-ignored
@@ -105,13 +122,14 @@ export function filterIgnoredFindings<T extends IgnorableFinding>(
   findings: T[],
   ignores: ShopIgnores,
 ): { kept: T[]; ignored: T[] } {
+  const visible = withoutHiddenAdvisories(findings);
   if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
-    return { kept: findings, ignored: [] };
+    return { kept: visible, ignored: [] };
   }
 
   const kept: T[] = [];
   const ignored: T[] = [];
-  for (const finding of findings) {
+  for (const finding of visible) {
     if (isFindingIgnored(finding, ignores)) {
       ignored.push(finding);
     } else {
@@ -140,13 +158,14 @@ export function filterIgnoredExceptMalicious<T extends IgnorableFinding>(
   findings: T[],
   ignores: ShopIgnores,
 ): { shown: T[]; ignoredMalicious: ReadonlySet<T> } {
+  const visible = withoutHiddenAdvisories(findings);
   if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
-    return { shown: findings, ignoredMalicious: new Set() };
+    return { shown: visible, ignoredMalicious: new Set() };
   }
 
   const shown: T[] = [];
   const ignoredMalicious = new Set<T>();
-  for (const finding of findings) {
+  for (const finding of visible) {
     if (!isFindingIgnored(finding, ignores)) {
       shown.push(finding);
     } else if (finding.findingType === "MALICIOUS_SCRIPT") {
@@ -189,7 +208,10 @@ export type FindingRow = Awaited<ReturnType<typeof getFindingsForScan>>[number];
  * reads a scan's full findings twice.
  *
  * `keptFindings` is null on the no-ignores fast path (nothing was read beyond
- * the lean groupBy), and the scan's full non-ignored findings otherwise.
+ * the lean groupBy), and the scan's full non-ignored findings otherwise. A
+ * shop with no ignores leaves the fast path only when the scan stores an
+ * advisory while advisories are hidden (withoutHiddenAdvisories): the counts
+ * and the kept rows then leave it out.
  *
  * `ignoredMalicious` is how many MALICIOUS_SCRIPT findings the ignores dropped
  * from the summary (0 on the fast path). Known malicious code shows regardless
@@ -204,7 +226,12 @@ export async function getFilteredFindingSummaryAndKept(
   ignoredMalicious: number;
 }> {
   if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
-    return { summary: await getFindingSummary(scanId), keptFindings: null, ignoredMalicious: 0 };
+    const summary = await getFindingSummary(scanId);
+    if (areStoredAdvisoriesShown() || (summary.byType.APP_INCIDENT_ADVISORY ?? 0) === 0) {
+      return { summary, keptFindings: null, ignoredMalicious: 0 };
+    }
+    // A hidden advisory is stored (gc-5nok): the counts must leave it out, so
+    // they are rolled up from the rows below, as for a shop with ignores.
   }
 
   const findings = await getFindingsForScan(scanId);

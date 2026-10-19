@@ -25,7 +25,7 @@
  *      in any path is caught.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted). Only the DB-touching model reads are mocked; the
@@ -54,6 +54,7 @@ import {
   getFilteredFindingSummary,
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
+  withoutHiddenAdvisories,
 } from "../../app/services/finding-aggregation.server";
 import { diffScans, fingerprintFinding } from "../../app/services/scan-differ.server";
 import type { DiffableFinding } from "../../app/services/scan-differ.server";
@@ -577,5 +578,78 @@ describe("filterIgnoredExceptMalicious (gc-j8xq)", () => {
     expect(
       filterIgnoredExceptMalicious([malicious({ appName: "Klaviyo" })], ignores).shown,
     ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-5nok: the advisory flag is a read-time kill switch for stored advisories
+// ---------------------------------------------------------------------------
+
+describe("hidden advisories (APP_INCIDENT_ADVISORY_LIVE_ENABLED off)", () => {
+  const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+  afterEach(() => {
+    delete process.env[FLAG];
+  });
+
+  const advisory = makeFinding({ findingType: "APP_INCIDENT_ADVISORY", codeSnippet: "adv" });
+  const mal = makeFinding({ findingType: "MALICIOUS_SCRIPT", codeSnippet: "mal" });
+  const ghost = makeFinding({ codeSnippet: "ghost" });
+  const ALL = [advisory, mal, ghost];
+  const IGNORE_GHOST: ShopIgnores = {
+    fingerprints: new Set([fingerprintFinding(ghost.filename, ghost.findingType, "ghost", 1)]),
+    appNames: new Set(),
+  };
+
+  it("flag off: every entry point drops the advisory, with or without ignores; malicious stays", () => {
+    expect(withoutHiddenAdvisories(ALL)).toEqual([mal, ghost]);
+    expect(filterIgnoredFindings(ALL, NO_IGNORES)).toEqual({ kept: [mal, ghost], ignored: [] });
+    // Not a merchant ignore: in neither partition.
+    expect(filterIgnoredFindings(ALL, IGNORE_GHOST)).toEqual({ kept: [mal], ignored: [ghost] });
+    expect(filterIgnoredExceptMalicious(ALL, NO_IGNORES).shown).toEqual([mal, ghost]);
+    expect(filterIgnoredExceptMalicious(ALL, IGNORE_GHOST).shown).toEqual([mal]);
+  });
+
+  it("flag on: nothing changes (the same array back when nothing is dropped)", () => {
+    process.env[FLAG] = "true";
+    expect(withoutHiddenAdvisories(ALL)).toBe(ALL);
+    expect(filterIgnoredFindings(ALL, NO_IGNORES).kept).toBe(ALL);
+    expect(filterIgnoredExceptMalicious(ALL, NO_IGNORES).shown).toBe(ALL);
+  });
+
+  it("flag off and no advisory: the same array back", () => {
+    const rows = [mal, ghost];
+    expect(withoutHiddenAdvisories(rows)).toBe(rows);
+  });
+
+  it("summary, no ignores, flag off, an advisory stored: rolled up from the rows without it", async () => {
+    mockGetFindingSummary.mockResolvedValue({
+      total: 3,
+      bySeverity: { HIGH: 3, MEDIUM: 0, LOW: 0 },
+      byType: { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 1 },
+    });
+    mockGetFindingsForScan.mockResolvedValue(ALL);
+
+    const r = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);
+
+    expect(r.summary.total).toBe(2);
+    expect(r.summary.bySeverity.HIGH).toBe(2);
+    expect(r.summary.byType.APP_INCIDENT_ADVISORY).toBe(0);
+    expect(r.summary.byType.MALICIOUS_SCRIPT).toBe(1);
+    expect(r.keptFindings).toEqual([mal, ghost]);
+    expect(r.ignoredMalicious).toBe(0);
+  });
+
+  it.each([
+    ["flag off, no advisory stored", false, { GHOST_SCRIPT: 1 }],
+    ["flag on, an advisory stored", true, { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 1 }],
+  ])("summary, no ignores, %s: the lean fast path, no full read", async (_l, on, byType) => {
+    if (on) process.env[FLAG] = "true";
+    const summary = { total: 2, bySeverity: { HIGH: 2, MEDIUM: 0, LOW: 0 }, byType };
+    mockGetFindingSummary.mockResolvedValue(summary);
+
+    const r = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);
+
+    expect(r).toEqual({ summary, keptFindings: null, ignoredMalicious: 0 });
+    expect(mockGetFindingsForScan).not.toHaveBeenCalled();
   });
 });

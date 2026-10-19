@@ -15,7 +15,7 @@
  */
 
 import type { LoaderFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -439,6 +439,14 @@ describe("app.scans.$scanId.diff loader", () => {
 
 // gc-14x5: an affected-app advisory in the in-app diff, with the REAL differ.
 describe("app.scans.$scanId.diff loader: an affected-app advisory (gc-14x5)", () => {
+  // Stored advisories are shown only while their flag is on (gc-5nok kill switch).
+  beforeEach(() => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  });
+
   const ALL_TYPES = ["GHOST_SCRIPT", "GHOST_STYLE", "MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"];
   const ADVISORY = {
     id: "adv",

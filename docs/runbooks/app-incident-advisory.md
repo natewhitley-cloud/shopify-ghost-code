@@ -143,9 +143,16 @@ different kind of incident needs its own steps first.
 ## Kill switch
 
 1. Unset `APP_INCIDENT_ADVISORY_LIVE_ENABLED` (or set it to anything but
-   `true`). This stops NEW findings only. Rows already stored keep rendering
-   on the scans that hold them.
-2. To remove the stored rows, an operator runs, with the owner's explicit
+   `true`). This stops new findings AND, from the next page load, hides the
+   rows already stored (gc-5nok): no banner, red tile, chip, verdict, summary
+   line or "Start here" row on Home; no banner or row on the scan page; not in
+   the export, the diff or Sidekick's `appSecurityAdvisories`. Known malicious
+   code is unaffected. One filter does it
+   (`withoutHiddenAdvisories` in `app/services/finding-aggregation.server.ts`,
+   reading the flag through `areStoredAdvisoriesShown`). Turning the flag back
+   on shows them again.
+2. Optional while the flag stays off, REQUIRED before a rollback (below): to
+   remove the stored rows, an operator runs, with the owner's explicit
    go-ahead each time:
 
    ```sql
@@ -180,14 +187,20 @@ different kind of incident needs its own steps first.
    `resolvedFindingCount` and `persistedFindingCount` on those scans are
    telemetry and are left as they were.
 
-   There is no read-side filter by design: stored rows are either shown or
-   deleted.
+   Until the rows are deleted, a few counts that do not read findings can
+   still include them: a scan's stored "findingCount" in scan history (for a
+   shop with no ignores) and, on Home, older scans in the trend chart and the
+   previous scan's total behind the "than last scan" line when the latest
+   scan holds no advisory. The DELETE (with its UPDATE) ends that.
 
 ## Rollback
 
 The kill-switch transaction above (UPDATE, then DELETE) is REQUIRED before rolling back to any build older than
 this feature. An older build's Prisma client does not know the enum value, so
-reading a scan that holds such a row fails for that shop. The enum value
+reading a scan that holds such a row fails for that shop. The read-time
+filter does not help there: a build older than gc-5nok has no filter and
+shows every stored row, and a build older than the feature cannot read them
+at all. The enum value
 itself cannot be dropped in Postgres and can stay; it is only harmless once no
 row uses it.
 

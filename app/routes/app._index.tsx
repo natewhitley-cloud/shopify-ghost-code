@@ -103,6 +103,7 @@ import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.serve
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
+import { areStoredAdvisoriesShown } from "../services/soft-launch-flags.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
@@ -330,7 +331,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // filtered summary had to read anyway: the "Start here" ranking reuses them
   // so a shop with ignores never reads that scan's findings twice.
   let latestKeptFindings: FindingRow[] | null = null;
-  if (hasIgnores) {
+  // The advisory kill switch (gc-5nok): with the flag off a stored advisory
+  // is shown nowhere. The lean groupBys above cannot leave it out, so its scan
+  // takes the same filtered path as a shop with ignores (only while such a
+  // row is stored: the operator's DELETE ends it).
+  const hiddenAdvisoryStored =
+    !areStoredAdvisoriesShown() && (typeCounts?.APP_INCIDENT_ADVISORY ?? 0) > 0;
+  if (hasIgnores || hiddenAdvisoryStored) {
     const summaries = await Promise.all(
       severityScanIds.map(
         async (id) => [id, await getFilteredFindingSummaryAndKept(id, ignores)] as const,
