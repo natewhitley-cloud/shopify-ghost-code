@@ -282,9 +282,20 @@ const PLAN_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
   "snippets-sections": "Old checkout code is checked on Standard and Professional.",
 };
 
+/**
+ * What a size cap left out of a row, named where "more of these" would name
+ * the wrong thing (gc-wnhs): the Liquid error check is capped by the theme's
+ * missing snippets, not by Liquid errors.
+ */
+const CAPPED_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
+  "liquid-errors":
+    "Your theme is missing more snippets than one scan checks, so part wasn't checked.",
+};
+
 /** The line explaining a row's gap. `whole` = no check in the row ran. */
 function gapLine(reason: Gap, category: HealthCategoryKey, whole: boolean): string {
   if (reason === "plan") return PLAN_GAP_COPY[category] ?? GAP_COPY.plan;
+  if (reason === "capped") return CAPPED_GAP_COPY[category] ?? GAP_COPY.capped;
   if (reason === "not_run" && !whole) return PARTLY_NOT_RUN;
   return GAP_COPY[reason];
 }

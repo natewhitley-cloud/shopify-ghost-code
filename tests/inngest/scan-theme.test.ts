@@ -4530,6 +4530,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       audited: true,
       liquidErrorCount: 0,
       liquidAudited: true,
+      liquidCapped: false,
       // gc-frda live hooks: the signature apps seen loading via ScriptTag.
       scriptTagApps: ["Klaviyo", "Rise.ai"],
     });
@@ -4554,6 +4555,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       audited: true,
       liquidErrorCount: 0,
       liquidAudited: true,
+      liquidCapped: false,
       // Observed and empty: no app loads through a ScriptTag (gc-frda).
       scriptTagApps: [],
     });
@@ -5068,6 +5070,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         audited: true,
         liquidErrorCount: 2,
         liquidAudited: true,
+        liquidCapped: false,
         scriptTagApps: [],
       });
       expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
@@ -5355,14 +5358,37 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         expect(finalizeArgs.liveFindingTypes).toContain(FindingType.LIQUID_ERROR_RENDERED);
       });
 
-      it("51: LIQUID_ERROR_RENDERED reaches cappedCategories; still COMPLETED, still live, never skipped", async () => {
+      it("51 + a clean page: the cut changed nothing, so the check is complete (gc-wnhs M3)", async () => {
         live(themeMissing(51));
         fetchSpy.mockResolvedValue(cleanPage());
-        const { results, result } = await run();
+        const { results } = await run();
         const output = results["fetch-and-scan"] as FetchAndScanOutput;
         expect(output.missingSnippetRenders).toHaveLength(50);
         expect(output.missingSnippetsCapped).toBe(true);
-        expect(results["storefront-script-tags"]).toMatchObject({ liquidAudited: true });
+        expect(results["storefront-script-tags"]).toMatchObject({
+          liquidAudited: true,
+          liquidCapped: false,
+        });
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.cappedCategories).toEqual([]);
+        expect(finalizeArgs.liveFindingTypes).toContain(FindingType.LIQUID_ERROR_RENDERED);
+      });
+
+      it("51 + an error past the cut: LIQUID_ERROR_RENDERED reaches cappedCategories; still COMPLETED, still live, never skipped", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(
+          new Response(
+            errorPage(
+              "Liquid error (layout/theme line 51): Could not find asset snippets/gone-050.liquid",
+            ),
+            { status: 200 },
+          ),
+        );
+        const { results, result } = await run();
+        expect(results["storefront-script-tags"]).toMatchObject({
+          liquidAudited: true,
+          liquidCapped: true,
+        });
         const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
         expect(finalizeArgs.cappedCategories).toEqual([FindingType.LIQUID_ERROR_RENDERED]);
         expect(finalizeArgs.skippedCategories).toEqual([]);
@@ -5389,7 +5415,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         ]);
       });
 
-      it("51: an error inside the cut is still a finding (capped does not hide results)", async () => {
+      it("51: an error inside the cut is a finding, and the check is complete (gc-wnhs M3)", async () => {
         live(themeMissing(51));
         fetchSpy.mockResolvedValue(
           new Response(
@@ -5401,14 +5427,11 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         );
         await run();
         expect(liquidPersistCalls()).toHaveLength(1);
-        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([
-          FindingType.LIQUID_ERROR_RENDERED,
-        ]);
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([]);
       });
 
-      it("51: a prior Liquid error is not reported fixed by a capped scan", async () => {
-        live(themeMissing(51));
-        fetchSpy.mockResolvedValue(cleanPage());
+      /** A previous scan of this theme that found STORED_ERROR (klaviyo-form). */
+      const priorError = () => {
         mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
         mockDb.finding.findMany.mockResolvedValue([]);
         mockDb.scan.findUnique.mockResolvedValue({
@@ -5422,8 +5445,45 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
           findingCount: 1,
           findings: [STORED_ERROR],
         });
+      };
+
+      it("51: a prior Liquid error the page no longer prints IS reported fixed (gc-wnhs M3)", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(cleanPage());
+        priorError();
         await run();
-        expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
+        expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(1);
+      });
+
+      it("51: a prior Liquid error still printed, its snippet past the cut, is NOT reported fixed", async () => {
+        // klaviyo-form sorts after gone-049, the last snippet the index keeps.
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
+        priorError();
+        await run();
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.cappedCategories).toEqual([FindingType.LIQUID_ERROR_RENDERED]);
+        expect(finalizeArgs.resolvedFindingCount).toBe(0);
+      });
+
+      it("a run whose storefront step was memoized before liquidCapped: the category-wide rule", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(cleanPage());
+        const base = createMockInngestStep();
+        const step = {
+          ...base,
+          run: vi.fn(async (name: string, fn: () => unknown) => {
+            const out = (await fn()) as Record<string, unknown>;
+            if (name !== "storefront-script-tags") return out;
+            const legacy = { ...out };
+            delete legacy.liquidCapped;
+            return legacy;
+          }),
+        };
+        await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([
+          FindingType.LIQUID_ERROR_RENDERED,
+        ]);
       });
 
       it("51 + an unreadable storefront: unreachable wins, not capped", async () => {

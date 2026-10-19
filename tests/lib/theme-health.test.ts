@@ -1034,6 +1034,7 @@ describe("gap reason copy: fits one check or several, and ends with the action",
       { planWithheld: ["DANGLING_REFERENCE", "CHECKOUT_SUNSET", "DUPLICATE_TRACKER"] },
       { liveTypes: without("LIQUID_ERROR_RENDERED"), isPublishedTheme: false },
       { cappedCategories: ["GHOST_REDIRECT"] },
+      { cappedCategories: ["LIQUID_ERROR_RENDERED"] },
     ];
     const sentences = coverages.flatMap((coverage) =>
       groupHealthRows(
@@ -1055,6 +1056,7 @@ describe("gap reason copy: fits one check or several, and ends with the action",
         "Checked in full on Standard and Professional.",
         "Only checked on your published theme.",
         "Your store has more of these than one scan checks, so part wasn't checked.",
+        "Your theme is missing more snippets than one scan checks, so part wasn't checked.",
       ].sort(),
     );
   });
@@ -1474,8 +1476,9 @@ describe("gc-wr81: the Liquid error check cut short by its size cap", () => {
     expect(row.statusLabel).not.toBe("Clean");
     // The check ran, so the row is partial, never "Not checked".
     expect(row).toMatchObject({ status: "partial", statusLabel: "None found" });
+    // gc-wnhs: names what is over the cap (missing snippets), not "these".
     expect(row.detail).toBe(
-      "Your store has more of these than one scan checks, so part wasn't checked.",
+      "Your theme is missing more snippets than one scan checks, so part wasn't checked.",
     );
     expect(row).toMatchObject({ count: 0, href: null });
     const groups = groupHealthRows(rows);

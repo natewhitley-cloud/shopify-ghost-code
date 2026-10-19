@@ -23,6 +23,7 @@ import {
   detectLiquidErrors,
   extractRenderedLiquidErrors,
   LIQUID_ERROR_FINDING_FILENAME,
+  liquidCheckCapped,
   liquidErrorText,
   MAX_LIQUID_ERROR_CANDIDATES,
   MAX_LIQUID_ERROR_MATCHES,
@@ -1004,6 +1005,69 @@ describe("blankNonExecutingLiquid: Liquid that never runs is taken out (gc-wr81)
     expect(blankNonExecutingLiquid(content)).toBe(content);
   });
 
+  // gc-wnhs M2: an output `{{ ... }}` is one token, so tag syntax inside an
+  // output string cannot end (or start) a block.
+  it.each([
+    [
+      "an endcomment inside an output string does not close the comment",
+      `a{% comment %}{{ "{% endcomment %}" }}${R}{% endcomment %}b`,
+      `a${B}b`,
+    ],
+    [
+      "an endraw inside an output string does not close the raw block",
+      `a{% raw %}{{ "{% endraw %}" }}${R}{% endraw %}b`,
+      `a${B}b`,
+    ],
+    [
+      "a bare {% inside an output string does not swallow the next tag",
+      `a{{ "{%" }}{% comment %}${R}{% endcomment %}b`,
+      `a{{ "{%" }}${B}b`,
+    ],
+    [
+      "a comment tag inside an output string opens nothing",
+      `{{ "{% comment %}" }}${R}`,
+      `{{ "{% comment %}" }}${R}`,
+    ],
+    ["a {{% opens an output, not a tag", `{{% comment %}}${R}`, `{{% comment %}}${R}`],
+    [
+      "a {{ with no }} after it is not an output (unchanged)",
+      `{{ x {% comment %}${R}{% endcomment %}b`,
+      `{{ x ${B}b`,
+    ],
+  ])("%s", (_name, content, expected) => {
+    expect(blankNonExecutingLiquid(content)).toBe(expected);
+  });
+
+  describe("{% javascript %} / {% stylesheet %} bodies, with assetBlocks (gc-wnhs)", () => {
+    it.each([
+      ["a javascript block", `a{% javascript %}${R}{% endjavascript %}b`, `a${B}b`],
+      [
+        "a stylesheet block with whitespace control",
+        `a{%- stylesheet -%}/* ${R} */{%- endstylesheet -%}b`,
+        `a${B}b`,
+      ],
+      ["an unclosed javascript block, to the end", `a{% javascript %}x${R}\n${R}`, `a${B}`],
+      ["an unclosed stylesheet block, to the end", `a{% stylesheet %}x${R}\n${R}`, `a${B}`],
+    ])("%s", (_name, content, expected) => {
+      expect(blankNonExecutingLiquid(content, { assetBlocks: true })).toBe(expected);
+    });
+
+    it("are kept without assetBlocks (the advisory's pinned behavior)", () => {
+      const content = `{% javascript %}${R}{% endjavascript %}`;
+      expect(blankNonExecutingLiquid(content)).toBe(content);
+    });
+
+    it("a render inside one never corroborates", () => {
+      const content = `{% javascript %}// {% render 'gone' %}{% endjavascript %}{% stylesheet %}/* {% render 'gone2' %} */{% endstylesheet %}`;
+      expect(buildMissingSnippetIndex([file("sections/a.liquid", content)]).renders).toEqual([]);
+    });
+  });
+
+  it("an output string holding an endcomment cannot make a commented render corroborate", () => {
+    const content = `{% comment %}{{ "{% endcomment %}" }}{% render 'gone' %}{% endcomment %}`;
+    expect(buildMissingSnippetIndex([file("sections/header.liquid", content)]).renders).toEqual([]);
+  });
+
   describe("inside {% liquid %}", () => {
     it("the lines from a bare comment statement to its endcomment are blanked", () => {
       const content =
@@ -1053,6 +1117,9 @@ describe("blankNonExecutingLiquid: Liquid that never runs is taken out (gc-wr81)
       ["very long tag names", fill(`{% ${"a".repeat(5000)} %}`)],
       ["closed comments, each with a render", fill(`{% comment %}${R}{% endcomment %}`)],
       ["inline comments", fill("{%#%}")],
+      ["outputs that are never closed, between tags", fill("{{ {% x %}")],
+      ["closed outputs before one tag at the very end", `${fill("{{x}}")}{% comment %}`],
+      ["outputs holding tag syntax", fill(`{{ "{% comment %}" }}${R}`)],
     ])("%s", (_name, content) => {
       const started = Date.now();
       blankNonExecutingLiquid(content);
@@ -1257,6 +1324,81 @@ describe("buildMissingSnippetIndex: more missing snippets than it keeps (gc-wr81
     const past = { template: "layout/theme", line: 1, snippet: "s050" };
     expect(detectLiquidErrors([past], index.renders)).toEqual([]);
     expect(detectLiquidErrors([{ ...past, snippet: "s049" }], index.renders)).toHaveLength(1);
+  });
+});
+
+describe("liquidCheckCapped: capped only when a cut could change this page (gc-wnhs M3)", () => {
+  /** A layout rendering `count` missing snippets s000..; each also from `extra` sections. */
+  const theme = (count: number, extra = 0) => [
+    file(
+      "layout/theme.liquid",
+      Array.from({ length: count }, (_, i) => `{% render 's${String(i).padStart(3, "0")}' %}`).join(
+        "\n",
+      ),
+    ),
+    ...Array.from({ length: extra }, (_, i) =>
+      file(`sections/x${String(i).padStart(3, "0")}.liquid`, "{% render 's000' %}"),
+    ),
+  ];
+  const err = (snippet: string, template: string | null = "layout/theme"): RenderedLiquidError => ({
+    template,
+    line: 1,
+    snippet,
+  });
+  const capped = (files: ReturnType<typeof theme>, errors: RenderedLiquidError[]) => {
+    const index = buildMissingSnippetIndex(files);
+    return liquidCheckCapped(errors, index.renders, index.capped);
+  };
+
+  it("never capped when the index was not cut, whatever the page prints", () => {
+    expect(capped(theme(50), [err("s999"), err("zzz")])).toBe(false);
+  });
+
+  it("cut index + a page with no missing-snippet error: complete", () => {
+    expect(capped(theme(51), [])).toBe(false);
+  });
+
+  it("cut index + every printed error confirmed: complete", () => {
+    expect(capped(theme(51), [err("s000"), err("s049")])).toBe(false);
+  });
+
+  it("cut index + an unconfirmed error whose snippet sorts past the last kept one: capped", () => {
+    expect(capped(theme(51), [err("s050")])).toBe(true);
+    expect(capped(theme(51), [err("zzz-app")])).toBe(true);
+  });
+
+  it("cut index + an unconfirmed error whose snippet sorts BEFORE the last kept one: complete", () => {
+    // Had it been a missing, rendered snippet it would be in the list.
+    expect(capped(theme(51), [err("a-not-missing")])).toBe(false);
+  });
+
+  it("only the file cut: an unconfirmed error naming a file past it is capped", () => {
+    const files = theme(1, MAX_RENDERING_FILES + 5);
+    expect(buildMissingSnippetIndex(files).capped).toBe(true);
+    expect(capped(files, [err("s000", "sections/x054")])).toBe(true);
+    // A snippet that is not listed at all cannot be past the snippet cut here.
+    expect(capped(files, [err("zzz")])).toBe(false);
+  });
+
+  it("cut index + as many candidates as the page cap: capped (more may be hidden)", () => {
+    const many = Array.from({ length: MAX_LIQUID_ERROR_CANDIDATES }, (_, i) => err(`s00${i % 3}`));
+    expect(capped(theme(51), many)).toBe(true);
+  });
+
+  it("cut index + more confirmed errors than findings kept: capped", () => {
+    const files = [
+      file(
+        "layout/theme.liquid",
+        Array.from({ length: 51 }, (_, i) => `{% render 's${String(i).padStart(3, "0")}' %}`).join(
+          "\n",
+        ),
+      ),
+    ];
+    const confirmed = Array.from({ length: MAX_LIQUID_ERRORS + 1 }, (_, i) =>
+      err(`s${String(i).padStart(3, "0")}`),
+    );
+    expect(capped(files, confirmed)).toBe(true);
+    expect(capped(files, confirmed.slice(0, MAX_LIQUID_ERRORS))).toBe(false);
   });
 });
 

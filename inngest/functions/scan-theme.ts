@@ -1316,8 +1316,9 @@ export const scanTheme = inngest.createFunction(
           // error read from the homepage in the storefront step below. Small
           // and bounded: at most 50 snippets x 50 files of at most ~130
           // characters each, about 350 KB against the 3 MB budget below.
-          // `missingSnippetsCapped` = the theme has more missing snippets than
-          // the 50 listed, so the check is recorded as capped (gc-wr81). Like
+          // `missingSnippetsCapped` = the index was cut (more than 50 missing
+          // snippets, or a snippet rendered by more than 50 files), so the
+          // check may be recorded as capped (gc-wr81, gc-wnhs M3). Like
           // the key above, both are present ONLY while the storefront audit
           // is live.
           ...(missingSnippets
@@ -1907,6 +1908,10 @@ export const scanTheme = inngest.createFunction(
         // clean. Absent when the storefront was unreachable (the category is
         // recorded in unreachableCategories instead) or not checked at all.
         liquidAudited?: boolean;
+        // Set when liquidAudited: whether the index's cuts could have changed
+        // this page's result (liquidCheckCapped, gc-wnhs M3). Absent for a run
+        // memoized before the field: the old category-wide rule applies.
+        liquidCapped?: boolean;
         // App names loading through a storefront ScriptTag (gc-frda live hook).
         // Present only when the storefront was read and no detector cap hit;
         // absent = not observed (also for a run memoized before the field).
@@ -1979,14 +1984,20 @@ export const scanTheme = inngest.createFunction(
             // never touches the script-tag result or fails the scan.
             let liquidErrorFindings: CreateFindingInput[] = [];
             let liquidAudited = false;
+            let liquidCapped = false;
             if (storefront.liquidErrors !== null && Array.isArray(missingSnippetRenders)) {
               try {
-                const { detectLiquidErrors } =
+                const { detectLiquidErrors, liquidCheckCapped } =
                   await import("../../app/services/liquid-error-detector.server");
                 liquidErrorFindings = detectLiquidErrors(
                   storefront.liquidErrors,
                   missingSnippetRenders,
                 ).filter((f) => isSoftLaunchLive(f.findingType));
+                liquidCapped = liquidCheckCapped(
+                  storefront.liquidErrors,
+                  missingSnippetRenders,
+                  missingSnippetsCapped === true,
+                );
                 liquidAudited = true;
               } catch (err) {
                 liquidErrorFindings = [];
@@ -2012,6 +2023,7 @@ export const scanTheme = inngest.createFunction(
               audited: true,
               liquidErrorCount: liquidErrorFindings.length,
               liquidAudited,
+              ...(liquidAudited ? { liquidCapped } : {}),
               ...(scriptTagApps ? { scriptTagApps } : {}),
             };
           })
@@ -2064,12 +2076,17 @@ export const scanTheme = inngest.createFunction(
         // gc-747u: the bulk-redirect tally outgrew its step-boundary budget, so
         // bulk patterns were not checked this scan.
         [redirectResult.capped, FindingType.GHOST_REDIRECT],
-        // gc-wr81: the theme has more missing snippets than the index keeps, so
-        // an error naming one past the cut could not be confirmed. Only when
-        // the Liquid check actually ran: an unreadable storefront is recorded
-        // as unreachable (below), a failed or dark check as not run.
+        // gc-wr81: the missing-snippet index was cut (more missing snippets
+        // than it keeps, or a snippet rendered by more files than it keeps),
+        // so an error naming one past a cut could not be confirmed. gc-wnhs
+        // M3: only when such an error is actually on the page (liquidCapped);
+        // a run memoized before that field keeps the category-wide rule. Only
+        // when the Liquid check actually ran: an unreadable storefront is
+        // recorded as unreachable (below), a failed or dark check as not run.
         [
-          missingSnippetsCapped === true && scriptTagResult.liquidAudited === true,
+          missingSnippetsCapped === true &&
+            scriptTagResult.liquidAudited === true &&
+            scriptTagResult.liquidCapped !== false,
           FindingType.LIQUID_ERROR_RENDERED,
         ],
       ]);
