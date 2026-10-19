@@ -2593,7 +2593,13 @@ export function detectAppIncidentAdvisories(
       found.set(match.advisory, {
         filename: SETTINGS_DATA_PATH,
         lineNumber: 1,
-        codeSnippet: embed.codeSnippet,
+        // The first line is the finding's identity: the fingerprint (and so
+        // the ignore key, as an advisory has no appName) hashes only it
+        // (normalizeForFingerprint). The JSON entry's first line is always
+        // "{", so every embed advisory would share one fingerprint. The
+        // listed block type, without the per-store uuid, is distinct per app
+        // and the same on every scan.
+        codeSnippet: `${match.embedHandle}\n${embed.codeSnippet}`.slice(0, MALICIOUS_SNIPPET_MAX),
         findingType: FindingType.APP_INCIDENT_ADVISORY,
         severity: Severity.HIGH,
         appName: undefined,

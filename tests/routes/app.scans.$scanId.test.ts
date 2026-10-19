@@ -220,6 +220,7 @@ import ScanDetail, {
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { PREVIEW_READ_BUCKETS } from "../../app/services/free-preview.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
+import { detectAppIncidentAdvisories } from "../../app/services/scan-engine.server";
 import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
 import { authenticate } from "../../app/shopify.server";
 import { styles } from "../../app/styles/shared";
@@ -5644,6 +5645,40 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(0);
       // And it is never added back the way ignored malicious code is.
       expect(data.maliciousFindings).toEqual([]);
+    });
+
+    it("two embed advisories: ignoring Swym leaves Selleasy's banner (each has its own fingerprint)", async () => {
+      // Real detector output, so the snippets are what a scan stores.
+      const settings = {
+        filename: "config/settings_data.json",
+        content: JSON.stringify({
+          current: {
+            blocks: {
+              a: { type: "shopify://apps/wishlist-plus/blocks/wishlist-app-embed/80c3b1fc-1" },
+              b: { type: "shopify://apps/selleasy/blocks/app-embed/790c1a03-2" },
+            },
+          },
+        }),
+      };
+      const [swym, selleasy] = detectAppIncidentAdvisories([settings], new Date()).map((f, i) =>
+        row(i === 0 ? "adv-swym" : "adv-sell", "APP_INCIDENT_ADVISORY", "HIGH", 30 + i, {
+          filename: f.filename,
+          lineNumber: f.lineNumber,
+          appName: null,
+          codeSnippet: f.codeSnippet,
+          description: f.description,
+        }),
+      );
+      scanWith([...SCRIPTS, swym, selleasy]);
+      ignore(swym);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings.map((f) => f.id)).toEqual(["adv-sell"]);
+      expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(1);
+      const html = await renderPage();
+      expect(card(html, "adv-sell")).toContain(">Security risk</span>");
+      expect(card(html, "adv-swym")).toBe("");
     });
 
     it("with other findings ignored the advisory is still shown (from the kept rows, no extra read)", async () => {

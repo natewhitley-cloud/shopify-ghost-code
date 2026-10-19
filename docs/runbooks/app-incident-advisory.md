@@ -27,8 +27,9 @@ The finding records which signal matched:
   "Loads code from <App> (<host>), an app <summary> (<date>)"; the card says
   "Your theme loads a script from this app" and its last step is removing the
   script line.
-- embed: anchored to `config/settings_data.json`, line 1, with the embed's
-  JSON entry as the snippet; description "Has the <App> app embed turned on,
+- embed: anchored to `config/settings_data.json`, line 1; the snippet is the
+  listed block type (no uuid), then the embed's JSON entry (that first line is
+  the fingerprint, so each app has its own ignore key); description "Has the <App> app embed turned on,
   an app <summary> (<date>)"; the card says "Your theme has this app's embed
   turned on" and its last step is uninstalling the app or turning the embed
   off in Online Store, Themes, Customize, App embeds.
