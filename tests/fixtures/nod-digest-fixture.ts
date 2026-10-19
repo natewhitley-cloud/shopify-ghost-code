@@ -443,6 +443,43 @@ export const signatureSubmissions: Row[] = [
   sub("sub5", "us_gamma", "shop_free", "REJECTED", ago(2 * D)),
 ];
 
+/**
+ * A minimal research world: one active, non-internal-unless-said shop per
+ * handle (`<handle>.myshopify.com`, id `shop_<handle>`) with one successful
+ * scan in the window (`sc_<handle>`), plus one UnknownScript (`scripts`) or
+ * unmatched ScanDomain (`domains`) row per host per listed handle. Pass the
+ * result to makeFakeDb.
+ */
+export function researchWorld(opts: {
+  shops: Array<{ handle: string; isInternal?: boolean }>;
+  scripts?: Record<string, string[]>;
+  domains?: Record<string, string[]>;
+}): Partial<Tables> {
+  const at = ago(1 * D);
+  return {
+    shop: opts.shops.map(({ handle, isInternal = false }) => ({
+      id: `shop_${handle}`,
+      domain: `${handle}.myshopify.com`,
+      plan: "free",
+      installedAt: ago(90 * D),
+      uninstalledAt: null,
+      isInternal,
+      lastSeenAt: null,
+      firstResultsViewedAt: null,
+    })),
+    scan: opts.shops.map(({ handle }) =>
+      scan(`sc_${handle}`, `shop_${handle}`, at, "COMPLETED", at),
+    ),
+    unknownScript: Object.entries(opts.scripts ?? {}).flatMap(([host, handles]) =>
+      handles.map((h) => us(`sc_${h}`, at, scriptUrl(host), host)),
+    ),
+    scanDomain: Object.entries(opts.domains ?? {}).flatMap(([host, handles]) =>
+      handles.map((h) => sd(`sc_${h}`, at, host)),
+    ),
+    signatureSubmission: [],
+  };
+}
+
 type Tables = Record<
   | "shop"
   | "scan"

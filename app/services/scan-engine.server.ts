@@ -5326,7 +5326,7 @@ const SHARED_CDN_DOMAINS = [
 /**
  * Returns true if the given hostname matches a major shared CDN.
  */
-function isSharedCdnDomain(hostname: string): boolean {
+export function isSharedCdnDomain(hostname: string): boolean {
   return SHARED_CDN_DOMAINS.includes(hostname);
 }
 

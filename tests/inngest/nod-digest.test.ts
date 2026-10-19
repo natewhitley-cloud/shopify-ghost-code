@@ -29,6 +29,7 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
+import { KNOWN_MALICIOUS_DOMAINS } from "../../app/data/malicious-domains.server";
 import { buildNodDigest } from "../../inngest/lib/nod-digest";
 import { validateDigest } from "../fixtures/nod-contract.js";
 import {
@@ -42,6 +43,7 @@ import {
   SHOP_DOMAINS,
   ago,
   makeFakeDb,
+  researchWorld,
   scanDomains,
   shops,
   signatureSubmissions,
@@ -685,7 +687,7 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     expect((await research()).counts[0]).toMatchObject({ open: 6, new7d: 3 });
   });
 
-  it("queues only hosts at 2+ stores, never myshopify or IP hosts, sorted by shops then sightings then host", async () => {
+  it("queues unknown scripts at 2+ stores and unmatched hosts at 3+, never myshopify or IP hosts, sorted by shops then sightings then host", async () => {
     const r = await research();
     expect(r.queue).toEqual([
       {
@@ -705,7 +707,7 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
         sightings: 3,
         firstSeenAt: iso(ago(50 * D)),
         lastSeenAt: iso(ago(2 * H)),
-        suggestions: 2, // sub1 + sub2; internal sub4 ignored
+        suggestions: 1, // PENDING sub1 only: sub2 is ACCEPTED, internal sub4 ignored
       },
       {
         host: "cdn.jota-app.com",
@@ -716,15 +718,6 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
         firstSeenAt: iso(ago(20 * D)),
         lastSeenAt: iso(ago(2 * H)),
         suggestions: 0,
-      },
-      {
-        host: "fresh.mu-cdn.com",
-        kind: "unmatched_host",
-        label: "Unmatched host",
-        shops: 2,
-        sightings: 2,
-        firstSeenAt: iso(ago(5 * D)),
-        lastSeenAt: iso(ago(2 * H)),
       },
       {
         host: "legacy.beta-tools.io",
@@ -741,6 +734,8 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     // One-store hosts are counted but never named.
     expect(hosts).not.toContain("solo.gamma-shop.com");
     expect(hosts).not.toContain("solo-host.lambda.net");
+    // An unmatched host at two stores is counted but not named.
+    expect(hosts).not.toContain("fresh.mu-cdn.com");
     expect(hosts.some((h) => h.includes("myshopify"))).toBe(false);
     expect(hosts).not.toContain("203.0.113.5");
   });
@@ -749,7 +744,10 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     process.env.OPERATOR_EXCLUDE_SHOPS = "std-merchant.myshopify.com";
     const r = await research();
     expect(item(r, "cdn.alpha-app.com")).toBeUndefined(); // now free only
-    expect(item(r, "api.kappa-svc.com")).toMatchObject({ shops: 2, sightings: 2 });
+    // kappa (unmatched) falls to two stores, below its bar of three.
+    expect(item(r, "api.kappa-svc.com")).toBeUndefined();
+    // Still counted; solo-host.lambda.net (std only) drops out of the count.
+    expect(r.counts[1].open).toBe(2);
     // The 203.0.113.5 host is now one store; counts still include alpha.
     expect(r.counts[0].open).toBe(6);
   });
@@ -782,6 +780,7 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
         many.push({
           ...unknownScripts[0],
           id: `m${i}c`,
+          scanId: "sc_free2", // a second scan: sightings count distinct scans
           url: `https://${host}/b.js`,
           domain: host,
         });
@@ -798,6 +797,138 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     expect(r.queue[3].host).toBe("cdn.vendor03.com");
     expect(r.queue[24].host).toBe("cdn.vendor24.com");
     expect(validateDigest(await buildNodDigest(NOW))).toEqual([]);
+  });
+
+  it("drops queued hosts embedding any shop handle: one merchant's live + staging stores", async () => {
+    fake = makeFakeDb(
+      researchWorld({
+        shops: [{ handle: "acme" }, { handle: "acme-staging" }, { handle: "zeta-goods" }],
+        scripts: {
+          "api.acme.com": ["acme", "acme-staging"],
+          "cdn.shared-vendor.com": ["acme", "acme-staging"],
+        },
+        domains: {
+          "acme.zendesk.com": ["acme", "acme-staging", "zeta-goods"],
+          "help.vendor-desk.com": ["acme", "acme-staging", "zeta-goods"],
+        },
+      }),
+    );
+    const r = await research();
+    expect(r.queue.map((q) => q.host)).toEqual(["help.vendor-desk.com", "cdn.shared-vendor.com"]);
+    // Queue-only rule: the merchant's own hosts are still counted.
+    expect(r.counts[0].open).toBe(2);
+    expect(r.counts[1].open).toBe(2);
+  });
+
+  it("matches handles of every shop inside any label, excluded shops included", async () => {
+    fake = makeFakeDb(
+      researchWorld({
+        shops: [
+          { handle: "beta-shop" },
+          { handle: "gamma-shop" },
+          // Not a contributor and excluded, but its handle still guards the queue.
+          { handle: "acme-store", isInternal: true },
+        ],
+        scripts: {
+          "acme-store.cdn-vendor.com": ["beta-shop", "gamma-shop"],
+          "x.myacme-storefront.net": ["beta-shop", "gamma-shop"],
+          "cdn.other-vendor.com": ["beta-shop", "gamma-shop"],
+        },
+      }),
+    );
+    const r = await research();
+    expect(r.queue.map((q) => q.host)).toEqual(["cdn.other-vendor.com"]);
+    expect(r.counts[0].open).toBe(3);
+  });
+
+  it("ignores handles shorter than 4 characters", async () => {
+    fake = makeFakeDb(
+      researchWorld({
+        shops: [{ handle: "abc" }, { handle: "delta-goods" }],
+        scripts: { "cdn.abc-tools.com": ["abc", "delta-goods"] },
+      }),
+    );
+    expect((await research()).queue.map((q) => q.host)).toEqual(["cdn.abc-tools.com"]);
+  });
+
+  it("queues an unmatched host at 3 stores but not at 2; counts it either way", async () => {
+    const shops3 = [{ handle: "one-shop" }, { handle: "two-shop" }, { handle: "three-shop" }];
+    fake = makeFakeDb(
+      researchWorld({ shops: shops3, domains: { "api.vendor.io": ["one-shop", "two-shop"] } }),
+    );
+    let r = await research();
+    expect(r.queue).toEqual([]);
+    expect(r.counts[1].open).toBe(1);
+    fake = makeFakeDb(
+      researchWorld({
+        shops: shops3,
+        domains: { "api.vendor.io": ["one-shop", "two-shop", "three-shop"] },
+      }),
+    );
+    r = await research();
+    expect(r.queue).toMatchObject([{ host: "api.vendor.io", kind: "unmatched_host", shops: 3 }]);
+  });
+
+  it("neither counts nor queues shared multi-tenant CDNs, re-classifying old ScanDomain rows", async () => {
+    const all = ["one-shop", "two-shop", "three-shop"];
+    const shared = [
+      "cdn.jsdelivr.net",
+      "cdnjs.cloudflare.com",
+      "unpkg.com",
+      "storage.googleapis.com",
+      "s3.amazonaws.com",
+      "vendor-bucket.s3.amazonaws.com",
+      "raw.githubusercontent.com",
+    ];
+    fake = makeFakeDb(
+      researchWorld({
+        shops: all.map((handle) => ({ handle })),
+        scripts: {
+          ...Object.fromEntries(shared.map((h) => [h, all])),
+          "cdn.real-vendor.com": all,
+        },
+        // Written benign: false before the host joined the shared-CDN list.
+        domains: { "cdn.jsdelivr.net": all, "fonts.gstatic.com": all },
+      }),
+    );
+    const r = await research();
+    expect(r.queue.map((q) => q.host)).toEqual(["cdn.real-vendor.com"]);
+    expect(r.counts[0].open).toBe(1);
+    expect(r.counts[1].open).toBe(0);
+  });
+
+  it("neither counts nor queues a known-malicious host (already a MALICIOUS_SCRIPT finding)", async () => {
+    const all = ["one-shop", "two-shop", "three-shop"];
+    const bad = KNOWN_MALICIOUS_DOMAINS[0].domain;
+    fake = makeFakeDb(
+      researchWorld({
+        shops: all.map((handle) => ({ handle })),
+        scripts: { [bad]: all, [`shopify.${bad}`]: all },
+        domains: { [`cdn.${bad}`]: all },
+      }),
+    );
+    const r = await research();
+    expect(r.queue).toEqual([]);
+    expect(r.counts[0].open).toBe(0);
+    expect(r.counts[1].open).toBe(0);
+  });
+
+  it("counts sightings as distinct scans for both kinds", async () => {
+    const world = researchWorld({
+      shops: [{ handle: "one-shop" }, { handle: "two-shop" }, { handle: "three-shop" }],
+      scripts: { "cdn.multi-file.com": ["one-shop", "two-shop"] },
+      domains: { "api.multi-ref.com": ["one-shop", "two-shop", "three-shop"] },
+    });
+    // A second file from the same host in the same scan is not a second sighting.
+    const extra = (world.unknownScript as Row[]).map((u) => ({
+      ...u,
+      id: `${u.id}_b`,
+      url: "https://cdn.multi-file.com/other.js",
+    }));
+    fake = makeFakeDb({ ...world, unknownScript: [...(world.unknownScript as Row[]), ...extra] });
+    const r = await research();
+    expect(item(r, "cdn.multi-file.com")).toMatchObject({ shops: 2, sightings: 2 });
+    expect(item(r, "api.multi-ref.com")).toMatchObject({ shops: 3, sightings: 3 });
   });
 
   it("never outputs suggestion text, urls, filenames, snippets or shop identifiers", async () => {

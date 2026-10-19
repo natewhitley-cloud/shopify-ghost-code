@@ -25,7 +25,9 @@
  *
  * `research` (NOD ADR-011) reads UnknownScript / ScanDomain / SignatureSubmission
  * for the signature flywheel: third-party hosts to research, named only when
- * seen at 2+ non-excluded stores. It never selects suggestedAppName, url paths,
+ * seen at 2+ non-excluded stores (3+ for unmatched hosts) and not containing
+ * any shop's handle. Shared multi-tenant CDNs and known-malicious hosts are
+ * neither counted nor named. It never selects suggestedAppName, url paths,
  * filenames or code snippets into output. The operator email's SIGNATURE
  * FLYWHEEL section counts distinct URLs over 24h portfolio-wide; this section
  * counts distinct HOSTS over 30d for non-excluded shops, with the same benign
@@ -34,6 +36,7 @@
 
 import { AppRemovalState, FindingType, SubmissionStatus } from "@prisma/client";
 
+import { matchMaliciousDomain } from "../../app/data/malicious-domains.server";
 import db from "../../app/db.server";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
 import { isBenignLibrary } from "../../app/lib/library-matcher.server";
@@ -48,6 +51,7 @@ import { hostnameFromUrl } from "../../app/lib/url.server";
 import { OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
 import { SUCCESSFUL_SCAN_STATUSES } from "../../app/models/scan.server";
 import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
+import { isSharedCdnDomain } from "../../app/services/scan-engine.server";
 import {
   DAY_MS,
   NUDGE_OTHER_KEY,
@@ -100,15 +104,15 @@ export interface NodResearchItem {
   host: string;
   kind: NodResearchKind;
   label: string;
-  /** Distinct non-excluded shops in the window; always >= 2 (ADR-011). */
+  /** Distinct non-excluded shops in the window; >= 2 for unknown_script, >= 3 for unmatched_host. */
   shops: number;
-  /** Rows in the window. */
+  /** Distinct scans in the window that saw this host (same unit for both kinds). */
   sightings: number;
-  /** Earliest row ever for this host, any shop. */
+  /** Earliest row ever for this host, any shop (excluded shops included). */
   firstSeenAt: string;
   /** Latest row in the window. */
   lastSeenAt: string;
-  /** Merchant suggestions (any status) for this host; unknown_script only. Never their text. */
+  /** PENDING merchant suggestions for this host; unknown_script only. Never their text. */
   suggestions?: number;
 }
 
@@ -237,7 +241,24 @@ const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
 // ---- Research (NOD ADR-011) ----
 const RESEARCH_QUEUE_MAX = 25;
 // A host seen at one store could be that merchant's own domain: count it, never name it.
-const RESEARCH_MIN_SHOPS = 2;
+// Shop rows are not merchants (one merchant's live + staging stores are two
+// rows), so the queue also drops any host embedding a shop handle, and needs a
+// third store for unmatched hosts, which are more often a merchant's own API or
+// help desk than an unknown script is. Counts ignore both queue-only rules.
+const RESEARCH_MIN_SHOPS: Record<NodResearchKind, number> = {
+  unknown_script: 2,
+  unmatched_host: 3,
+};
+// Handles shorter than this match too many vendor labels by accident.
+const MIN_HANDLE_LEN = 4;
+// Path-style multi-tenant hosts: the vendor is in the URL path, so the host
+// merges unrelated vendors. Added to the scanner's shared-CDN list.
+const PATH_STYLE_HOSTS = [
+  "unpkg.com",
+  "storage.googleapis.com",
+  "s3.amazonaws.com",
+  "raw.githubusercontent.com",
+];
 // Mirrors HOST_RE in the NOD contract validator (tests/fixtures/nod-contract.js):
 // a lowercase DNS hostname with an alphabetic TLD, so IP addresses never qualify.
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -248,21 +269,27 @@ const RESEARCH_KIND_LABELS: Record<NodResearchKind, string> = {
 
 interface HostStats {
   shops: Set<string>;
-  sightings: number;
+  /** Distinct scans: sightings for both kinds. */
+  scans: Set<string>;
   first: Date;
   last: Date;
 }
 
-function tallyHosts(rows: Array<{ host: string; shopId: string; at: Date }>) {
+function tallyHosts(rows: Array<{ host: string; shopId: string; scanId: string; at: Date }>) {
   const byHost = new Map<string, HostStats>();
   for (const r of rows) {
     const s = byHost.get(r.host);
     if (!s) {
-      byHost.set(r.host, { shops: new Set([r.shopId]), sightings: 1, first: r.at, last: r.at });
+      byHost.set(r.host, {
+        shops: new Set([r.shopId]),
+        scans: new Set([r.scanId]),
+        first: r.at,
+        last: r.at,
+      });
       continue;
     }
     s.shops.add(r.shopId);
-    s.sightings += 1;
+    s.scans.add(r.scanId);
     if (r.at < s.first) s.first = r.at;
     if (r.at > s.last) s.last = r.at;
   }
@@ -274,13 +301,37 @@ function scriptHost(r: { domain: string | null; url: string }): string | null {
   return (r.domain ?? hostnameFromUrl(r.url))?.toLowerCase() || null;
 }
 
+/**
+ * Hosts left out of counts and queue: shared multi-tenant CDNs (re-checked at
+ * read time, so ScanDomain rows written before a host joined the list are
+ * re-classified) and known-malicious hosts, already a MALICIOUS_SCRIPT finding.
+ */
+function isUnresearchableHost(host: string): boolean {
+  return (
+    isSharedCdnDomain(host) ||
+    PATH_STYLE_HOSTS.includes(host) ||
+    host.endsWith(".s3.amazonaws.com") ||
+    matchMaliciousDomain(host) !== null
+  );
+}
+
+/** True when any dot-separated label of `host` contains a shop handle. */
+function embedsShopHandle(host: string, handles: string[]): boolean {
+  return host.split(".").some((label) => handles.some((h) => label.includes(h)));
+}
+
 /** Lower each host's `first` to its earliest row ever (any shop, any time). */
 function applyFirstSeen(stats: Map<string, HostStats>, host: string | null, at: Date | null) {
   const s = host ? stats.get(host) : undefined;
   if (s && at && at < s.first) s.first = at;
 }
 
-async function buildResearch(nonExcludedIds: string[], d7: Date, d30: Date): Promise<NodResearch> {
+async function buildResearch(
+  nonExcludedIds: string[],
+  handles: string[],
+  d7: Date,
+  d30: Date,
+): Promise<NodResearch> {
   // Scope: scans of non-excluded shops created in the window (ADR-003).
   const windowScans =
     nonExcludedIds.length === 0
@@ -322,21 +373,25 @@ async function buildResearch(nonExcludedIds: string[], d7: Date, d30: Date): Pro
   const scripts = tallyHosts(
     scriptRows.flatMap((r) => {
       const host = isBenignLibrary(r.url) ? null : scriptHost(r);
-      return host ? [{ host, shopId: shopByScan.get(r.scanId)!, at: r.createdAt }] : [];
+      return host && !isUnresearchableHost(host)
+        ? [{ host, shopId: shopByScan.get(r.scanId)!, scanId: r.scanId, at: r.createdAt }]
+        : [];
     }),
   );
   // Neither matched nor benign, and not already counted as an unknown script host.
   const unmatched = tallyHosts(
     domainRows.flatMap((r) => {
       const host = r.domain.toLowerCase();
-      return host && !scripts.has(host)
-        ? [{ host, shopId: shopByScan.get(r.scanId)!, at: r.createdAt }]
+      return host && !scripts.has(host) && !isUnresearchableHost(host)
+        ? [{ host, shopId: shopByScan.get(r.scanId)!, scanId: r.scanId, at: r.createdAt }]
         : [];
     }),
   );
 
-  // First seen ever (any shop, all time). Legacy UnknownScript rows have a null
-  // domain, so those before the window are parsed from url (window ones already are).
+  // First seen ever (any shop, all time). Rows from excluded (test) shops count
+  // here by design: firstSeenAt means "new to GhostCode", not "new to merchants".
+  // Legacy UnknownScript rows have a null domain, so those before the window are
+  // parsed from url (window ones already are).
   const scriptHosts = [...scripts.keys()];
   const unmatchedHosts = [...unmatched.keys()];
   const [scriptFirsts, legacyScripts, domainFirsts] = await Promise.all([
@@ -389,12 +444,16 @@ async function buildResearch(nonExcludedIds: string[], d7: Date, d30: Date): Pro
     },
   ];
 
-  // Queue: only hosts at 2+ stores, never a myshopify host, only valid hostnames.
+  // Queue: only hosts at 2+ stores (3+ for unmatched), never a myshopify host
+  // or one embedding any shop's handle, only valid hostnames.
   const candidates = (kind: NodResearchKind, stats: Map<string, HostStats>) =>
     [...stats.entries()]
       .filter(
         ([host, s]) =>
-          s.shops.size >= RESEARCH_MIN_SHOPS && !host.includes("myshopify") && HOST_RE.test(host),
+          s.shops.size >= RESEARCH_MIN_SHOPS[kind] &&
+          !host.includes("myshopify") &&
+          HOST_RE.test(host) &&
+          !embedsShopHandle(host, handles),
       )
       .map(([host, s]) => ({ host, kind, s }));
   const picked = [
@@ -404,19 +463,20 @@ async function buildResearch(nonExcludedIds: string[], d7: Date, d30: Date): Pro
     .sort(
       (a, b) =>
         b.s.shops.size - a.s.shops.size ||
-        b.s.sightings - a.s.sightings ||
+        b.s.scans.size - a.s.scans.size ||
         a.host.localeCompare(b.host),
     )
     .slice(0, RESEARCH_QUEUE_MAX);
 
-  // Suggestion counts for the queued unknown-script hosts only. Selects the
-  // script's host fields, never suggestedAppName.
+  // PENDING suggestion counts for the queued unknown-script hosts only. Selects
+  // the script's host fields, never suggestedAppName.
   const suggestHosts = picked.filter((p) => p.kind === "unknown_script").map((p) => p.host);
   const submissions =
     suggestHosts.length === 0
       ? []
       : await db.signatureSubmission.findMany({
           where: {
+            status: SubmissionStatus.PENDING,
             shopId: { in: nonExcludedIds },
             unknownScript: { OR: [{ domain: { in: suggestHosts } }, { domain: null }] },
           },
@@ -436,7 +496,7 @@ async function buildResearch(nonExcludedIds: string[], d7: Date, d30: Date): Pro
       kind,
       label: RESEARCH_KIND_LABELS[kind],
       shops: s.shops.size,
-      sightings: s.sightings,
+      sightings: s.scans.size,
       firstSeenAt: s.first.toISOString(),
       lastSeenAt: s.last.toISOString(),
       ...(kind === "unknown_script" ? { suggestions: suggestions.get(host) ?? 0 } : {}),
@@ -897,7 +957,11 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
   // ---- Research (NOD ADR-011): optional, so a failure drops the section, not the digest ----
   let research: NodResearch | undefined;
   try {
-    research = await buildResearch(nonExcludedIds, d7, d30);
+    // Handles of EVERY shop (excluded ones too), for the queue's own-domain guard.
+    const handles = shops
+      .map((s) => s.domain.toLowerCase().replace(/\.myshopify\.com$/, ""))
+      .filter((h) => h.length >= MIN_HANDLE_LEN);
+    research = await buildResearch(nonExcludedIds, handles, d7, d30);
   } catch (error) {
     logger.error("nod-digest-research-failed", {
       error: error instanceof Error ? error.message : String(error),
