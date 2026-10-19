@@ -48,6 +48,7 @@ import {
 } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { getFreePreviewFindings } from "../../app/services/free-preview.server";
+import { detectAppIncidentAdvisories } from "../../app/services/scan-engine.server";
 import {
   FIRST_SCAN_RUNNING_MESSAGE,
   getSidekickScanSummary,
@@ -166,6 +167,43 @@ function serveScan(rows: Row[]) {
     return [...groups.values()];
   }) as never);
 }
+
+/**
+ * A stored Selleasy advisory as the REAL detector writes it (embed signal):
+ * appName null, the app named only through the curated entry its description
+ * matches. ACTIVE is a fixed date inside the entry's review window.
+ */
+const ACTIVE = new Date("2026-10-20T12:00:00Z");
+function selleasyAdvisory(id: string): Row {
+  const [finding] = detectAppIncidentAdvisories(
+    [
+      {
+        filename: "config/settings_data.json",
+        content: JSON.stringify({
+          current: {
+            blocks: {
+              selleasy: {
+                type: "shopify://apps/selleasy/blocks/app-embed/790c1a03-a71f-4bc1-9869-00dad526d3c2",
+                disabled: false,
+                settings: {},
+              },
+            },
+          },
+        }),
+      },
+    ],
+    ACTIVE,
+  );
+  if (!finding) throw new Error("the detector found no Selleasy advisory");
+  return f(id, "APP_INCIDENT_ADVISORY", finding.severity as Severity, {
+    filename: finding.filename,
+    lineNumber: finding.lineNumber ?? 1,
+    codeSnippet: finding.codeSnippet,
+    appName: finding.appName ?? null,
+    description: finding.description,
+  });
+}
+const SELLEASY_REPORT = "On 13 October 2026, Logbase (Selleasy's developer) reported";
 
 const COMPLETED_AT = new Date("2026-09-30T12:00:00.000Z");
 const SCAN = {
@@ -316,27 +354,38 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
   });
 
   it("labels an affected-app advisory (in no impact area) as a security advisory", async () => {
-    serveScan([
-      f("v1", "APP_INCIDENT_ADVISORY", "HIGH", { appName: "BadVendor" }),
-      f("a2", "GHOST_STYLE", "LOW"),
-    ]);
+    const advisory = selleasyAdvisory("v1");
+    // A real stored advisory carries no appName: the entry must supply it.
+    expect(advisory.appName).toBeNull();
+    serveScan([advisory, f("a2", "GHOST_STYLE", "LOW")]);
     const r = await okSummary();
     expect(r.appSecurityAdvisories).toBe(1);
-    expect(r.topFindings[0]).toMatchObject({ impact: "Security advisory", app: "BadVendor" });
+    expect(r.topFindings[0]).toMatchObject({ impact: "Security advisory", app: "Selleasy" });
     expect(r.byImpact.map((i) => i.area)).toEqual(["Speed"]);
+  });
+
+  it("names the advisory's app and uses the entry's own report wording, as Home does (gc-q5z8)", async () => {
+    serveScan([selleasyAdvisory("v1"), f("a2", "GHOST_STYLE", "LOW")]);
+    const r = await okSummary();
+    const [top] = r.topFindings;
+    expect(top.type).toBe("Selleasy is in your theme and was named in a security incident");
+    expect(top.app).toBe("Selleasy");
+    expect(top.description.startsWith(SELLEASY_REPORT)).toBe(true);
+    expect(top.description).not.toContain("An app in your theme");
   });
 
   it("kill switch (gc-5nok): with the flag off a stored advisory is not reported at all", async () => {
     delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
     serveScan([
-      f("v1", "APP_INCIDENT_ADVISORY", "HIGH", { appName: "BadVendor" }),
+      selleasyAdvisory("v1"),
       f("m1", "MALICIOUS_SCRIPT", "HIGH"),
       f("a2", "GHOST_STYLE", "LOW"),
     ]);
     const r = await okSummary();
     expect(r.appSecurityAdvisories).toBe(0);
     expect(r.topFindings.map((t) => t.impact)).not.toContain("Security advisory");
-    expect(r.topFindings.map((t) => t.app)).not.toContain("BadVendor");
+    // Nothing anywhere in the result names the app (the flag-on case above does).
+    expect(JSON.stringify(r)).not.toContain("Selleasy");
     // The advisory is out of the total; malicious code is untouched.
     expect(r.totalFindings).toBe(2);
     expect(r.maliciousCode.found).toBe(1);

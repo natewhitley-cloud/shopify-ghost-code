@@ -13,7 +13,8 @@
  *   - Top findings are Home's "Start here" rows: getFullListTopFindings
  *     (`showFindingDetails`: Standard / Professional) or getFreeTopFindings
  *     (Free: only its preview rows plus the never-paywalled findings, all
- *     shown in full to a Free shop), then toTopFindingViews.
+ *     shown in full to a Free shop), then toTopFindingViews with Home's
+ *     advisoryStartHereCopy (an advisory names its app and its report).
  *   - Known malicious code is listed IN FULL on EVERY plan and regardless of
  *     ignores, exactly as the scan page's security alert lists it (and its
  *     count is what the scan FOUND, as Home's critical line counts it).
@@ -29,6 +30,7 @@
 import type { FindingType } from "@prisma/client";
 
 import { getFilteredFindingSummaryAndKept } from "./finding-aggregation.server";
+import { advisoryStartHereCopy } from "./security-risk.server";
 import { getCachedAllThemes, getCachedMainTheme } from "./theme-cache.server";
 import { loadThemeHealth } from "./theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.server";
@@ -188,6 +190,10 @@ export async function getSidekickScanSummary(
       : Promise.resolve([]),
   ]);
 
+  // gc-q5z8, as Home passes it: an advisory row names its app and the entry's
+  // own wording. A stored advisory has no appName, so the entry supplies it.
+  const advisoryCopy = advisoryStartHereCopy(topFindingRows);
+
   const themeHealth = await readThemeHealth(admin, shopDomain, shop, scan, {
     ...summary.byType,
     MALICIOUS_SCRIPT: maliciousFound,
@@ -209,10 +215,10 @@ export async function getSidekickScanSummary(
       meaning: soWhatForLane(row.lane),
     })),
     appSecurityAdvisories: summary.byType.APP_INCIDENT_ADVISORY ?? 0,
-    topFindings: toTopFindingViews(scan.id, topFindingRows, fullList).map((f) => ({
+    topFindings: toTopFindingViews(scan.id, topFindingRows, fullList, advisoryCopy).map((f) => ({
       type: f.title ?? f.typeLabel,
       impact: f.lane ? laneLabelForLane(f.lane) : "Security advisory",
-      app: f.appName,
+      app: f.appName ?? advisoryCopy[f.id]?.appName ?? null,
       location: f.location,
       description: f.cost,
     })),
