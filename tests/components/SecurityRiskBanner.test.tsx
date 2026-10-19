@@ -160,6 +160,20 @@ describe("SecurityRiskBanner: an advisory matched by its app embed (Selleasy)", 
   });
 });
 
+describe("advisoryCheckSteps substitution", () => {
+  it("names the app on both signals, and a '$' in a name is taken literally", () => {
+    const [embed] = risksOf([embedFinding(SELLEASY)]);
+    const [host] = risksOf([hostFinding(SELLEASY)]);
+    for (const risk of [embed, host] as AdvisoryRisk[]) {
+      expect(advisoryCheckSteps(risk)[4]).toMatch(/^If you no longer use Selleasy, /);
+      expect(advisoryCheckSteps(risk).join(" ")).not.toContain("use the app,");
+      expect(advisoryCheckSteps({ ...risk, appName: "A$&B $1" })[4]).toMatch(
+        /^If you no longer use A\$&B \$1, /,
+      );
+    }
+  });
+});
+
 describe("SecurityRiskBanner: an advisory matched by a script host", () => {
   it("Selleasy host: names the host and the file and line", () => {
     const [risk] = risksOf([hostFinding(SELLEASY)]);
@@ -205,7 +219,7 @@ describe("SecurityRiskBanner: known malicious code", () => {
     );
     // Theme order, both lines.
     expect(t).toContain(
-      "GhostCode found it on 2 lines of your theme (layout/theme.liquid, line 31; snippets/cart.liquid, line 12).",
+      "GhostCode found biliing.top on 2 lines of your theme (layout/theme.liquid, line 31; snippets/cart.liquid, line 12).",
     );
     expect(t).toContain("Remove it as soon as possible.");
     expect(html).not.toContain('target="_blank"');
@@ -403,6 +417,15 @@ describe("counts copy", () => {
     );
     expect(totalFindingsNote(1, 1)).toBe("1 finding: 1 security risk (above).");
     expect(totalFindingsNote(5, 0)).toBeNull();
+  });
+
+  it("totalFindingsNote on a paid page with kept malicious code says the list repeats it", () => {
+    expect(totalFindingsNote(13, 3, 2)).toBe(
+      "13 findings: 3 security risks (above), 10 leftover items (below, with the known malicious code listed again).",
+    );
+    expect(totalFindingsNote(2, 2, 2)).toBe(
+      "2 findings: 2 security risks (above) (the known malicious code is listed again below).",
+    );
   });
 
   it("homeRiskSummaryLine is null without a security risk", () => {

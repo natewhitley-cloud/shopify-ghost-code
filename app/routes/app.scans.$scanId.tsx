@@ -2131,9 +2131,12 @@ export default function ScanDetail() {
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
   // Security risks in the (ignore-filtered) total: non-ignored malicious code
   // and the non-ignored advisories (gc-q5z8).
+  const keptMalicious = findingSummary.byType.MALICIOUS_SCRIPT ?? 0;
   const riskNote = totalFindingsNote(
     totalFindings,
-    (findingSummary.byType.MALICIOUS_SCRIPT ?? 0) + alwaysShownFindings.length,
+    keptMalicious + alwaysShownFindings.length,
+    // The paid list shows kept malicious findings again (Free never previews them).
+    canViewDetails ? keptMalicious : 0,
   );
   // Findings the LIST can hold: everything but the advisories shown above it.
   const listTotal = findingSummary.total - alwaysShownFindings.length;

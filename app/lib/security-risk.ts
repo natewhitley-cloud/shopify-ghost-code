@@ -120,9 +120,10 @@ export function securityRiskFound(risk: SecurityRisk): string {
     const n = risk.findings.length;
     const places = risk.findings.slice(0, 3).map(where).join("; ");
     const more = n > 3 ? `; and ${n - 3} more` : "";
+    const what = risk.domain ?? "it";
     return n === 1
-      ? `GhostCode found it on 1 line of your theme (${places}).`
-      : `GhostCode found it on ${n} lines of your theme (${places}${more}).`;
+      ? `GhostCode found ${what} on 1 line of your theme (${places}).`
+      : `GhostCode found ${what} on ${n} lines of your theme (${places}${more}).`;
   }
   if (risk.signal === "embed") {
     return risk.appName
@@ -176,10 +177,9 @@ export function securityRiskSourceLabel(risk: SecurityRisk): string | null {
 export function advisoryCheckSteps(risk: AdvisoryRisk): string[] {
   const steps = getFindingCardCopy("APP_INCIDENT_ADVISORY", risk.finding.filename).steps ?? [];
   if (risk.appName === null) return [...steps];
-  const app = risk.appName;
-  return steps.map((step) =>
-    step.replace("If you no longer use the app,", `If you no longer use ${app},`),
-  );
+  const named = `If you no longer use ${risk.appName},`;
+  // A replacer function, so a "$" in a name is never read as a pattern.
+  return steps.map((step) => step.replace("If you no longer use the app,", () => named));
 }
 
 /** The plan line under the actions (the date is rendered beside it). */
@@ -204,13 +204,33 @@ export function findingsTileSubtitle(total: number, securityRisks: number): stri
 /**
  * The scan page's note under "Total findings", or null when there is no
  * security risk: "13 findings: 1 security risk (above), 12 leftover items (below)."
+ *
+ * Both numbers are from the scan page's ignore-filtered total, so ignored
+ * malicious code (still shown in its banner, as the security alert always
+ * was) is not counted here, while Home's tile adds it back: the scan page's
+ * total has never counted ignored findings.
+ *
+ * `maliciousAlsoListed`: kept malicious findings that the paid findings list
+ * shows too (the list holds every non-advisory finding), so "below" says so
+ * instead of under-counting the list. 0 on Free (malicious code is never a
+ * preview row).
  */
-export function totalFindingsNote(total: number, securityRisks: number): string | null {
+export function totalFindingsNote(
+  total: number,
+  securityRisks: number,
+  maliciousAlsoListed = 0,
+): string | null {
   if (securityRisks <= 0) return null;
   const leftover = Math.max(0, total - securityRisks);
   const risks = `${plural(securityRisks, "security risk", "security risks")} (above)`;
+  const where =
+    maliciousAlsoListed > 0 ? "below, with the known malicious code listed again" : "below";
   const rest =
-    leftover > 0 ? `, ${plural(leftover, "leftover item", "leftover items")} (below)` : "";
+    leftover > 0
+      ? `, ${plural(leftover, "leftover item", "leftover items")} (${where})`
+      : maliciousAlsoListed > 0
+        ? ` (the known malicious code is listed again below)`
+        : "";
   return `${plural(total, "finding", "findings")}: ${risks}${rest}.`;
 }
 

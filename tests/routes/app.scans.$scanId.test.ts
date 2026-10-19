@@ -5941,6 +5941,36 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       }
     });
 
+    it("gc-q5z8: Total findings note on a paid page with malicious code says the list repeats it", async () => {
+      const mal = row("mal", "MALICIOUS_SCRIPT", "HIGH", 59);
+      scanWith([...SCRIPTS, ADVISORY, mal]);
+      servePage([...SCRIPTS, ADVISORY, mal]);
+
+      const html = await renderPage();
+
+      // 6 findings: the advisory and the malicious line above; the list holds
+      // the 4 scripts AND the malicious line again (5 rows), as the note says.
+      expect(html).toContain(
+        "6 findings: 2 security risks (above), 4 leftover items (below, with the known malicious code listed again).",
+      );
+      const list = html.slice(html.indexOf('<h2 class="scan-section-title">Findings</h2>'));
+      expect(list.match(/<details class="finding-ignore"/g)).toHaveLength(5);
+    });
+
+    it("gc-q5z8: ignored malicious code keeps its banner but is not in the ignore-filtered note (pinned divergence from Home's tile)", async () => {
+      const mal = row("mal", "MALICIOUS_SCRIPT", "HIGH", 59);
+      scanWith([...SCRIPTS, mal]);
+      servePage([...SCRIPTS, mal]);
+      ignore(mal);
+
+      const html = await renderPage();
+
+      expect(html).toContain('<section id="security-risk-mal"');
+      // The total (4) leaves the ignored line out, so the note has no risk to split.
+      expect(html).toContain('scan-tile__big-number--neutral">4<');
+      expect(html).not.toContain("security risk (above)");
+    });
+
     it("an advisory alone: its card, and the empty list says so without calling the scan clean", async () => {
       scanWith([ADVISORY]);
       servePage([ADVISORY]);

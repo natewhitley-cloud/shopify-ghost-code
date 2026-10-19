@@ -116,7 +116,7 @@ const actionBox: React.CSSProperties = {
 const CATEGORY_ORDER = new Map<string, number>([
   ...HEALTH_CATEGORIES.map((c, i) => [c.key, i] as const),
   // The advisory check (gc-q5z8) sits right after known malicious code.
-  ["app-advisories", 0.5] as const,
+  ["app-advisories", HEALTH_CATEGORIES.findIndex((c) => c.key === "malicious") + 0.5] as const,
 ]);
 
 /**

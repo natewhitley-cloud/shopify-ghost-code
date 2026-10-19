@@ -33,8 +33,11 @@ export function advisoryReportUrlForFinding(
   return advisoryForFinding(finding, activeAdvisories(now, advisories))?.sourceUrl ?? null;
 }
 
-/** The entry of `advisories` an APP_INCIDENT_ADVISORY finding was emitted for, or null. */
-function advisoryForFinding(
+/**
+ * The entry of `advisories` an APP_INCIDENT_ADVISORY finding was emitted for,
+ * or null. Review dates are NOT applied: pass only the entries that count.
+ */
+export function advisoryForFinding(
   finding: { findingType: string; description: string },
   advisories: ReadonlyArray<AppIncidentAdvisory>,
 ): AppIncidentAdvisory | null {

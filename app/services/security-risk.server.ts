@@ -9,11 +9,12 @@
  */
 import type { FindingType } from "@prisma/client";
 
+import { advisoryForFinding } from "./app-incident-advisory.server";
 import type { FindingRow } from "./finding-aggregation.server";
 import { getOwnSectionFindings } from "./free-preview.server";
 import {
   activeAdvisories,
-  advisoryDescriptions,
+  advisoryDescription,
   APP_INCIDENT_ADVISORIES,
   formatAdvisoryDate,
   type AppIncidentAdvisory,
@@ -41,18 +42,14 @@ export interface SecurityRiskSourceFinding {
 /**
  * The list entry a stored advisory finding was emitted for, expired entries
  * included (the wording still applies; only the source link is withheld once
- * the entry is past its review date). Matched by rebuilding each entry's
- * descriptions, exactly as advisoryReportUrlForFinding does.
+ * the entry is past its review date). The same match as the report link
+ * (advisoryForFinding: the entry's rebuilt descriptions).
  */
 export function advisoryEntryForFinding(
   finding: { findingType: string; description: string },
   advisories: ReadonlyArray<AppIncidentAdvisory> = APP_INCIDENT_ADVISORIES,
 ): AppIncidentAdvisory | null {
-  if (finding.findingType !== "APP_INCIDENT_ADVISORY") return null;
-  return (
-    advisories.find((advisory) => advisoryDescriptions(advisory).includes(finding.description)) ??
-    null
-  );
+  return advisoryForFinding(finding, advisories);
 }
 
 /** "On 13 October 2026, {report}." for an entry. */
@@ -60,10 +57,18 @@ export function advisoryReportSentence(advisory: AppIncidentAdvisory): string {
   return `On ${formatAdvisoryDate(advisory.incidentDate)}, ${advisory.report}.`;
 }
 
-/** The script host a host-signal advisory matched, read from its stored description. */
+/**
+ * The script host a host-signal advisory matched: the host whose rebuilt
+ * description (the detector's own builder) is the stored one. No parsing of
+ * the description's format.
+ */
 function matchedHost(advisory: AppIncidentAdvisory | null, description: string): string | null {
   if (advisory === null) return null;
-  return advisory.scriptHosts.find((host) => description.includes(`(${host})`)) ?? null;
+  return (
+    advisory.scriptHosts.find(
+      (scriptHost) => advisoryDescription({ advisory, scriptHost }) === description,
+    ) ?? null
+  );
 }
 
 function advisoryRisk(
