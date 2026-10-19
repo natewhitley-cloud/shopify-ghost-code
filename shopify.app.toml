@@ -40,3 +40,6 @@ optional_scopes = ["read_translations", "read_products", "read_content", "read_o
 
 [auth]
 redirect_urls = [ "https://app.alpenglowsoftware.com/auth/callback" ]
+
+[sidekick]
+extensions_summary = "Read a summary of the store's latest GhostCode theme scan (leftover code findings by impact area, top findings, known malicious code, theme health verdict) and its latest store speed result (PageSpeed score and the apps that cost the most load time)."

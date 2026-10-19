@@ -1,0 +1,19 @@
+api_version = "2026-07"
+
+[[extensions]]
+# Merchant-facing name and description live in locales/en.default.json.
+name = "t:name"
+handle = "sidekick-tools"
+type = "ui_extension"
+# Hand-written in the Shopify CLI's uid format (the generator was not run: it
+# installs packages into node_modules). `shopify app build` accepts it; if the
+# first `shopify app dev` / `deploy` rejects it, delete this line and let the
+# CLI write one.
+uid = "76d18d6f-c15e-731f-6097-bb57256eeb507f9b13c06797"
+description = "t:description"
+
+[[extensions.targeting]]
+module = "./src/index.js"
+target = "admin.app.tools.data"
+tools = "./tools.json"
+instructions = "./instructions.md"

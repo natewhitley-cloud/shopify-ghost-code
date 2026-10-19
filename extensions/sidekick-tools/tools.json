@@ -1,0 +1,22 @@
+[
+  {
+    "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
+    "name": "get_latest_scan_summary",
+    "description": "Get a summary of the store's latest successful GhostCode theme scan: when it ran, which theme, how many leftover code findings, counts by impact area (for example Customers see it, Speed), the top findings to start with, known malicious code, and the theme health verdict with the checks that came back clean or did not fully run. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
+    "name": "get_speed_summary",
+    "description": "Get the store's latest GhostCode store speed result: when it ran, which pages were tested, the Google PageSpeed score and timings, and which apps cost the most processing time and download size, or why there is no result (not run yet, running, password-protected storefront). Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  }
+]
