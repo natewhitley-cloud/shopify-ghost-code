@@ -17,7 +17,7 @@
  * that COMPLETED with a homepage score. Every gate below takes the run's
  * origin, so the plan and the unused test are re-checked before every call.
  *
- * Guardrails (Nathan, 2026-10-11): Professional only; DARK unless
+ * Guardrails (Nathan, 2026-10-11; Standard monthly added by gc-d0ui): DARK unless
  * SPEED_REPORT_LIVE_ENABLED; the plan/flag/install gate is re-checked right
  * before EVERY call (a shop that downgraded or uninstalled mid-run gets
  * nothing more); a call is counted against the global daily budget BEFORE it
@@ -54,6 +54,7 @@ import { inngest } from "../../inngest/client";
 import db from "../db.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
+import { PLANS } from "../lib/plans";
 import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-check.server";
 import {
   buildSpeedReportView,
@@ -61,6 +62,7 @@ import {
   FREE_SPEED_TEST_MAX_ATTEMPTS,
   FREE_TEST_EXHAUSTED,
   freeSpeedTestConsumed,
+  isMonthlySpeedReportDay,
   isSpeedReportOrigin,
   runNowAvailableAt,
   SPEED_REPORT_ORIGIN,
@@ -115,7 +117,9 @@ export type SpeedEligibility =
  * Whether this shop may get a speed report of this origin right now: flag on
  * (checked first, so a dark feature does not even read the DB), shop exists,
  * still installed, and:
- *   - SCHEDULED / MANUAL (or no origin): the plan includes the full report;
+ *   - SCHEDULED (or no origin): the plan includes the full report (Standard
+ *     monthly, Professional weekly; the coordinator picks who is due);
+ *   - MANUAL (Run now): the plan includes Run now (Professional, gc-d0ui);
  *   - FREE_TEST: the free test is unused AND the plan has it (or the full
  *     report: a test asked for just before an upgrade still finishes, still
  *     homepage only).
@@ -139,10 +143,30 @@ export async function checkSpeedReportEligibility(
       return { eligible: false, reason: "not_in_plan" };
     }
     if (shop.freeSpeedTestUsedAt) return { eligible: false, reason: "free_test_used" };
-  } else if (!features.speedReport) {
+  } else if (
+    origin === SPEED_REPORT_ORIGIN.MANUAL ? !features.speedRunNow : !features.speedReport
+  ) {
     return { eligible: false, reason: "not_in_plan" };
   }
   return { eligible: true, shop: { id: shop.id, domain: shop.domain, plan: shop.plan } };
+}
+
+// ---------------------------------------------------------------------------
+// Coordinator: who is due
+// ---------------------------------------------------------------------------
+
+/**
+ * The plans the Sunday speed cron tests on `firedAt` (gc-d0ui), from the plan
+ * matrix: every plan with a weekly cadence (Professional), plus every plan with
+ * a monthly cadence (Standard) on the first Sunday of the month
+ * (isMonthlySpeedReportDay). Free (cadence none) is never due.
+ */
+export function speedReportPlansDue(firedAt: Date): string[] {
+  const monthlyDay = isMonthlySpeedReportDay(firedAt);
+  return Object.values(PLANS).filter((plan) => {
+    const cadence = getPlanFeatures(plan).speedReportCadence;
+    return cadence === "weekly" || (cadence === "monthly" && monthlyDay);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1058,7 @@ export async function recordSpeedReportEvent(
 // ---------------------------------------------------------------------------
 
 export const RUN_NOW_ERRORS = {
-  notInPlan: "Store speed reports are part of the Professional plan.",
+  notInPlan: "Running a speed test now is part of the Professional plan.",
   running: "A speed test is already running. Results appear here when it finishes.",
   cooldown: "You can run the speed test once a day.",
   dispatch: "We couldn't start the speed test. Try again in a few minutes.",
@@ -1058,7 +1082,8 @@ type MerchantRunShop = { id: string; domain: string; plan: string };
 
 /**
  * Start a MANUAL speed report for the session shop: at most once per 24h,
- * never while one is already running, Professional only (the caller has
+ * never while one is already running, Professional only (`speedRunNow`;
+ * Standard's monthly report has no Run now, gc-d0ui) (the caller has
  * already 404ed when the feature is dark). A missing key refuses before the
  * 24h slot is claimed and records the "not configured" ops event at most once
  * an hour per shop (clicks cannot write unbounded events, gc-wt3y #9). If the
@@ -1070,7 +1095,7 @@ export async function requestSpeedReportRunNow(
   shop: MerchantRunShop,
   now: Date,
 ): Promise<RunNowResult> {
-  if (!getPlanFeatures(shop.plan).speedReport)
+  if (!getPlanFeatures(shop.plan).speedRunNow)
     return { ok: false, error: RUN_NOW_ERRORS.notInPlan };
   return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.MANUAL);
 }

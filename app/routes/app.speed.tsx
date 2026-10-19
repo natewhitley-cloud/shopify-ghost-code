@@ -1,9 +1,12 @@
 /**
- * Store speed (gc-wt3y): the weekly Google PageSpeed report for the homepage
- * and one product page, with the cost broken down by app. Professional only.
+ * Store speed (gc-wt3y): the Google PageSpeed report for the homepage and one
+ * product page, with the cost broken down by app. Professional: weekly plus
+ * "Run speed test now". Standard (gc-d0ui): the same report monthly (the
+ * first Sunday of the month), no Run now; the page says when the next one
+ * runs.
  *
  * Free speed test: a plan without the report but with
- * PlanFeatures.freeSpeedTest (Free and Standard) gets "Run your free speed
+ * PlanFeatures.freeSpeedTest (Free) gets "Run your free speed
  * test" once ever, homepage only. Its result is the homepage score and core
  * timings plus ONE line about the costliest app, and the page's one upgrade
  * ask. The loader sends nothing else of the report (no per-app table, other
@@ -45,6 +48,7 @@ import {
   runNowAvailableAt,
   SPEED_CAVEAT,
   SPEED_INTRO,
+  SPEED_INTRO_MONTHLY,
   SPEED_METRIC_LABELS,
   SPEED_PAGE_LABELS,
   SPEED_REPORT_STATUS,
@@ -52,6 +56,7 @@ import {
   SPEED_RUNNING_TIMED_OUT_MESSAGE,
   SPEED_TEASER_BODY,
   SPEED_TEASER_HEADING,
+  nextMonthlySpeedReportAt,
   speedFailureMessage,
   speedPageDelta,
   speedScoreTone,
@@ -104,7 +109,15 @@ export type SpeedLoaderData =
       /** When the free test can next be tried (24h slot); null = now. */
       runAvailableAt: string | null;
     } & UpgradeAsk)
-  | ({ access: "pro"; runNowAvailableAt: string | null } & SpeedReportView);
+  | ({
+      access: "report";
+      cadence: "weekly" | "monthly";
+      /** Run speed test now is on the plan (Professional only, gc-d0ui). */
+      runNow: boolean;
+      runNowAvailableAt: string | null;
+      /** Monthly cadence only: when the next monthly test runs. */
+      nextMonthlyAt: string | null;
+    } & SpeedReportView);
 
 export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoaderData> => {
   const { session } = await authenticate.admin(request);
@@ -114,16 +127,22 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   if (!shop) throw new Response("Shop not found", { status: 404 });
 
   // The plan-gated read is shared with the Sidekick speed tool (gc-5nok):
-  // Professional gets the full view, Free / Standard only the stripped free
+  // Standard / Professional get the full view, Free only the stripped free
   // test view (ONLY FREE_TEST reports), a plan with neither reads no report
-  // data at all.
+  // data at all. No upgrade ask on the full view.
   const now = new Date();
   const report = await readSpeedPageReport(shop, now);
-  if (report.access === "pro") {
+  if (report.access === "report") {
     return {
-      access: "pro",
+      access: "report",
       ...report.view,
-      runNowAvailableAt: runNowAvailableAt(report.requestedAt, now)?.toISOString() ?? null,
+      cadence: report.cadence,
+      runNow: report.runNow,
+      runNowAvailableAt: report.runNow
+        ? (runNowAvailableAt(report.requestedAt, now)?.toISOString() ?? null)
+        : null,
+      nextMonthlyAt:
+        report.cadence === "monthly" ? nextMonthlySpeedReportAt(now).toISOString() : null,
     };
   }
 
@@ -164,8 +183,9 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<SpeedActi
   }
 
   // Session shop only: the form never carries a shop id. Each service checks
-  // the plan itself: Run now is Professional only, the free test is for a
-  // plan without the report and only while unused.
+  // the plan itself: Run now is Professional only (Standard's monthly report
+  // has none, gc-d0ui), the free test is for a plan without the report and
+  // only while unused.
   const shop = await getShopMetadata(session.shop);
   if (!shop) return { ok: false, error: "Shop not found. Please reinstall the app." };
 
@@ -360,20 +380,32 @@ export function StatusBanner({
   latest,
   canRunNow,
   pollingTimedOut,
+  nextMonthlyAt = null,
 }: {
   latest: SpeedReportSummaryView | null;
-  /** Run now is available (not in its 24h cooldown). */
+  /** Run now is available (not in its 24h cooldown, and on the plan). */
   canRunNow: boolean;
   /** The page stopped polling (~10 min) while the run was still going. */
   pollingTimedOut: boolean;
+  /** Monthly cadence (Standard, gc-d0ui): when the next monthly test runs. */
+  nextMonthlyAt?: string | null;
 }) {
   if (!latest) {
     return (
       <s-banner tone="info">
-        <s-paragraph>Your first speed report runs on Sunday. You can also run it now.</s-paragraph>
+        <s-paragraph>
+          {nextMonthlyAt ? (
+            <>
+              Your first monthly speed test runs on <FormattedDate value={nextMonthlyAt} />.
+            </>
+          ) : (
+            "Your first speed report runs on Sunday. You can also run it now."
+          )}
+        </s-paragraph>
       </s-banner>
     );
   }
+  const retry = nextMonthlyAt ? "We'll try again next month." : "We'll try again next week.";
   switch (latest.status) {
     case SPEED_REPORT_STATUS.RUNNING:
       return <RunningBanner pollingTimedOut={pollingTimedOut} />;
@@ -397,9 +429,7 @@ export function StatusBanner({
           <s-paragraph>
             We couldn&apos;t test your store on <FormattedDate value={latest.createdAt} />.{" "}
             {speedFailureMessage(latest.failureReason)}{" "}
-            {canRunNow
-              ? "We'll try again next week, or you can run it now."
-              : "We'll try again next week."}
+            {canRunNow ? "We'll try again next week, or you can run it now." : retry}
           </s-paragraph>
         </s-banner>
       );
@@ -598,7 +628,7 @@ export function FreeSpeedTest({
 export default function StoreSpeed() {
   const data = useLoaderData<typeof loader>();
   const running =
-    (data.access === "pro" && data.latest?.status === SPEED_REPORT_STATUS.RUNNING) ||
+    (data.access === "report" && data.latest?.status === SPEED_REPORT_STATUS.RUNNING) ||
     (data.access === "free" && data.freeTest.state === "running");
   // Reuse the scan page's capped revalidation poll while a run is in progress.
   const { pollingTimedOut } = useScanPolling(running ? "IN_PROGRESS" : null);
@@ -639,19 +669,32 @@ export default function StoreSpeed() {
           <>
             <div style={{ ...sectionCard, marginBottom: 0 }}>
               <s-stack direction="block" gap="base">
-                <s-paragraph>{SPEED_INTRO}</s-paragraph>
+                <s-paragraph>
+                  {data.cadence === "monthly" ? SPEED_INTRO_MONTHLY : SPEED_INTRO}
+                </s-paragraph>
                 {data.lastResults && (
                   <span style={{ color: TEXT_SUBDUED, fontSize: "13px" }}>
                     Results from <FormattedDate value={data.lastResults.createdAt} includeTime />
                   </span>
                 )}
-                <RunNowControl availableAt={running ? null : data.runNowAvailableAt} />
+                {data.runNow ? (
+                  <RunNowControl availableAt={running ? null : data.runNowAvailableAt} />
+                ) : (
+                  data.nextMonthlyAt &&
+                  data.lastResults && (
+                    // Monthly (Standard, gc-d0ui): no Run now, just when.
+                    <span style={textSubduedSm}>
+                      Next monthly test: <FormattedDate value={data.nextMonthlyAt} />
+                    </span>
+                  )
+                )}
               </s-stack>
             </div>
             <StatusBanner
               latest={data.latest}
-              canRunNow={data.runNowAvailableAt === null}
+              canRunNow={data.runNow && data.runNowAvailableAt === null}
               pollingTimedOut={pollingTimedOut}
+              nextMonthlyAt={data.nextMonthlyAt}
             />
             {data.lastResults?.pages.map((page) => (
               <SpeedPageSection

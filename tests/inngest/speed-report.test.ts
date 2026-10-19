@@ -54,6 +54,7 @@ vi.mock("../../app/services/speed-report.server", async (importActual) => {
   return { ...actual, ...svc };
 });
 
+import { SPEED_REPORT_CRON_UTC } from "../../app/lib/speed-report";
 import { recordCronHeartbeat } from "../../app/models/ops-event.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
@@ -113,6 +114,10 @@ describe("function config (quota guardrails)", () => {
     const c = created.find((f) => f.config.id === "speed-report-weekly")!;
     expect(c.trigger).toEqual({ cron: "10 8 * * 0" });
     expect(SPEED_REPORT_CRON).toBe("10 8 * * 0");
+    // The monthly date shown to Standard shops uses the same time of day.
+    expect(SPEED_REPORT_CRON).toBe(
+      `${SPEED_REPORT_CRON_UTC.minute} ${SPEED_REPORT_CRON_UTC.hour} * * 0`,
+    );
   });
 
   it("worker: one at a time globally and per shop, 1 retry, start + finish timeouts, manual priority", () => {
@@ -219,12 +224,15 @@ describe("speed-report-weekly (coordinator)", () => {
   });
 
   it("fans out one SCHEDULED event per active Professional shop with a per-day idempotency id", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-18T08:10:00Z")); // third Sunday: weekly only
     mockDb.shop.findMany.mockResolvedValue([{ id: "s1" }, { id: "s2" }]);
     const step = createMockInngestStep();
     const r = await handler({ step, logger });
+    vi.useRealTimers();
     expect(r).toEqual({ total: 2, dispatched: 2 });
     expect(mockDb.shop.findMany).toHaveBeenCalledWith({
-      where: { plan: "Professional", uninstalledAt: null },
+      where: { plan: { in: ["Professional"] }, uninstalledAt: null },
       select: { id: true },
     });
     const events = (inngest.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -233,8 +241,8 @@ describe("speed-report-weekly (coordinator)", () => {
       name: "speed-report/requested",
       data: { shopId: "s1", origin: "SCHEDULED" },
     });
-    expect(events[0].id).toMatch(/^speed-report-s1-\d{4}-\d{2}-\d{2}$/);
-    expect(stepNames(step)).toEqual(["fetch-professional-shops", "fan-out-speed-reports-chunk-0"]);
+    expect(events[0].id).toBe("speed-report-s1-2026-10-18");
+    expect(stepNames(step)).toEqual(["fetch-due-shops", "fan-out-speed-reports-chunk-0"]);
   });
 
   it("no Professional shops: nothing sent", async () => {
@@ -658,13 +666,42 @@ describe("speed-report-run (worker): free speed test", () => {
   });
 });
 
-describe("speed-report-weekly (coordinator): Professional only", () => {
-  it("only Professional shops are selected and only SCHEDULED events sent (never Free/Standard, never FREE_TEST)", async () => {
-    const handler = getInngestHandler(speedReportWeekly);
-    mockDb.shop.findMany.mockResolvedValue([{ id: "pro-1" }]);
+describe("speed-report-weekly (coordinator): Professional weekly, Standard monthly, Free never (gc-d0ui)", () => {
+  const handler = getInngestHandler(speedReportWeekly);
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function selectedPlansOn(iso: string): Promise<string[]> {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(iso));
+    mockDb.shop.findMany.mockResolvedValue([{ id: "shop-1" }]);
     await handler({ step: createMockInngestStep(), logger });
+    return mockDb.shop.findMany.mock.calls[0][0].where.plan.in;
+  }
+
+  it.each([
+    ["2026-10-11T08:10:00Z", "second Sunday"],
+    ["2026-10-18T08:10:00Z", "third Sunday"],
+    ["2026-11-08T08:10:00Z", "Nov 8, a Sunday on day 8"],
+  ])("%s (%s): Professional only", async (iso) => {
+    expect(await selectedPlansOn(iso)).toEqual(["Professional"]);
+  });
+
+  it.each([
+    ["2026-11-01T08:10:00Z", "Nov 1, a Sunday on day 1"],
+    ["2026-10-04T08:10:00Z", "Oct 4"],
+    ["2027-02-07T08:10:00Z", "Feb 7, a Sunday on day 7"],
+  ])("%s (%s, first Sunday of the month): Standard and Professional", async (iso) => {
+    expect(await selectedPlansOn(iso)).toEqual(["Standard", "Professional"]);
+  });
+
+  it("never selects Free, and sends only SCHEDULED events (never FREE_TEST or MANUAL)", async () => {
+    const plans = await selectedPlansOn("2026-11-01T08:10:00Z");
+    expect(plans).not.toContain("free");
     const where = mockDb.shop.findMany.mock.calls[0][0].where;
-    expect(where.plan).toBe("Professional");
+    expect(where.uninstalledAt).toBeNull();
     const events = (inngest.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(events.map((e: { data: { origin: string } }) => e.data.origin)).toEqual(["SCHEDULED"]);
   });

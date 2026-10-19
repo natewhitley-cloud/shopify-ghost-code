@@ -1,12 +1,15 @@
 /**
- * Store speed headline in the weekly summary email (gc-2wnf).
+ * Store speed headline in the summary email (gc-2wnf; Standard's monthly
+ * email too since gc-d0ui).
  *
- * The Professional summary email carries a short speed section ONLY when:
+ * The summary email carries a short speed section ONLY when:
  *   - the speed feature is live (SPEED_REPORT_LIVE_ENABLED), checked first so
  *     a dark feature reads nothing;
- *   - the shop's plan includes the speed report (Professional);
+ *   - the shop's plan includes the speed report (Standard or Professional);
  *   - the newest report with results (COMPLETED or PARTIAL) and a homepage
- *     result is from the last SUMMARY_SPEED_MAX_AGE_MS (8 days);
+ *     result is recent enough for the plan's cadence: 8 days for weekly
+ *     (SUMMARY_SPEED_MAX_AGE_MS), 35 days for monthly
+ *     (SUMMARY_SPEED_MONTHLY_MAX_AGE_MS);
  *   - that report is newer than the last summary sent, so one report is never
  *     emailed twice (e.g. a week whose speed run failed would otherwise repeat
  *     last week's report, which is still inside the 8-day window);
@@ -16,7 +19,10 @@
  *
  * Timing: the email follows the Sunday 06:40 UTC scan and the speed cron runs
  * at 08:10 UTC, so the email usually carries LAST week's report; the copy
- * says "Last speed test (<date>)" for that reason.
+ * says "Last speed test (<date>)" for that reason. Standard's email follows
+ * the scan on the 1st (07:20 UTC) and its report runs on the first Sunday of
+ * the month, so it carries the report from earlier in the previous month
+ * (21 to 31 days old, inside the 35-day window).
  *
  * Content: the homepage score (and its change), the costliest app by
  * processing time with its download size, and a link to the Store speed page.
@@ -39,8 +45,17 @@ import {
 } from "../lib/speed-report";
 import { getRecentSpeedReports } from "../models/speed-report.server";
 
-/** A report older than this is not emailed. */
+/** A report older than this is not emailed (weekly cadence). */
 export const SUMMARY_SPEED_MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+
+/**
+ * Monthly cadence (Standard, gc-d0ui): the email on the 1st carries the report
+ * from the previous month's first Sunday, 21 to 31 days earlier; 35 days
+ * leaves margin without ever reaching back two months (the next first Sunday
+ * is at most 35 days after the last one, and "newer than the last summary"
+ * dedupes).
+ */
+export const SUMMARY_SPEED_MONTHLY_MAX_AGE_MS = 35 * 24 * 60 * 60 * 1000;
 
 /** A homepage score move of at least this many points is material. */
 export const SUMMARY_SPEED_SCORE_MOVE = 5;
@@ -92,7 +107,7 @@ export function isMaterialSpeedChange(
  */
 export function pickSummarySpeed(
   rows: readonly SpeedReportRowLike[],
-  opts: { now: Date; lastSummarySentAt: Date | null },
+  opts: { now: Date; lastSummarySentAt: Date | null; maxAgeMs?: number },
 ): SummarySpeed | null {
   // The newest report with results (COMPLETED or PARTIAL) AND a homepage
   // result (audit MED-5: a newer PARTIAL one is not skipped for an older
@@ -109,7 +124,8 @@ export function pickSummarySpeed(
   }
   if (index === -1 || !home) return null;
   const report = rows[index];
-  if (opts.now.getTime() - report.createdAt.getTime() > SUMMARY_SPEED_MAX_AGE_MS) return null;
+  const maxAgeMs = opts.maxAgeMs ?? SUMMARY_SPEED_MAX_AGE_MS;
+  if (opts.now.getTime() - report.createdAt.getTime() > maxAgeMs) return null;
   if (opts.lastSummarySentAt && report.createdAt.getTime() <= opts.lastSummarySentAt.getTime()) {
     return null;
   }
@@ -144,10 +160,15 @@ export async function loadSummarySpeed(
   now: Date = new Date(),
 ): Promise<SummarySpeed | null> {
   if (!isSpeedReportLive()) return null;
-  if (!getPlanFeatures(shop.plan).speedReport) return null;
+  const features = getPlanFeatures(shop.plan);
+  if (!features.speedReport || features.speedReportCadence === "none") return null;
+  const maxAgeMs =
+    features.speedReportCadence === "monthly"
+      ? SUMMARY_SPEED_MONTHLY_MAX_AGE_MS
+      : SUMMARY_SPEED_MAX_AGE_MS;
   try {
     const rows = await getRecentSpeedReports(shop.id);
-    return pickSummarySpeed(rows, { now, lastSummarySentAt });
+    return pickSummarySpeed(rows, { now, lastSummarySentAt, maxAgeMs });
   } catch (error) {
     logger.warn("summary speed section unavailable", {
       context: "summary-speed",

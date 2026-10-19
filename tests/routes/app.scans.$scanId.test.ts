@@ -1824,7 +1824,7 @@ describe("app.scans.$scanId loader", () => {
     type StaleAction =
       | { kind: "rescan" }
       | { kind: "free_blocked"; nextScanAt: Date; trialEligible: boolean }
-      | { kind: "paid_blocked"; nextScanAt: Date }
+      | { kind: "paid_blocked"; nextScanAt: Date; canUpgrade: boolean }
       | { kind: "scan_running" }
       | { kind: "newer_results"; latestScanId: string };
     type Result = {
@@ -2071,7 +2071,11 @@ describe("app.scans.$scanId loader", () => {
 
         const result = await load();
 
-        expect(result.staleResults?.action).toEqual({ kind: "paid_blocked", nextScanAt: MONDAY });
+        expect(result.staleResults?.action).toEqual({
+          kind: "paid_blocked",
+          nextScanAt: MONDAY,
+          canUpgrade: true,
+        });
         expect(mockCanStartScan).toHaveBeenCalledWith(SHOP.id, "Standard");
         expect(claimedColumns()).not.toContain("staleResultsShownAt");
       });
@@ -4193,13 +4197,22 @@ describe("StaleResultsBanner (gc-mgi)", () => {
   });
 
   it("paid_blocked (Standard): next scan date and Home's 'Upgrade for more scans' Settings link, no pricing CTA", () => {
-    const html = render({ kind: "paid_blocked", nextScanAt: OCT_1 });
+    const html = render({ kind: "paid_blocked", nextScanAt: OCT_1, canUpgrade: true });
 
     expect(html).toMatch(/Your next scan is available <time[^>]*>[^<]*<\/time>\./);
     expect(html).toContain('href="/app/settings"');
     expect(html).toContain("Upgrade for more scans");
     expect(html).not.toContain(PRICING_URL);
     expect(html).not.toMatch(/free scan|trial/i);
+  });
+
+  it("paid_blocked with no higher plan (Professional daily cap, gc-d0ui): next scan time only, no upsell", () => {
+    const html = render({ kind: "paid_blocked", nextScanAt: OCT_1, canUpgrade: false });
+
+    expect(html).toMatch(/Your next scan is available <time[^>]*>[^<]*<\/time>\./);
+    expect(html).not.toContain('href="/app/settings"');
+    expect(html).not.toMatch(/upgrade|unlimited/i);
+    expect(html).not.toContain(PRICING_URL);
   });
 
   it("scan_running: says a new scan is running, no button", () => {

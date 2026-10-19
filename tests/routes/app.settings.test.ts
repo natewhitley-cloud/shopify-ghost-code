@@ -219,6 +219,29 @@ describe("app.settings loader", () => {
     });
   });
 
+  describe("speedReportTiles (gc-d0ui): Standard monthly, Professional weekly, only while live", () => {
+    afterEach(() => {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    });
+
+    it.each([
+      ["live", "true", { standard: true, professional: true }],
+      ["dark", undefined, { standard: false, professional: false }],
+    ] as const)("%s", async (_label, flag, expected) => {
+      if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
+      else process.env.SPEED_REPORT_LIVE_ENABLED = flag;
+      mockGetPlanFeatures.mockImplementation((plan: string) => ({
+        ...FREE_FEATURES,
+        speedReportCadence:
+          plan === "Standard" ? "monthly" : plan === "Professional" ? "weekly" : "none",
+      }));
+      const result = (await loader(makeLoaderArgs())) as {
+        speedReportTiles: { standard: boolean; professional: boolean };
+      };
+      expect(result.speedReportTiles).toEqual(expected);
+    });
+  });
+
   it("never-paid Free shop: trialEligible", async () => {
     const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
 
@@ -311,7 +334,8 @@ describe("Settings plan tile buttons", () => {
     plan: string,
     trialEligible: boolean,
     alerts: Partial<AlertsData> = {},
-    freeSpeedTestTiles = { free: true, standard: true },
+    freeSpeedTestTiles = { free: true, standard: false },
+    speedReportTiles = { standard: true, professional: true },
   ): string {
     const loaderData = {
       shop: { plan, domain: SHOP_DOMAIN },
@@ -320,6 +344,7 @@ describe("Settings plan tile buttons", () => {
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
       freeSpeedTestTiles,
+      speedReportTiles,
     };
     const Stub = createRoutesStub([
       {
@@ -417,7 +442,7 @@ describe("Settings plan tile buttons", () => {
       "Findings grouped by impact, with counts",
       "Up to 5 findings shown in full",
       "Single theme scanning",
-      "One free homepage speed test",
+      "One-time homepage speed test",
     ]);
     expect(freeTile).not.toContain("Preview of top finding in full");
     for (const b of freeTile) {
@@ -434,25 +459,63 @@ describe("Settings plan tile buttons", () => {
     expect(docBullets).toEqual(freeTile);
   });
 
-  it("free speed test: listed on the Free AND Standard tiles while live, never on Professional's", () => {
-    const html = renderSettings("free", false);
-    const all = bullets(html);
-    expect(all.filter((b) => b === "One free homepage speed test")).toHaveLength(2);
-    // Standard's comes right after "All features in Free".
-    expect(all[all.indexOf("All features in Free") + 1]).toBe("One free homepage speed test");
-    const proStart = all.indexOf("All features in Standard");
-    expect(all.slice(proStart)).not.toContain("One free homepage speed test");
+  const FREE_TEST_BULLET = "One-time homepage speed test";
+  const MONTHLY_BULLET = "Monthly store speed report, cost per app";
+  const WEEKLY_BULLET = "Weekly store speed report, cost per app";
+
+  it("free speed test (gc-d0ui): listed on the Free tile only while live, never on Standard's or Professional's", () => {
+    const all = bullets(renderSettings("free", false));
+    expect(all.filter((b) => b === FREE_TEST_BULLET)).toHaveLength(1);
+    expect(all.indexOf(FREE_TEST_BULLET)).toBeLessThan(all.indexOf("All features in Free"));
+    expect(all.join(" ")).not.toContain("One free homepage speed test");
   });
 
-  it("free speed test: absent while the speed report is dark, and from Standard when narrowed to Free", () => {
+  it("free speed test: absent while the speed report is dark", () => {
     expect(
-      bullets(renderSettings("free", false, {}, { free: false, standard: false })),
-    ).not.toContain("One free homepage speed test");
-    const narrowed = bullets(renderSettings("free", false, {}, { free: true, standard: false }));
-    expect(narrowed.filter((b) => b === "One free homepage speed test")).toHaveLength(1);
-    expect(narrowed.indexOf("One free homepage speed test")).toBeLessThan(
-      narrowed.indexOf("All features in Free"),
+      bullets(
+        renderSettings(
+          "free",
+          false,
+          {},
+          { free: false, standard: false },
+          { standard: false, professional: false },
+        ),
+      ),
+    ).not.toContain(FREE_TEST_BULLET);
+  });
+
+  it("speed report bullets (gc-d0ui): Standard monthly right after 'All features in Free', Professional weekly", () => {
+    const all = bullets(renderSettings("free", false));
+    expect(all[all.indexOf("All features in Free") + 1]).toBe(MONTHLY_BULLET);
+    const proStart = all.indexOf("All features in Standard");
+    expect(all.indexOf(MONTHLY_BULLET)).toBeLessThan(proStart);
+    expect(all.slice(proStart)).toContain(WEEKLY_BULLET);
+    expect(all.slice(proStart)).not.toContain(MONTHLY_BULLET);
+    for (const b of [FREE_TEST_BULLET, MONTHLY_BULLET, WEEKLY_BULLET]) {
+      expect(b.length).toBeLessThanOrEqual(40); // Managed Pricing card limit
+    }
+  });
+
+  it("speed report bullets: absent while the speed report is dark", () => {
+    const all = bullets(
+      renderSettings(
+        "free",
+        false,
+        {},
+        { free: false, standard: false },
+        { standard: false, professional: false },
+      ),
     );
+    expect(all).not.toContain(MONTHLY_BULLET);
+    expect(all).not.toContain(WEEKLY_BULLET);
+  });
+
+  it("the Professional tile says 'Up to 5 scans a day' (gc-d0ui), never unlimited scans", () => {
+    const all = bullets(renderSettings("free", false));
+    const pro = all.slice(all.indexOf("All features in Standard"));
+    expect(pro[1]).toBe("Up to 5 scans a day");
+    expect(all.join(" ")).not.toMatch(/unlimited scans/i);
+    expect(pro).toContain("Unlimited theme scanning");
   });
 
   it("every plan button links top-level to the Managed Pricing page", () => {
@@ -500,7 +563,7 @@ describe("app.settings loader: alerts", () => {
     });
   });
 
-  describe("speedInSummary (gc-2wnf): Professional AND the speed report live", () => {
+  describe("speedInSummary (gc-2wnf, gc-d0ui): a plan with the speed report AND the report live", () => {
     afterEach(() => {
       delete process.env.SPEED_REPORT_LIVE_ENABLED;
     });
@@ -509,7 +572,8 @@ describe("app.settings loader: alerts", () => {
       ["Professional, live", "Professional", true, "true", true],
       ["Professional, dark", "Professional", true, undefined, false],
       ["Professional, flag not exactly true", "Professional", true, "TRUE", false],
-      ["Standard, live", "Standard", false, "true", false],
+      ["Standard, live (monthly report, gc-d0ui)", "Standard", true, "true", true],
+      ["Standard, dark", "Standard", true, undefined, false],
       ["free, live", "free", false, "true", false],
     ])("%s", async (_label, plan, speedReport, flag, expected) => {
       if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
@@ -671,6 +735,7 @@ describe("the page is called Settings, matching the notice, email and policy (Na
       trialEligible: true,
       alerts: DARK_ALERTS,
       freeSpeedTestTiles: { free: false, standard: false },
+      speedReportTiles: { standard: false, professional: false },
     };
     const Stub = createRoutesStub([
       {
@@ -706,7 +771,8 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
-      freeSpeedTestTiles: { free: true, standard: true },
+      freeSpeedTestTiles: { free: true, standard: false },
+      speedReportTiles: { standard: true, professional: true },
     };
     const Stub = createRoutesStub([
       {
@@ -781,7 +847,7 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
     expect(html).toContain(
       "We email owner@example.com only when something changed: new or fixed findings, or an app that is no longer active.",
     );
-    expect(html).not.toContain("store speed");
+    expect(html).not.toContain("change in your store speed");
   });
 
   it("live, Standard: monthly label and the owner-email fallback when none is cached", () => {
@@ -795,7 +861,7 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
     expect(html).toContain(
       "We email your store owner email only when something changed: new or fixed findings, or an app that is no longer active.",
     );
-    expect(html).not.toContain("store speed");
+    expect(html).not.toContain("change in your store speed");
   });
 
   it("unchecked when not effectively on", () => {
@@ -848,6 +914,7 @@ describe("Settings Permissions card (gc-4n0y)", () => {
       trialEligible: true,
       alerts: DARK_ALERTS,
       freeSpeedTestTiles: { free: false, standard: false },
+      speedReportTiles: { standard: false, professional: false },
     };
     const Stub = createRoutesStub([
       {

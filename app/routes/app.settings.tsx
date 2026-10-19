@@ -12,7 +12,11 @@ import {
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import { FREE_SPEED_TEST_BULLET } from "../lib/speed-report";
+import {
+  FREE_SPEED_TEST_BULLET,
+  MONTHLY_SPEED_REPORT_BULLET,
+  WEEKLY_SPEED_REPORT_BULLET,
+} from "../lib/speed-report";
 import {
   SUMMARY_CARD_HEADING,
   SUMMARY_COMING_SOON,
@@ -78,16 +82,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       cadence: features.alertCadence,
       enabled: summaryEffectivelyOn(shop),
       email: shop.alertEmail,
-      // gc-2wnf: Professional's email can also report (and be sent for) a
-      // store speed change, but only while the speed report is live.
+      // gc-2wnf: a plan with the speed report (Standard, Professional;
+      // gc-d0ui) can also have its email report (and be sent for) a store
+      // speed change, but only while the speed report is live.
       speedInSummary: isSpeedReportLive() && features.speedReport === true,
     },
-    // Free speed test: the Free and Standard tiles list it while the speed
-    // report is live, straight from the plan matrix (narrowing the feature to
-    // Free drops it from the Standard tile too).
+    // Free speed test: the tiles list it while the speed report is live,
+    // straight from the plan matrix (Free only since gc-d0ui).
     freeSpeedTestTiles: {
       free: isSpeedReportLive() && getPlanFeatures(PLANS.FREE).freeSpeedTest === true,
       standard: isSpeedReportLive() && getPlanFeatures(PLANS.STANDARD).freeSpeedTest === true,
+    },
+    // The full speed report's bullet (gc-d0ui): Standard monthly, Professional
+    // weekly, from the plan matrix, while the speed report is live.
+    speedReportTiles: {
+      standard:
+        isSpeedReportLive() && getPlanFeatures(PLANS.STANDARD).speedReportCadence === "monthly",
+      professional:
+        isSpeedReportLive() && getPlanFeatures(PLANS.PROFESSIONAL).speedReportCadence === "weekly",
     },
   };
 };
@@ -339,8 +351,15 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, features, pricingPlansUrl, trialEligible, alerts, freeSpeedTestTiles } =
-    useLoaderData<typeof loader>();
+  const {
+    shop,
+    features,
+    pricingPlansUrl,
+    trialEligible,
+    alerts,
+    freeSpeedTestTiles,
+    speedReportTiles,
+  } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -460,6 +479,9 @@ export default function Settings() {
               <s-unordered-list>
                 <s-list-item>All features in Free</s-list-item>
                 {freeSpeedTestTiles.standard && freeSpeedTestBullet}
+                {speedReportTiles.standard && (
+                  <s-list-item>{MONTHLY_SPEED_REPORT_BULLET}</s-list-item>
+                )}
                 <s-list-item>Full finding details with code</s-list-item>
                 <s-list-item>1 manual scan per week</s-list-item>
                 <s-list-item>Monthly automatic scan</s-list-item>
@@ -489,8 +511,11 @@ export default function Settings() {
             <div className="plan-tile__features">
               <s-unordered-list>
                 <s-list-item>All features in Standard</s-list-item>
-                <s-list-item>Unlimited scans</s-list-item>
+                <s-list-item>Up to 5 scans a day</s-list-item>
                 <s-list-item>Unlimited theme scanning</s-list-item>
+                {speedReportTiles.professional && (
+                  <s-list-item>{WEEKLY_SPEED_REPORT_BULLET}</s-list-item>
+                )}
                 <s-list-item>Weekly automatic scans</s-list-item>
                 <s-list-item>Auto-rescan on theme publish</s-list-item>
                 <s-list-item>Scan diffing (New/Resolved)</s-list-item>

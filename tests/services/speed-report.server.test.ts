@@ -62,6 +62,7 @@ import {
   prepareSpeedReportRun,
   productUrlOnPrimaryHost,
   requestFreeSpeedTest,
+  speedReportPlansDue,
   requestSpeedReportRunNow,
   resolvePublicProductTarget,
   resolveSpeedTargets,
@@ -153,9 +154,22 @@ describe("checkSpeedReportEligibility", () => {
     expect((await checkSpeedReportEligibility(SHOP_ID)).eligible).toBe(false);
   });
 
+  it("plan Standard is eligible for its scheduled (monthly) report (gc-d0ui)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+    expect((await checkSpeedReportEligibility(SHOP_ID)).eligible).toBe(true);
+    expect((await checkSpeedReportEligibility(SHOP_ID, "SCHEDULED")).eligible).toBe(true);
+  });
+
+  it("plan Standard is not eligible for a MANUAL (Run now) report (gc-d0ui)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+    await expect(checkSpeedReportEligibility(SHOP_ID, "MANUAL")).resolves.toEqual({
+      eligible: false,
+      reason: "not_in_plan",
+    });
+  });
+
   it.each([
     ["free", "not_in_plan"],
-    ["Standard", "not_in_plan"],
     ["SomethingElse", "not_in_plan"],
   ])("plan %s is not eligible", async (plan, reason) => {
     mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan });
@@ -775,8 +789,16 @@ describe("product fallback without read_products (gc-9mbw)", () => {
       expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
     });
 
+    it("Standard (monthly report, gc-d0ui): reads the public product list like Professional", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+      const fetchImpl = storefront(() => productsJson([product("a", "2026-01-01T00:00:00Z")]));
+      expect(await fallbackProduct(fetchImpl)).toEqual({
+        status: "OK",
+        url: `https://${STORE_HOST}/products/a`,
+      });
+    });
+
     it.each([
-      ["Standard", { ...PRO, plan: "Standard" }],
       ["free", { ...PRO, plan: "free" }],
       ["uninstalled", { ...PRO, uninstalledAt: NOW }],
       ["unknown shop", null],
@@ -903,11 +925,6 @@ describe("runPageSpeedAttempt", () => {
 
   it.each([
     ["flag off", () => delete process.env.SPEED_REPORT_LIVE_ENABLED, "not_eligible"],
-    [
-      "downgraded to Standard",
-      () => mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" }),
-      "not_eligible",
-    ],
     [
       "downgraded to Free",
       () => mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free" }),
@@ -1078,7 +1095,7 @@ describe("precheckStorefrontPassword (gc-wt3y #1)", () => {
     delete process.env.SPEED_REPORT_LIVE_ENABLED;
     expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
     process.env.SPEED_REPORT_LIVE_ENABLED = "true";
-    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free" });
     expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -1662,11 +1679,13 @@ describe("free speed test: eligibility matrix (plan x used x origin)", () => {
     // A test asked for just before an upgrade still finishes (homepage only).
     ["Professional", false, "FREE_TEST", "eligible"],
     ["Professional", true, "FREE_TEST", "free_test_used"],
-    // The full report stays Professional only, whatever the free test says.
+    // The full report is Standard (scheduled, monthly) and Professional;
+    // Run now (MANUAL) is Professional only (gc-d0ui).
     ["free", false, "MANUAL", "not_in_plan"],
     ["Standard", false, "MANUAL", "not_in_plan"],
     ["free", false, "SCHEDULED", "not_in_plan"],
-    ["Standard", false, undefined, "not_in_plan"],
+    ["Standard", false, undefined, "eligible"],
+    ["Standard", true, "SCHEDULED", "eligible"],
     ["Professional", true, "MANUAL", "eligible"],
     ["Professional", false, "SCHEDULED", "eligible"],
   ] as const)("%s, used=%s, origin %s -> %s", async (plan, used, origin, expected) => {
@@ -1741,8 +1760,8 @@ describe("free speed test: homepage only, never the product page", () => {
     expect(admin.graphql.mock.calls[0][0]).not.toContain("products");
   });
 
-  it.each(["free", "Standard"])(
-    "%s: the public /products.json fallback is never read (Professional gate)",
+  it.each(["free"])(
+    "%s: the public /products.json fallback is never read (full-report gate)",
     async (plan) => {
       mockDb.shop.findUnique.mockResolvedValue(shopRow(plan));
       const fetchImpl = noStorefront();
@@ -2095,7 +2114,7 @@ describe("requestFreeSpeedTest", () => {
     });
   });
 
-  it.each(["free", "Standard"])(
+  it.each(["free"])(
     "%s: claims the free test, creates a FREE_TEST row and sends a FREE_TEST event",
     async (plan) => {
       await expect(requestFreeSpeedTest({ ...free, plan }, NOW)).resolves.toEqual({
@@ -2117,6 +2136,16 @@ describe("requestFreeSpeedTest", () => {
       });
     },
   );
+
+  it("Standard (gc-d0ui): the free test is no longer offered; a forged POST is refused, nothing claimed", async () => {
+    await expect(requestFreeSpeedTest({ ...free, plan: "Standard" }, NOW)).resolves.toEqual({
+      ok: false,
+      error: FREE_TEST_ERRORS.notInPlan,
+    });
+    expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
 
   it("Professional: refused (it has the full report), nothing claimed", async () => {
     await expect(requestFreeSpeedTest({ ...free, plan: "Professional" }, NOW)).resolves.toEqual({
@@ -2468,5 +2497,23 @@ describe("free speed test daily ceiling scales with the budget (gc-au2l LOW-6)",
       origin: "MANUAL",
     });
     expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(500, NOW);
+  });
+});
+
+describe("speedReportPlansDue (gc-d0ui)", () => {
+  it.each([
+    ["2026-10-04T08:10:00Z", ["Standard", "Professional"]], // first Sunday (day 4)
+    ["2026-11-01T08:10:00Z", ["Standard", "Professional"]], // first Sunday on day 1
+    ["2027-02-07T08:10:00Z", ["Standard", "Professional"]], // first Sunday on day 7
+    ["2026-11-08T08:10:00Z", ["Professional"]], // a Sunday on day 8
+    ["2026-10-18T08:10:00Z", ["Professional"]],
+  ])("%s -> %j", (iso, expected) => {
+    expect(speedReportPlansDue(new Date(iso))).toEqual(expected);
+  });
+
+  it("never includes Free", () => {
+    for (let d = 1; d <= 31; d++) {
+      expect(speedReportPlansDue(new Date(Date.UTC(2026, 9, d, 8, 10)))).not.toContain("free");
+    }
   });
 });

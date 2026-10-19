@@ -11,7 +11,7 @@
  * measured since the scan covered by the last summary (else the theme's
  * previous scan). The finding diff reuses the in-app diff's guards
  * (ignores, scanDiffOptions coverage, restrictToLiveInBoth), so a permission
- * grant or a newly live detector never counts as "new". For Professional, a
+ * grant or a newly live detector never counts as "new". For Standard and Professional (gc-d0ui), a
  * material store speed change (or the first speed report) is also a change,
  * and adds a short speed section (gc-2wnf, summary-speed.server).
  *
@@ -89,7 +89,7 @@ export type SummaryChanges = {
   cleanedApps: SummaryApp[];
   /**
    * gc-2wnf: the speed section, present only when it is worth sending
-   * (loadSummarySpeed: live, Professional, fresh, first or material).
+   * (loadSummarySpeed: live, Standard or Professional, fresh, first or material).
    */
   speed?: SummarySpeed | null;
 };

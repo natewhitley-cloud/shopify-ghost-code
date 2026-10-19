@@ -14,7 +14,10 @@
  *   - free_blocked:  Free quota used: the next free scan date (nextScanAt from
  *                    canStartScan, single source of the period logic) plus the
  *                    trial-vs-upgrade CTA. The page's ONE upgrade ask.
- *   - paid_blocked:  Standard weekly quota used: the next scan date only.
+ *   - paid_blocked:  a paid quota used (Standard weekly; Professional daily,
+ *                    gc-d0ui, though Professional never sees the banner): the
+ *                    next scan date, plus the Settings upgrade link only when
+ *                    a higher plan exists (`canUpgrade`, never on Professional).
  *
  * NEVER THROWS: the banner is optional content; a failed read logs and shows
  * no banner rather than breaking the results page.
@@ -29,7 +32,7 @@ import { getCompletedScansForShop } from "../models/scan.server";
 export type StaleResultsAction =
   | { kind: "rescan" }
   | { kind: "free_blocked"; nextScanAt: Date; trialEligible: boolean }
-  | { kind: "paid_blocked"; nextScanAt: Date }
+  | { kind: "paid_blocked"; nextScanAt: Date; canUpgrade: boolean }
   | { kind: "scan_running" }
   | { kind: "newer_results"; latestScanId: string };
 
@@ -88,5 +91,9 @@ async function resolveAction(
   if (gate.nextScanAt === undefined) return { kind: "scan_running" };
   return shop.plan === PLANS.FREE
     ? { kind: "free_blocked", nextScanAt: gate.nextScanAt, trialEligible }
-    : { kind: "paid_blocked", nextScanAt: gate.nextScanAt };
+    : {
+        kind: "paid_blocked",
+        nextScanAt: gate.nextScanAt,
+        canUpgrade: shop.plan !== PLANS.PROFESSIONAL,
+      };
 }

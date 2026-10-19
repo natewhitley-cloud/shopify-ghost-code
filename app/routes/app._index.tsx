@@ -42,11 +42,12 @@ import {
   canUseMultipleThemes,
   canUseScanDiffing,
   getScanUsage,
-  getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS, promptClaimNeeded } from "../lib/prompt-cap";
 import { safeErrorFields } from "../lib/safe-error";
+import { getNextScanPeriodStart, getScanQuotaPeriod } from "../lib/scan-quota";
+import type { ScanQuotaPeriod } from "../lib/scan-quota";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
@@ -270,7 +271,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [severityCounts, usage, completedScanCheck, typeCounts, ignores, promptState, removalRows] =
     await Promise.all([
       getSeverityCountsForScans(severityScanIds),
-      getScanUsage(shop.id, shop.plan),
+      getScanUsage(shop.id, shop.plan, now),
       hasCompletedScans(shop.id),
       latestSuccessful ? getTypeCountsForScan(latestSuccessful.id) : Promise.resolve(null),
       getIgnoredFindingsForShop(shop.id),
@@ -502,10 +503,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     healthScoreTrend = { scores, direction };
   }
 
-  // Compute scan usage for plans with caps (Free = monthly, Standard = weekly).
+  // Compute scan usage for plans with caps (Free = monthly, Standard = weekly,
+  // Professional = daily). nextScanAt: when the next period starts (shown at the cap).
   const isFirstScan = !completedScanCheck;
-  const scanUsage: { used: number; limit: number; period: "week" | "month" } | null =
-    usage && !isFirstScan ? { used: usage.used, limit: usage.limit, period: usage.period } : null;
+  const scanUsage: {
+    used: number;
+    limit: number;
+    period: ScanQuotaPeriod;
+    nextScanAt: string;
+  } | null =
+    usage && !isFirstScan
+      ? {
+          used: usage.used,
+          limit: usage.limit,
+          period: usage.period,
+          nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart).toISOString(),
+        }
+      : null;
 
   // Rescan nudge: show for Standard-plan shops whose last completed scan is
   // older than 30 days and no scan is currently running.
@@ -775,7 +789,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Missing or unrecognized values are stored as "unknown".
   const requestedFrom = parseScanSource(formData.get("source"));
 
-  const actionFeatures = getPlanFeatures(shop.plan);
   const allowThemeSelection = canUseMultipleThemes(shop.plan);
 
   let themeId: string;
@@ -808,24 +821,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // canStartScan above is an advisory pre-flight check for UX; the
   // authoritative check is inside the transaction to close the TOCTOU gap.
   let quota: ScanQuota = null;
-  if (actionFeatures.maxScansPerMonth !== Infinity || actionFeatures.maxScansPerWeek !== Infinity) {
-    const isFirstScan = !(await hasCompletedScans(shop.id));
-    if (actionFeatures.maxScansPerWeek !== Infinity) {
-      quota = {
-        periodStart: getWeekStartUTC(),
-        maxScans: actionFeatures.maxScansPerWeek,
-        periodLabel: "week",
-        isFirstScan,
-      };
-    } else {
-      const now = new Date();
-      quota = {
-        periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
-        maxScans: actionFeatures.maxScansPerMonth,
-        periodLabel: "month",
-        isFirstScan,
-      };
-    }
+  const quotaPeriod = getScanQuotaPeriod(getPlanFeatures(shop.plan));
+  if (quotaPeriod) {
+    quota = {
+      periodStart: quotaPeriod.periodStart,
+      maxScans: quotaPeriod.limit,
+      periodLabel: quotaPeriod.period,
+      isFirstScan: !(await hasCompletedScans(shop.id)),
+    };
   }
 
   // dispatchScan atomically creates the scan (TOCTOU-safe transaction) then
@@ -837,7 +840,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   let scan: { id: string };
   try {
     // MANUAL origin: this merchant-initiated scan is the only kind that counts
-    // toward the manual weekly/monthly quota (GC-iji). Passed explicitly for clarity.
+    // toward the manual daily/weekly/monthly quota (GC-iji). Passed explicitly for clarity.
     ({ scan } = await dispatchScan(shop.id, themeId, themeName, {
       quota,
       origin: ScanOrigin.MANUAL,
@@ -854,6 +857,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 // Component helpers
 // ---------------------------------------------------------------------------
+
+/** The scan control's usage line: "2 of 5 used today" / "1 of 1 used this week". */
+export function scanUsageLine(usage: { used: number; limit: number; period: ScanQuotaPeriod }) {
+  const when = usage.period === "day" ? "today" : `this ${usage.period}`;
+  return `${usage.used} of ${usage.limit} used ${when}`;
+}
 
 /**
  * Home's summary-email opt-in banner state (gc-xorg). `answered` is the button
@@ -2000,7 +2009,7 @@ export default function Dashboard() {
                     ) : scanUsage !== null ? (
                       <div style={{ width: "100%" }}>
                         <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginBottom: "6px" }}>
-                          {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
+                          {scanUsageLine(scanUsage)}
                         </div>
                         <div
                           className="usage-bar-track"
@@ -2014,11 +2023,7 @@ export default function Dashboard() {
                           />
                         </div>
                       </div>
-                    ) : (
-                      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>
-                        Unlimited scans on your plan
-                      </div>
-                    )}
+                    ) : null}
                     {/* Theme picker — hidden on Free, disabled on Standard, active on Professional.
                       allThemes is only populated for Standard and Professional (loader skips
                       the fetch on Free), so checking length > 0 is sufficient to gate display. */}
@@ -2059,7 +2064,14 @@ export default function Dashboard() {
                     >
                       {isSubmitting ? "Starting..." : "Start New Scan"}
                     </s-button>
-                    {scanLimitReached && (
+                    {scanLimitReached && scanUsage.period === "day" && (
+                      // Professional at its daily cap: no upgrade path, just when.
+                      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
+                        Your next scan is available{" "}
+                        <FormattedDate value={scanUsage.nextScanAt} includeTime />
+                      </div>
+                    )}
+                    {scanLimitReached && scanUsage.period !== "day" && (
                       <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
                         <Link to="/app/settings" style={{ color: COLOR_INFO }}>
                           Upgrade for more scans

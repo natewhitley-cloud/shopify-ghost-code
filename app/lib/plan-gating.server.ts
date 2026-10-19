@@ -1,41 +1,29 @@
 import { getPlanFeatures } from "./billing.server";
+import { PLANS } from "./plans";
+import { getNextScanPeriodStart, getScanQuotaPeriod } from "./scan-quota";
+import type { ScanQuotaPeriod } from "./scan-quota";
 import db from "../db.server";
 import { countScansForShopSince, hasCompletedScans } from "../models/scan.server";
 
-/**
- * Return the start of the current ISO week (Monday 00:00:00 UTC).
- */
-export function getWeekStartUTC(now: Date = new Date()): Date {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  // getUTCDay() returns 0 (Sunday) – 6 (Saturday). Shift so Monday = 0.
-  const dayOfWeek = d.getUTCDay();
-  const diff = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Monday = 0 offset
-  d.setUTCDate(d.getUTCDate() - diff);
-  return d;
-}
+// The pure period helpers live in ./scan-quota (no DB); re-exported here for
+// existing import sites.
+export {
+  getDayStartUTC,
+  getNextScanPeriodStart,
+  getScanQuotaPeriod,
+  getWeekStartUTC,
+} from "./scan-quota";
+export type { ScanQuotaPeriod } from "./scan-quota";
 
 /**
- * The start of the quota period AFTER the one starting at `periodStart`: when
- * a quota-blocked shop can next scan (gc-mgi). `period` and `periodStart` come
- * from getScanUsage, the single source of the period logic.
- *   - month (Free): the 1st of the following month, 00:00 UTC.
- *   - week (Standard): the following Monday, 00:00 UTC.
- */
-export function getNextScanPeriodStart(period: "week" | "month", periodStart: Date): Date {
-  if (period === "month") {
-    return new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
-  }
-  const next = new Date(periodStart);
-  next.setUTCDate(next.getUTCDate() + 7);
-  return next;
-}
-
-/**
- * Check whether a shop is allowed to start a new scan under their current plan.
+ * Check whether a shop is allowed to start a new MANUAL scan under their plan.
  *
  * - Free plan: first scan ever is always allowed (onboarding); after that, 1 scan per calendar month.
  * - Standard: 1 scan per week (resets Monday 00:00 UTC).
- * - Professional: unlimited scans.
+ * - Professional: 5 scans per UTC day (resets 00:00 UTC, gc-d0ui).
+ *
+ * Only manual scans count; scheduled and publish-triggered scans never call
+ * this and are never blocked by a quota.
  *
  * Returns { allowed: true } or { allowed: false, reason: "<human-readable message>" }.
  * A QUOTA block also returns `nextScanAt`, the start of the next quota period
@@ -44,6 +32,7 @@ export function getNextScanPeriodStart(period: "week" | "month", periodStart: Da
 export async function canStartScan(
   shopId: string,
   planName: string,
+  now: Date = new Date(),
 ): Promise<{ allowed: boolean; reason?: string; nextScanAt?: Date }> {
   // Guard against duplicate concurrent scans regardless of plan tier.
   const activeScans = await db.scan.findFirst({
@@ -53,10 +42,22 @@ export async function canStartScan(
     return { allowed: false, reason: "A scan is already in progress." };
   }
 
-  const usage = await getScanUsage(shopId, planName);
+  const usage = await getScanUsage(shopId, planName, now);
 
-  // Professional plan (or any plan with no quota): no cap.
+  // A plan with no quota: no cap.
   if (!usage) {
+    return { allowed: true };
+  }
+
+  // Daily limit check (Professional). No upgrade path: just the reset time.
+  if (usage.period === "day") {
+    if (usage.used >= usage.limit) {
+      return {
+        allowed: false,
+        reason: `Daily scan limit reached (${usage.used} of ${usage.limit} used). Your next scan is available at 00:00 UTC.`,
+        nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart),
+      };
+    }
     return { allowed: true };
   }
 
@@ -65,7 +66,7 @@ export async function canStartScan(
     if (usage.used >= usage.limit) {
       return {
         allowed: false,
-        reason: `Weekly scan limit reached (${usage.used} of ${usage.limit} used). Upgrade to Professional for unlimited scans.`,
+        reason: `Weekly scan limit reached (${usage.used} of ${usage.limit} used). Upgrade to Professional for up to ${getPlanFeatures(PLANS.PROFESSIONAL).maxScansPerDay} scans a day.`,
         nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart),
       };
     }
@@ -94,38 +95,21 @@ export async function canStartScan(
 }
 
 /**
- * Return the scan usage for a shop under its current plan.
+ * Return the manual-scan usage for a shop under its current plan: the quota
+ * period (getScanQuotaPeriod), the MANUAL scans counted in it, and the limit.
+ * Both the dashboard loader and canStartScan delegate here.
  *
- * Computes the billing period start (week for Standard, month for Free),
- * counts scans in that period, and returns the limit. Both the dashboard
- * loader and canStartScan delegate here to avoid duplicating the
- * period/limit calculation.
- *
- * Returns null for plans with no quota (Professional / unlimited).
+ * Returns null for plans with no quota.
  */
 export async function getScanUsage(
   shopId: string,
   planName: string,
-): Promise<{ used: number; limit: number; period: "week" | "month"; periodStart: Date } | null> {
-  const features = getPlanFeatures(planName);
-
-  // Professional plan (both limits at Infinity): no quota.
-  if (features.maxScansPerMonth === Infinity && features.maxScansPerWeek === Infinity) {
-    return null;
-  }
-
-  if (features.maxScansPerWeek !== Infinity) {
-    // Weekly limit (Standard plan).
-    const periodStart = getWeekStartUTC();
-    const used = await countScansForShopSince(shopId, periodStart);
-    return { used, limit: features.maxScansPerWeek, period: "week", periodStart };
-  }
-
-  // Monthly limit (Free plan).
-  const now = new Date();
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const used = await countScansForShopSince(shopId, periodStart);
-  return { used, limit: features.maxScansPerMonth, period: "month", periodStart };
+  now: Date = new Date(),
+): Promise<{ used: number; limit: number; period: ScanQuotaPeriod; periodStart: Date } | null> {
+  const quota = getScanQuotaPeriod(getPlanFeatures(planName), now);
+  if (!quota) return null;
+  const used = await countScansForShopSince(shopId, quota.periodStart);
+  return { used, limit: quota.limit, period: quota.period, periodStart: quota.periodStart };
 }
 
 /**

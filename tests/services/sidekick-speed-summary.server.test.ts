@@ -41,6 +41,8 @@ import {
   getSidekickSpeedSummary,
   MAX_SPEED_APPS,
   PRO_SCOPE,
+  MONTHLY_SCOPE,
+  speedNoMonthlyReportMessage,
   SPEED_NO_REPORT_MESSAGE,
   SPEED_NO_RESULT_MESSAGE,
   SPEED_NOT_LIVE_MESSAGE,
@@ -325,11 +327,11 @@ describe("getSidekickSpeedSummary: Professional", () => {
   });
 });
 
-describe("getSidekickSpeedSummary: Free and Standard (the free speed test)", () => {
+describe("getSidekickSpeedSummary: Free (the free speed test)", () => {
   const freeRow = (status: string, pages: SpeedPageResult[], extra: Record<string, unknown> = {}) =>
     report("f1", status, pages, "2026-10-12T15:00:00.000Z", { origin: "FREE_TEST", ...extra });
 
-  it.each(["free", "Standard"])(
+  it.each(["free"])(
     "%s: returns only the homepage score, timings and ONE costliest app",
     async (plan) => {
       setPlan(plan);
@@ -440,6 +442,78 @@ describe("getSidekickSpeedSummary: Free and Standard (the free speed test)", () 
     await getSidekickSpeedSummary(DOMAIN);
     expect(mockReports).toHaveBeenCalledTimes(1);
     expect(mockReports).toHaveBeenCalledWith("shop_1", { origin: "FREE_TEST" });
+  });
+});
+
+describe("getSidekickSpeedSummary: Standard (the monthly report, gc-d0ui)", () => {
+  beforeEach(() => {
+    setPlan("Standard");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns the latest monthly report like Professional (top 5 apps, unused code), with the monthly scope", async () => {
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [HOME])] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    if (r.status !== "ok" || !r.pages[0].tested) throw new Error("expected a tested page");
+    expect(r.reportType).toBe("speed_report");
+    expect(r.scope).toBe(MONTHLY_SCOPE);
+    expect(r.scope).not.toBe(PRO_SCOPE);
+    expect(r.pages[0].costliestApps).toHaveLength(MAX_SPEED_APPS);
+    expect(r.pages[0].costliestApps[0]).toEqual({
+      app: "Klaviyo",
+      processingTime: "4.0 s",
+      downloadSize: "621 KB",
+      unusedCode: "41% unused",
+    });
+    // The same shared read as the page: the full history, not only FREE_TEST.
+    expect(mockReports).toHaveBeenCalledWith("shop_1");
+    expect(mockUsedAt).not.toHaveBeenCalled();
+  });
+
+  it("a FREE_TEST report from before the plan change still shows (no monthly report yet)", async () => {
+    mockReports.mockResolvedValue([
+      report("f1", "COMPLETED", [HOME], "2026-10-12T15:00:00.000Z", { origin: "FREE_TEST" }),
+    ] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r).toMatchObject({
+      status: "ok",
+      reportDate: "2026-10-12T15:00:00.000Z",
+      reportType: "speed_report",
+      scope: MONTHLY_SCOPE,
+    });
+  });
+
+  it("no report yet: the first monthly report's date, never 'weekly' or 'Sunday'", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T12:00:00Z"));
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r).toEqual({
+      status: "no_data",
+      reason: "not_run",
+      message: speedNoMonthlyReportMessage(new Date("2026-11-01T08:10:00Z")),
+      url: SPEED_URL,
+    });
+    if (r.status !== "no_data") throw new Error("expected no_data");
+    expect(r.message).toBe(
+      "No speed report has run for this store yet. The first monthly report runs on 2026-11-01.",
+    );
+    expect(r.message).not.toMatch(/weekly|Sunday/);
+  });
+
+  it("no plan pitch anywhere in a Standard response", async () => {
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [HOME])] as never);
+    const json = JSON.stringify(await getSidekickSpeedSummary(DOMAIN));
+    expect(json).not.toMatch(/upgrade|Professional|Standard|unlock|trial|plan/i);
+  });
+
+  it("Professional keeps its own scope", async () => {
+    setPlan("Professional");
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [HOME])] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r).toMatchObject({ scope: PRO_SCOPE });
   });
 });
 

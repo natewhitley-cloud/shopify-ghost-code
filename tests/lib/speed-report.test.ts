@@ -625,3 +625,44 @@ describe("free speed test helpers", () => {
     });
   });
 });
+
+describe("monthly speed schedule (gc-d0ui)", () => {
+  it("the monthly day is a Sunday within the first 7 days of the month (UTC)", () => {
+    expect(speed.isMonthlySpeedReportDay(new Date("2026-11-01T08:10:00Z"))).toBe(true); // Sun 1st
+    expect(speed.isMonthlySpeedReportDay(new Date("2027-02-07T08:10:00Z"))).toBe(true); // Sun 7th
+    expect(speed.isMonthlySpeedReportDay(new Date("2026-11-08T08:10:00Z"))).toBe(false); // Sun 8th
+    expect(speed.isMonthlySpeedReportDay(new Date("2026-10-05T08:10:00Z"))).toBe(false); // Mon 5th
+  });
+
+  it.each([
+    ["2026-10-19T12:00:00Z", "2026-11-01T08:10:00.000Z"], // after October's first Sunday
+    ["2026-10-01T00:00:00Z", "2026-10-04T08:10:00.000Z"], // before this month's
+    ["2026-10-04T08:09:59Z", "2026-10-04T08:10:00.000Z"], // a second before the run
+    ["2026-10-04T08:10:00Z", "2026-11-01T08:10:00.000Z"], // at the run: the next month
+    ["2026-12-20T00:00:00Z", "2027-01-03T08:10:00.000Z"], // across the year
+  ])("next monthly run after %s is %s", (now, expected) => {
+    expect(speed.nextMonthlySpeedReportAt(new Date(now)).toISOString()).toBe(expected);
+  });
+
+  it("every next monthly run is itself a monthly day at the cron time", () => {
+    for (let d = 0; d < 400; d += 3) {
+      const next = speed.nextMonthlySpeedReportAt(new Date(Date.UTC(2026, 0, 1 + d, 9)));
+      expect(speed.isMonthlySpeedReportDay(next)).toBe(true);
+      expect([next.getUTCHours(), next.getUTCMinutes()]).toEqual([8, 10]);
+    }
+  });
+
+  it("plan bullets are the owner's exact strings and fit the 40-char card", () => {
+    expect(speed.FREE_SPEED_TEST_BULLET).toBe("One-time homepage speed test");
+    expect(speed.MONTHLY_SPEED_REPORT_BULLET).toBe("Monthly store speed report, cost per app");
+    expect(speed.WEEKLY_SPEED_REPORT_BULLET).toBe("Weekly store speed report, cost per app");
+    for (const b of [
+      speed.FREE_SPEED_TEST_BULLET,
+      speed.MONTHLY_SPEED_REPORT_BULLET,
+      speed.WEEKLY_SPEED_REPORT_BULLET,
+    ]) {
+      expect(b.length).toBeLessThanOrEqual(40);
+      expect(b).not.toMatch(/[–—]/);
+    }
+  });
+});

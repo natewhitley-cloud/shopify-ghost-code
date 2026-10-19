@@ -43,6 +43,7 @@ vi.mock("../../app/models/scan.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { getPlanFeatures } from "../../app/lib/billing.server";
 import {
   canStartScan,
   canDetectCheckoutSunset,
@@ -55,6 +56,8 @@ import {
   canUseMultipleThemes,
   canUseScanDiffing,
   getNextScanPeriodStart,
+  getScanQuotaPeriod,
+  getScanUsage,
 } from "../../app/lib/plan-gating.server";
 
 // Restore real timers after every test so fake-timer usage in one test cannot
@@ -283,7 +286,8 @@ describe("canStartScan — Standard plan", () => {
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("Weekly scan limit reached");
-    expect(result.reason).toContain("Upgrade to Professional");
+    expect(result.reason).toContain("Upgrade to Professional for up to 5 scans a day.");
+    expect(result.reason).not.toMatch(/unlimited/i);
   });
 
   it("allows a manual scan when only a SCHEDULED cron scan ran this week (GC-iji)", async () => {
@@ -322,20 +326,127 @@ describe("canStartScan — Standard plan", () => {
 });
 
 // ---------------------------------------------------------------------------
-// canStartScan — Professional plan (unlimited scans)
+// canStartScan — Professional plan (5 manual scans per UTC day, gc-d0ui)
 // ---------------------------------------------------------------------------
 
-describe("canStartScan — Professional plan", () => {
+describe("canStartScan — Professional plan (5 manual scans a day, gc-d0ui)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.scan.findFirst.mockResolvedValue(null);
   });
 
-  it("returns allowed: true without checking monthly count for Professional plan", async () => {
+  it.each([0, 3, 4])(
+    "allows a manual scan with %i used today (4th and 5th allowed)",
+    async (used) => {
+      mockCountScansForShopSince.mockResolvedValue(used);
+
+      const result = await canStartScan(SHOP_ID, "Professional");
+
+      expect(result).toEqual({ allowed: true });
+    },
+  );
+
+  it.each([5, 6])(
+    "refuses with %i used today (6th refused): reset time, no upsell",
+    async (used) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-19T15:30:00Z"));
+      mockCountScansForShopSince.mockResolvedValue(used);
+
+      const result = await canStartScan(SHOP_ID, "Professional");
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toBe(
+        `Daily scan limit reached (${used} of 5 used). Your next scan is available at 00:00 UTC.`,
+      );
+      expect(result.reason).not.toMatch(/upgrade|unlimited/i);
+      expect(result.nextScanAt).toEqual(new Date("2026-10-20T00:00:00Z"));
+    },
+  );
+
+  it("counts manual scans since 00:00 UTC today, and never the first-scan bypass", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-19T23:59:59.999Z"));
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    await canStartScan(SHOP_ID, "Professional");
+
+    expect(mockCountScansForShopSince).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date("2026-10-19T00:00:00Z"),
+    );
+    expect(mockHasCompletedScans).not.toHaveBeenCalled();
+  });
+
+  it("resets at 00:00 UTC: at midnight the count starts from the new day, next reset the day after", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-20T00:00:00.000Z"));
+    mockCountScansForShopSince.mockResolvedValue(5);
+
     const result = await canStartScan(SHOP_ID, "Professional");
 
-    expect(result.allowed).toBe(true);
-    expect(mockCountScansForShopSince).not.toHaveBeenCalled();
+    expect(mockCountScansForShopSince.mock.calls[0][1]).toEqual(new Date("2026-10-20T00:00:00Z"));
+    expect(result.nextScanAt).toEqual(new Date("2026-10-21T00:00:00Z"));
+  });
+
+  it("a month boundary: Oct 31 at the cap resets Nov 1 00:00 UTC", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T22:00:00Z"));
+    mockCountScansForShopSince.mockResolvedValue(5);
+
+    expect((await canStartScan(SHOP_ID, "Professional")).nextScanAt).toEqual(
+      new Date("2026-11-01T00:00:00Z"),
+    );
+  });
+
+  it("only MANUAL scans count: a day of scheduled and publish scans leaves the allowance (GC-iji)", async () => {
+    // countScansForShopSince counts origin=MANUAL only (scan.server.test.ts),
+    // so a day whose scans were all SCHEDULED / AUTO_PUBLISH reports 0 used.
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    expect((await canStartScan(SHOP_ID, "Professional")).allowed).toBe(true);
+  });
+});
+
+describe("getScanUsage / getScanQuotaPeriod (gc-d0ui)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("Professional: the day period with a limit of 5", async () => {
+    mockCountScansForShopSince.mockResolvedValue(2);
+    const now = new Date("2026-10-19T12:00:00Z");
+
+    expect(await getScanUsage(SHOP_ID, "Professional", now)).toEqual({
+      used: 2,
+      limit: 5,
+      period: "day",
+      periodStart: new Date("2026-10-19T00:00:00Z"),
+    });
+  });
+
+  it("Standard week, Free month, unchanged", () => {
+    const now = new Date("2026-10-22T12:00:00Z"); // Thursday
+    expect(getScanQuotaPeriod(getPlanFeatures("Standard"), now)).toEqual({
+      period: "week",
+      periodStart: new Date("2026-10-19T00:00:00Z"),
+      limit: 1,
+    });
+    expect(getScanQuotaPeriod(getPlanFeatures("free"), now)).toEqual({
+      period: "month",
+      periodStart: new Date("2026-10-01T00:00:00Z"),
+      limit: 1,
+    });
+  });
+
+  it("a features object with no finite cap has no quota", () => {
+    expect(
+      getScanQuotaPeriod({
+        maxScansPerDay: Infinity,
+        maxScansPerWeek: Infinity,
+        maxScansPerMonth: Infinity,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -551,6 +662,15 @@ describe("getNextScanPeriodStart", () => {
     );
   });
 
+  it("day: the next day 00:00 UTC, across a month and a year boundary (gc-d0ui)", () => {
+    expect(getNextScanPeriodStart("day", new Date("2026-10-19T00:00:00Z"))).toEqual(
+      new Date("2026-10-20T00:00:00Z"),
+    );
+    expect(getNextScanPeriodStart("day", new Date("2026-12-31T00:00:00Z"))).toEqual(
+      new Date("2027-01-01T00:00:00Z"),
+    );
+  });
+
   it("week: a week crossing a year boundary", () => {
     expect(getNextScanPeriodStart("week", new Date("2026-12-28T00:00:00Z"))).toEqual(
       new Date("2027-01-04T00:00:00Z"),
@@ -669,5 +789,21 @@ describe("alert gating (alertCadence)", () => {
     for (const [plan] of CASES) {
       expect(canReceiveAlerts(plan)).toBe(getAlertWindowMs(plan) !== null);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The daily cap never blocks automatic scans (gc-d0ui)
+// ---------------------------------------------------------------------------
+
+describe("automatic scans never meet the manual quota (gc-d0ui)", () => {
+  it.each([
+    ["inngest/functions/poll-check-shop.ts", "SCHEDULED"],
+    ["app/routes/webhooks.themes.publish.tsx", "AUTO_PUBLISH"],
+  ])("%s creates %s scans with no quota and no canStartScan", async (path, origin) => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+    expect(src).toContain(`ScanOrigin.${origin}`);
+    expect(src).not.toMatch(/canStartScan|getScanUsage|getScanQuotaPeriod|quota\s*:/);
   });
 });

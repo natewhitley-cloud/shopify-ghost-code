@@ -309,8 +309,13 @@ export function StaleResultsBanner({
         )}
         {action.kind === "paid_blocked" && (
           <s-paragraph>
-            Your next scan is available <FormattedDate value={action.nextScanAt} includeTime />.{" "}
-            <Link to="/app/settings">Upgrade for more scans</Link>
+            Your next scan is available <FormattedDate value={action.nextScanAt} includeTime />.
+            {action.canUpgrade && (
+              <>
+                {" "}
+                <Link to="/app/settings">Upgrade for more scans</Link>
+              </>
+            )}
           </s-paragraph>
         )}
         {action.kind === "scan_running" && (

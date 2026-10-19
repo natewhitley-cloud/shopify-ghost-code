@@ -1,6 +1,15 @@
 /**
  * Store speed report (gc-wt3y): weekly coordinator + per-shop worker.
- * Professional only, DARK unless SPEED_REPORT_LIVE_ENABLED === "true".
+ * DARK unless SPEED_REPORT_LIVE_ENABLED === "true".
+ *
+ * Who is tested (gc-d0ui): Professional every Sunday; Standard on the FIRST
+ * Sunday of each month, from this SAME cron (speedReportPlansDue). One cron,
+ * not a second monthly one: Standard's runs reuse the coordinator, its
+ * idempotency key, the worker's concurrency, the daily budget and the
+ * heartbeat as they are (no new function or heartbeat expectation), and a
+ * monthly run is ~6 calls per Standard shop against the 5,000/day budget.
+ * Trade-off: the first-Sunday batch is Professional + Standard single file;
+ * see the 6 h start-timeout NOTE below.
  *
  * Trigger design: its OWN Sunday cron (08:10 UTC), not an event chained off
  * the weekly scan (06:40 UTC). The report measures the live storefront, not
@@ -51,7 +60,7 @@
  * Free speed test (FREE_TEST origin, plans without the report): the same
  * worker, homepage only. No product lookup (Admin or /products.json), no
  * product call; every gate re-checks the plan and that the free test is still
- * unused. The weekly cron stays Professional-only.
+ * unused. The cron never tests Free.
  */
 
 import { inngest } from "../client";
@@ -65,7 +74,7 @@ export const SPEED_REPORT_CRON = "10 8 * * 0";
 export const SPEED_REPORT_WEEKLY_ID = "speed-report-weekly";
 
 export const speedReportWeekly = inngest.createFunction(
-  { id: SPEED_REPORT_WEEKLY_ID, name: "Store Speed Report: Professional (Coordinator)" },
+  { id: SPEED_REPORT_WEEKLY_ID, name: "Store Speed Report: Weekly + Monthly (Coordinator)" },
   { cron: SPEED_REPORT_CRON },
   withCronHeartbeat(SPEED_REPORT_WEEKLY_ID, async ({ step, logger }) => {
     const { isSpeedReportLive } = await import("../../app/services/speed-report-config.server");
@@ -74,14 +83,17 @@ export const speedReportWeekly = inngest.createFunction(
       return { total: 0, dispatched: 0, disabled: true };
     }
 
-    const { shops, day } = await step.run("fetch-professional-shops", async () => {
+    const { shops, day } = await step.run("fetch-due-shops", async () => {
       const db = (await import("../../app/db.server")).default;
-      const { PLANS } = await import("../../app/lib/plans");
+      const { speedReportPlansDue } = await import("../../app/services/speed-report.server");
+      // Professional every Sunday; Standard too on the first Sunday of the
+      // month (gc-d0ui). Free never.
+      const firedAt = new Date();
       const rows = await db.shop.findMany({
-        where: { plan: PLANS.PROFESSIONAL, uninstalledAt: null },
+        where: { plan: { in: speedReportPlansDue(firedAt) }, uninstalledAt: null },
         select: { id: true },
       });
-      return { shops: rows, day: new Date().toISOString().slice(0, 10) };
+      return { shops: rows, day: firedAt.toISOString().slice(0, 10) };
     });
 
     logger.info(`[${SPEED_REPORT_WEEKLY_ID}] Fanning out ${shops.length} speed reports`);

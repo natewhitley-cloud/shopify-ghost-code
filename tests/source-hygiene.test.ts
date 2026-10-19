@@ -74,3 +74,24 @@ describe("brand name", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * Professional's manual scans are capped at 5 a day (gc-d0ui, 2026-10-19), so
+ * no merchant-facing string under app/ may promise unlimited scans (Home's old
+ * "Unlimited scans on your plan", the Settings tile, the Standard limit
+ * reason's "Upgrade to Professional for unlimited scans"). Same scope as the
+ * brand guard above: non-comment lines of app/**\/*.ts(x). "Unlimited theme
+ * scanning" (themes are still unlimited on Professional) is fine.
+ */
+describe("plan copy (gc-d0ui)", () => {
+  it('no merchant copy under app/ says "unlimited scans"', () => {
+    expect(
+      appCodeLinesMatching(/unlimited\s+(?:manual\s+)?scans/i),
+      'Professional is "Up to 5 scans a day"',
+    ).toEqual([]);
+  });
+
+  it("no merchant copy under app/ says the old free speed test bullet", () => {
+    expect(appCodeLinesMatching(/One free homepage speed test/)).toEqual([]);
+  });
+});

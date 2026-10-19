@@ -176,6 +176,13 @@ export function determineBillingEventType(
 export type PlanFeatures = {
   maxScansPerMonth: number;
   maxScansPerWeek: number;
+  /**
+   * Manual scans per UTC day (resets 00:00 UTC). Professional: 5 (gc-d0ui, an
+   * abuse bound; it replaced unlimited). Infinity = no daily cap. Like the
+   * weekly and monthly caps it counts MANUAL scans only: scheduled and
+   * publish-triggered scans never count and are never blocked by it.
+   */
+  maxScansPerDay: number;
   showFindingDetails: boolean;
   maxThemes: number;
   autoRescan: boolean;
@@ -210,17 +217,24 @@ export type PlanFeatures = {
   productAuditCap: number;
   redirectAuditCap: number;
   /**
-   * Weekly store speed report: Google PageSpeed results for the homepage and
-   * one product page, with the cost broken down by app (gc-wt3y).
-   * Professional-only. Also DARK behind SPEED_REPORT_LIVE_ENABLED.
+   * The full store speed report: Google PageSpeed results for the homepage and
+   * one product page, with the cost broken down by app (gc-wt3y). Standard
+   * (monthly) and Professional (weekly) since gc-d0ui. Also DARK behind
+   * SPEED_REPORT_LIVE_ENABLED.
    */
   speedReport: boolean;
   /**
+   * How often the speed cron tests the shop (gc-d0ui): Professional weekly
+   * (every Sunday 08:10 UTC), Standard monthly (the first Sunday of the month,
+   * same cron), Free none. "none" exactly when speedReport is false.
+   */
+  speedReportCadence: "none" | "weekly" | "monthly";
+  /** "Run speed test now", once per 24h per shop. Professional-only (gc-d0ui). */
+  speedRunNow: boolean;
+  /**
    * One free store speed test: homepage only, score + costliest app, once ever
-   * per shop (Shop.freeSpeedTestUsedAt). Every plan WITHOUT speedReport; the
-   * owner asked for Free, and Standard has it too so a paying Standard shop
-   * never gets less than Free. To narrow it to Free, set Standard's to false.
-   * Also DARK behind SPEED_REPORT_LIVE_ENABLED.
+   * per shop (Shop.freeSpeedTestUsedAt). Free only since gc-d0ui (Standard has
+   * the monthly report instead). Also DARK behind SPEED_REPORT_LIVE_ENABLED.
    */
   freeSpeedTest: boolean;
 };
@@ -231,6 +245,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
       return {
         maxScansPerMonth: Infinity,
         maxScansPerWeek: 1,
+        maxScansPerDay: Infinity,
         showFindingDetails: true,
         maxThemes: 1,
         autoRescan: false,
@@ -242,13 +257,16 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: STANDARD_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: STANDARD_REDIRECT_CAP, // gc-747u
-        speedReport: false, // Professional-only (gc-wt3y)
-        freeSpeedTest: true, // never less than Free; set false to narrow the free test to Free
+        speedReport: true, // monthly store speed report (gc-d0ui)
+        speedReportCadence: "monthly", // first Sunday of the month, 08:10 UTC (gc-d0ui)
+        speedRunNow: false, // Run now is Professional-only (gc-d0ui)
+        freeSpeedTest: false, // replaced by the monthly report (gc-d0ui)
       };
     case PLANS.PROFESSIONAL:
       return {
         maxScansPerMonth: Infinity,
         maxScansPerWeek: Infinity,
+        maxScansPerDay: 5, // 5 manual scans per UTC day (gc-d0ui)
         showFindingDetails: true,
         maxThemes: Infinity,
         autoRescan: true,
@@ -260,7 +278,9 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: PROFESSIONAL_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: PROFESSIONAL_REDIRECT_CAP, // gc-747u
-        speedReport: true, // Professional-only weekly store speed report (gc-wt3y)
+        speedReport: true, // weekly store speed report (gc-wt3y)
+        speedReportCadence: "weekly", // every Sunday, 08:10 UTC
+        speedRunNow: true, // Run now, once per 24h (gc-wt3y)
         freeSpeedTest: false, // Professional has the full report instead
       };
     default: // FREE — no active Shopify subscription
@@ -269,6 +289,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         // Infinity signals "no weekly cap" — getScanUsage skips the weekly
         // check and falls through to the monthly limit instead.
         maxScansPerWeek: Infinity,
+        maxScansPerDay: Infinity,
         showFindingDetails: false,
         maxThemes: 1,
         autoRescan: false,
@@ -280,7 +301,9 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "none", // Free has no scheduled rescans, so nothing to alert on (gc-syz.3)
         productAuditCap: PRODUCT_AUDIT_CAP, // unchanged Free cap (gc-747u)
         redirectAuditCap: REDIRECT_CAP, // unchanged Free cap (gc-747u)
-        speedReport: false, // Professional-only (gc-wt3y)
+        speedReport: false, // Standard and Professional (gc-d0ui)
+        speedReportCadence: "none",
+        speedRunNow: false,
         freeSpeedTest: true, // one free homepage speed test, once ever
       };
   }

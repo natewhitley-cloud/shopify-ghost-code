@@ -419,7 +419,12 @@ describe("app._index loader", () => {
         scanUsage: { used: number; limit: number; period: string } | null;
       };
 
-      expect(result.scanUsage).toEqual({ used: 0, limit: 1, period: "month" });
+      expect(result.scanUsage).toEqual({
+        used: 0,
+        limit: 1,
+        period: "month",
+        nextScanAt: "2026-04-01T00:00:00.000Z",
+      });
     });
 
     it("returns scanUsage for Standard plan (weekly)", async () => {
@@ -444,27 +449,34 @@ describe("app._index loader", () => {
         scanUsage: { used: number; limit: number; period: string } | null;
       };
 
-      expect(result.scanUsage).toEqual({ used: 1, limit: 1, period: "week" });
+      expect(result.scanUsage).toEqual({
+        used: 1,
+        limit: 1,
+        period: "week",
+        nextScanAt: "2026-03-23T00:00:00.000Z",
+      });
     });
 
-    it("returns null scanUsage for Professional plan (unlimited)", async () => {
+    it("returns daily scanUsage for Professional plan (5 a day, gc-d0ui)", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
-      mockGetPlanFeatures.mockReturnValue({
-        maxScansPerMonth: Infinity,
-        maxScansPerWeek: Infinity,
-        showFindingDetails: true,
-        maxThemes: Infinity,
-        autoRescan: true,
-        scanDiffing: true,
-        scheduledScan: true,
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockGetScanUsage.mockResolvedValue({
+        used: 2,
+        limit: 5,
+        period: "day" as const,
+        periodStart: new Date("2026-03-18T00:00:00Z"),
       });
-      mockGetScanUsage.mockResolvedValue(null);
 
       const result = (await loader(makeLoaderArgs())) as {
-        scanUsage: null;
+        scanUsage: { used: number; limit: number; period: string; nextScanAt: string } | null;
       };
 
-      expect(result.scanUsage).toBeNull();
+      expect(result.scanUsage).toEqual({
+        used: 2,
+        limit: 5,
+        period: "day",
+        nextScanAt: "2026-03-19T00:00:00.000Z",
+      });
     });
   });
 
@@ -896,6 +908,7 @@ const ALL_THEMES = [
 const PRO_FEATURES = {
   maxScansPerMonth: Infinity,
   maxScansPerWeek: Infinity,
+  maxScansPerDay: 5,
   showFindingDetails: true,
   maxThemes: Infinity,
   autoRescan: true,
@@ -1167,10 +1180,15 @@ describe("app._index action — theme picker", () => {
       // fetchAllThemes validates the selection; fetchMainTheme should not be called
       expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
       expect(mockFetchMainTheme).not.toHaveBeenCalled();
-      // Professional plan has no scan quota (Infinity limits), so quota is null.
-      // Origin is MANUAL (GC-iji): a merchant-initiated scan from the dashboard.
+      // Professional: the atomic daily quota (5 manual scans since 00:00 UTC
+      // today, gc-d0ui). Origin is MANUAL (GC-iji): a merchant-initiated scan.
       expect(mockDispatchScan).toHaveBeenCalledWith("shop-1", "gid://shopify/Theme/789", "Craft", {
-        quota: null,
+        quota: {
+          periodStart: expect.any(Date),
+          maxScans: 5,
+          periodLabel: "day",
+          isFirstScan: expect.any(Boolean),
+        },
         origin: ScanOrigin.MANUAL,
         // No source field in this post: stored as "unknown" (telemetry only).
         requestedFrom: "unknown",

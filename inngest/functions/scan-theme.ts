@@ -2535,8 +2535,9 @@ export const scanTheme = inngest.createFunction(
               themeId,
               periodScanIds,
             );
-            // gc-2wnf: Professional's speed section (null unless live, Pro,
-            // fresh and first-or-material). A material change alone sends.
+            // gc-2wnf: the speed section (null unless live, a plan with the
+            // report (Standard or Professional, gc-d0ui), fresh for its
+            // cadence, and first-or-material). A material change alone sends.
             const { loadSummarySpeed } = await import("../../app/services/summary-speed.server");
             const changes = {
               newCount: findingChanges.newCount,

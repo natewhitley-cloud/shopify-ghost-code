@@ -155,6 +155,41 @@ export const SPEED_REPORT_STUCK_MS = 60 * 60 * 1000;
  */
 export const SPEED_REPORT_QUEUED_STUCK_MS = 7 * 60 * 60 * 1000;
 
+/**
+ * The speed cron's time of day, UTC (Sunday 08:10, inngest/functions/
+ * speed-report.ts SPEED_REPORT_CRON). Professional is tested every Sunday;
+ * Standard on the FIRST Sunday of each month (gc-d0ui), from the same cron.
+ */
+export const SPEED_REPORT_CRON_UTC = { hour: 8, minute: 10 } as const;
+
+/**
+ * Whether `date` (a cron firing) is the monthly speed day: a Sunday that is one
+ * of the first 7 days of its month, UTC (gc-d0ui).
+ */
+export function isMonthlySpeedReportDay(date: Date): boolean {
+  return date.getUTCDay() === 0 && date.getUTCDate() <= 7;
+}
+
+/** The first Sunday of the month containing `year`/`month`, at the cron time (UTC). */
+function firstSundayRun(year: number, month: number): Date {
+  const first = new Date(Date.UTC(year, month, 1));
+  const day = 1 + ((7 - first.getUTCDay()) % 7);
+  return new Date(
+    Date.UTC(year, month, day, SPEED_REPORT_CRON_UTC.hour, SPEED_REPORT_CRON_UTC.minute),
+  );
+}
+
+/**
+ * When the next monthly speed test runs (gc-d0ui): the first Sunday of this
+ * month at 08:10 UTC if that is still ahead of `now`, else the first Sunday of
+ * next month.
+ */
+export function nextMonthlySpeedReportAt(now: Date): Date {
+  const thisMonth = firstSundayRun(now.getUTCFullYear(), now.getUTCMonth());
+  if (thisMonth.getTime() > now.getTime()) return thisMonth;
+  return firstSundayRun(now.getUTCFullYear(), now.getUTCMonth() + 1);
+}
+
 /** When the shop may next press "Run speed test now" (null = now). */
 export function runNowAvailableAt(lastRequestedAt: Date | null, now: Date): Date | null {
   if (!lastRequestedAt) return null;
@@ -348,6 +383,12 @@ export const SPEED_CAVEAT =
 
 export const SPEED_INTRO =
   "How fast your store loads on a phone, and which apps slow it down. Tested every week with Google PageSpeed Insights.";
+/** Standard's intro (gc-d0ui): the same report, tested once a month. */
+export const SPEED_INTRO_MONTHLY =
+  "How fast your store loads on a phone, and which apps slow it down. Tested once a month with Google PageSpeed Insights.";
+/** Plan bullets (max 40 chars, the Managed Pricing card limit; gc-d0ui). */
+export const MONTHLY_SPEED_REPORT_BULLET = "Monthly store speed report, cost per app";
+export const WEEKLY_SPEED_REPORT_BULLET = "Weekly store speed report, cost per app";
 
 export const SPEED_TEASER_HEADING = "See which apps slow your store";
 export const SPEED_TEASER_BODY =
@@ -449,8 +490,8 @@ export const SPEED_RUNNING_TIMED_OUT_MESSAGE =
 export const FREE_TEST_INTRO =
   "See how fast your homepage loads on a phone, and which app slows it down the most. Your plan includes one free test with Google PageSpeed Insights.";
 export const FREE_TEST_BUTTON = "Run your free speed test";
-/** The Free and Standard plan-tile bullet (max 40 chars, Managed Pricing card limit). */
-export const FREE_SPEED_TEST_BULLET = "One free homepage speed test";
+/** The Free plan-tile bullet (max 40 chars, Managed Pricing card limit; gc-d0ui wording). */
+export const FREE_SPEED_TEST_BULLET = "One-time homepage speed test";
 export const FREE_TEST_NOT_USED = "Your free test wasn't used, so you can run it again.";
 /**
  * How many free-test attempts a shop gets in total. Only an attempt that

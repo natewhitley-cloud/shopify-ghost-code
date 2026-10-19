@@ -25,15 +25,15 @@ export const SUCCESSFUL_SCAN_STATUSES = [ScanStatus.COMPLETED, ScanStatus.PARTIA
  * period and rejects if the quota is exceeded — closing the TOCTOU gap
  * between the advisory canStartScan check and actual scan creation.
  *
- * Pass `null` for plans with no quota (Professional / unlimited).
+ * Pass `null` for plans with no quota.
  */
 export type ScanQuota = {
-  /** Start of the billing period (month start for Free, week start for Standard). */
+  /** Start of the quota period (day for Professional, week for Standard, month for Free). */
   periodStart: Date;
   /** Maximum scans allowed in the period. */
   maxScans: number;
   /** Human-readable period name for error messages. */
-  periodLabel: "week" | "month";
+  periodLabel: "day" | "week" | "month";
   /** Whether this is the shop's first-ever scan (bypasses quota on Free plan). */
   isFirstScan: boolean;
 } | null;
@@ -100,7 +100,7 @@ export async function createScan(
       });
       if (usedInPeriod >= quota.maxScans) {
         throw new Error(
-          `Scan limit reached: ${usedInPeriod} of ${quota.maxScans} scans used this ${quota.periodLabel}.`,
+          `Scan limit reached: ${usedInPeriod} of ${quota.maxScans} scans used ${quota.periodLabel === "day" ? "today" : `this ${quota.periodLabel}`}.`,
         );
       }
     }
@@ -507,7 +507,7 @@ export async function getScanIdsForThemeBetween(
 
 /**
  * Count scans created at or after `since` for a given shop.
- * Used by plan-gating to enforce per-month scan limits on the free tier.
+ * Used by plan-gating to enforce the per-day / per-week / per-month manual scan limits.
  *
  * Only successful (COMPLETED / PARTIAL) and IN_PROGRESS scans count toward the
  * quota. FAILED and PENDING scans are excluded so merchants are not penalised

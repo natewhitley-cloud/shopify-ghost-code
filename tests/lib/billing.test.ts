@@ -291,10 +291,10 @@ describe("getPlanFeatures walk caps (gc-747u)", () => {
   });
 });
 
-describe("getPlanFeatures speedReport (gc-wt3y)", () => {
+describe("getPlanFeatures speedReport (gc-wt3y; Standard since gc-d0ui)", () => {
   it.each([
     ["free", false],
-    ["Standard", false],
+    ["Standard", true],
     ["Professional", true],
     ["unknown", false],
     ["professional", false], // plan names are exact; a lowercase variant is not a paid plan
@@ -303,10 +303,10 @@ describe("getPlanFeatures speedReport (gc-wt3y)", () => {
   });
 });
 
-describe("getPlanFeatures freeSpeedTest (free speed test)", () => {
+describe("getPlanFeatures freeSpeedTest (free speed test; Free only since gc-d0ui)", () => {
   it.each([
     ["free", true],
-    ["Standard", true],
+    ["Standard", false],
     ["Professional", false],
     ["unknown", true], // an unknown plan resolves to Free
   ])("%s -> %s", (plan, enabled) => {
@@ -318,5 +318,43 @@ describe("getPlanFeatures freeSpeedTest (free speed test)", () => {
       const f = getPlanFeatures(plan);
       expect(f.speedReport !== f.freeSpeedTest).toBe(true);
     }
+  });
+});
+
+describe("getPlanFeatures speed cadence and Run now (gc-d0ui)", () => {
+  it.each([
+    ["free", "none", false],
+    ["Standard", "monthly", false],
+    ["Professional", "weekly", true],
+    ["unknown", "none", false],
+  ])("%s -> cadence %s, Run now %s", (plan, cadence, runNow) => {
+    const f = getPlanFeatures(plan);
+    expect(f.speedReportCadence).toBe(cadence);
+    expect(f.speedRunNow).toBe(runNow);
+  });
+
+  it("cadence is 'none' exactly when the plan has no full report; Run now implies the report", () => {
+    for (const plan of [PLANS.FREE, PLANS.STANDARD, PLANS.PROFESSIONAL]) {
+      const f = getPlanFeatures(plan);
+      expect(f.speedReportCadence === "none").toBe(!f.speedReport);
+      if (f.speedRunNow) expect(f.speedReport).toBe(true);
+    }
+  });
+});
+
+describe("getPlanFeatures maxScansPerDay (gc-d0ui)", () => {
+  it.each([
+    ["free", Infinity],
+    ["Standard", Infinity],
+    ["Professional", 5],
+    ["unknown", Infinity],
+  ])("%s -> %s manual scans a day", (plan, cap) => {
+    expect(getPlanFeatures(plan).maxScansPerDay).toBe(cap);
+  });
+
+  it("Professional has no weekly or monthly cap (the daily cap is its only quota)", () => {
+    const pro = getPlanFeatures(PLANS.PROFESSIONAL);
+    expect(pro.maxScansPerWeek).toBe(Infinity);
+    expect(pro.maxScansPerMonth).toBe(Infinity);
   });
 });

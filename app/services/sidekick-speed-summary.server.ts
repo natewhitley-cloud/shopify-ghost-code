@@ -4,10 +4,11 @@
  *
  * Rules this file keeps:
  *   - SAME GATE AS THE STORE SPEED PAGE. The plan-gated read is the page's
- *     own (readSpeedPageReport): Professional sees its latest report with
- *     results (every tested page, the top apps by processing time); Free and
- *     Standard see ONLY their one free homepage test (score, core timings and
- *     the ONE costliest app, as the page shows it); a plan with neither gets
+ *     own (readSpeedPageReport): Standard (monthly) and Professional (weekly)
+ *     see their latest report with results (every tested page, the top apps
+ *     by processing time; gc-d0ui); Free sees ONLY its one free homepage test
+ *     (score, core timings and the ONE costliest app, as the page shows it);
+ *     a plan with neither gets
  *     `not_available_on_plan`, with no plan pitch (App Store rules
  *     2.2.8 / 2.2.9). While SPEED_REPORT_LIVE_ENABLED is off (the page 404s)
  *     the tool says the speed report is not available.
@@ -31,6 +32,7 @@ import {
   formatSeconds,
   NEEDS_PRODUCT_ACCESS_MESSAGE,
   NO_PRODUCT_MESSAGE,
+  nextMonthlySpeedReportAt,
   PASSWORD_PROTECTED_MESSAGE,
   SPEED_CAVEAT,
   SPEED_PAGE_LABELS,
@@ -64,7 +66,7 @@ export type SidekickSpeedApp = {
   app: string;
   processingTime: string;
   downloadSize: string;
-  /** Professional only, as the page's table shows it. */
+  /** Full report only (Standard / Professional), as the page's table shows it. */
   unusedCode?: string;
 };
 
@@ -91,7 +93,7 @@ export type SidekickSpeedSummary =
   | {
       status: "ok";
       reportDate: string;
-      /** "speed_report" (Professional: weekly or Run now) or "free_test" (the one free homepage test). */
+      /** "speed_report" (the weekly or monthly report, or Run now) or "free_test" (the one free homepage test). */
       reportType: "speed_report" | "free_test";
       pages: SidekickSpeedPage[];
       /** What the result covers on this plan. */
@@ -109,6 +111,10 @@ export const SPEED_NOT_ON_PLAN_MESSAGE =
 export const SPEED_NO_RESULT_MESSAGE = "GhostCode has no speed result for this store yet.";
 export const SPEED_NO_REPORT_MESSAGE =
   "No speed report has run for this store yet. The first weekly report runs on Sunday.";
+/** Monthly cadence (gc-d0ui): the date is the next first-Sunday run, YYYY-MM-DD. */
+export function speedNoMonthlyReportMessage(nextRun: Date): string {
+  return `No speed report has run for this store yet. The first monthly report runs on ${nextRun.toISOString().slice(0, 10)}.`;
+}
 export const SPEED_RUNNING_NOW_MESSAGE =
   "A speed test is running now. Results appear in GhostCode in a few minutes.";
 export const SPEED_PAUSED_MESSAGE =
@@ -118,6 +124,8 @@ export const FREE_TEST_NOT_RUN_MESSAGE =
 export const FREE_TEST_RESULT_MISSING_MESSAGE = "The free speed test result is not available.";
 export const PRO_SCOPE =
   "The latest speed report with results: each tested page with the apps that cost it the most processing time.";
+export const MONTHLY_SCOPE =
+  "The latest monthly speed report with results: each tested page with the apps that cost it the most processing time.";
 export const FREE_SCOPE =
   "The store's one free homepage speed test: the homepage score, core timings and the one app that cost the most processing time.";
 
@@ -130,7 +138,7 @@ function day(iso: string): string {
   return iso.slice(0, 10);
 }
 
-/** Why a report (Professional) has no results, in the page's words. */
+/** Why a full report (Standard / Professional) has no results, in the page's words. */
 function runWithoutResults(latest: SpeedReportSummaryView): {
   reason: SpeedNoDataReason;
   message: string;
@@ -163,7 +171,7 @@ function pathOf(url: string | null): string | null {
   }
 }
 
-/** One page of a Professional report, as SpeedPageSection shows it. */
+/** One page of a full report, as SpeedPageSection shows it. */
 function proPage(page: SpeedPageResult): SidekickSpeedPage {
   const base = { page: pageLabel(page.page), path: pathOf(page.url) };
   if (page.status !== "OK" || !page.metrics) {
@@ -231,7 +239,8 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
   const shop = await getShopMetadata(shopDomain);
   if (!shop) return noData("not_run", SPEED_NO_RESULT_MESSAGE);
 
-  const report = await readSpeedPageReport(shop, new Date());
+  const now = new Date();
+  const report = await readSpeedPageReport(shop, now);
 
   if (report.access === "locked") {
     return { status: "not_available_on_plan", message: SPEED_NOT_ON_PLAN_MESSAGE };
@@ -276,8 +285,16 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
     }
   }
 
+  const monthly = report.cadence === "monthly";
   const { latest, lastResults } = report.view;
-  if (!latest) return noData("not_run", SPEED_NO_REPORT_MESSAGE);
+  if (!latest) {
+    return noData(
+      "not_run",
+      monthly
+        ? speedNoMonthlyReportMessage(nextMonthlySpeedReportAt(now))
+        : SPEED_NO_REPORT_MESSAGE,
+    );
+  }
   if (!lastResults) {
     const why = runWithoutResults(latest);
     return noData(why.reason, why.message);
@@ -288,7 +305,7 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
     reportDate: lastResults.createdAt,
     reportType: "speed_report",
     pages: lastResults.pages.map(proPage),
-    scope: PRO_SCOPE,
+    scope: monthly ? MONTHLY_SCOPE : PRO_SCOPE,
     latestRun: newer ? { date: latest.createdAt, ...newer } : null,
     caveat: SPEED_CAVEAT,
     url: SPEED_URL,

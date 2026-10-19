@@ -41,7 +41,7 @@ import { createScan } from "../models/scan.server";
  * @param themeId  - Shopify theme GID (e.g. `gid://shopify/Theme/123`).
  * @param themeName - Human-readable theme name stored on the scan record.
  * @param options.quota - Optional quota to enforce atomically inside the
- *   createScan transaction. Pass `null` / omit for unlimited plans.
+ *   createScan transaction. Pass `null` / omit for plans with no quota.
  * @param options.origin - Which surface initiated the scan. Defaults to MANUAL.
  *   Pass SCHEDULED / AUTO_PUBLISH for non-merchant-initiated scans so they are
  *   exempt from the manual quota (GC-iji). The theme-publish auto-rescan webhook

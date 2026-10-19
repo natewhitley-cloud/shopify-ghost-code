@@ -461,6 +461,82 @@ describe("createScan — manual quota exemption (GC-iji)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createScan — Professional daily cap (gc-d0ui): 5 MANUAL scans per UTC day
+// ---------------------------------------------------------------------------
+
+describe("createScan — Professional daily cap (gc-d0ui)", () => {
+  const PRO_DAY_QUOTA = {
+    periodStart: new Date("2026-10-19T00:00:00Z"),
+    maxScans: 5,
+    periodLabel: "day" as const,
+    isFirstScan: false,
+  };
+  const manual = (n: number) => Array.from({ length: n }, () => ({ origin: ScanOrigin.MANUAL }));
+  const automatic = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      origin: i % 2 === 0 ? ScanOrigin.SCHEDULED : ScanOrigin.AUTO_PUBLISH,
+    }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockResolvedValue(baseScan);
+  });
+
+  function countMatchingOrigin(scans: Array<{ origin: ScanOrigin }>) {
+    return async ({ where }: { where: { origin?: ScanOrigin } }) =>
+      scans.filter((s) => where.origin === undefined || s.origin === where.origin).length;
+  }
+
+  it.each([3, 4])(
+    "with %i manual scans today, the next manual scan is created (4th, 5th)",
+    async (n) => {
+      mockTx.scan.count.mockImplementation(countMatchingOrigin(manual(n)));
+
+      await expect(
+        createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, PRO_DAY_QUOTA),
+      ).resolves.toEqual(baseScan);
+    },
+  );
+
+  it("with 5 manual scans today, the 6th is refused, counted from 00:00 UTC", async () => {
+    mockTx.scan.count.mockImplementation(countMatchingOrigin(manual(5)));
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, PRO_DAY_QUOTA),
+    ).rejects.toThrow("Scan limit reached: 5 of 5 scans used today.");
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
+    const where = mockTx.scan.count.mock.calls[0][0].where;
+    expect(where.createdAt).toEqual({ gte: new Date("2026-10-19T00:00:00Z") });
+    expect(where.origin).toBe(ScanOrigin.MANUAL);
+  });
+
+  it("scheduled and publish scans are not counted: 4 manual + 10 automatic still allows the 5th manual", async () => {
+    mockTx.scan.count.mockImplementation(countMatchingOrigin([...manual(4), ...automatic(10)]));
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, PRO_DAY_QUOTA),
+    ).resolves.toEqual(baseScan);
+  });
+
+  it.each([ScanOrigin.SCHEDULED, ScanOrigin.AUTO_PUBLISH])(
+    "a %s scan is never refused by the cap, even with 5 manual scans today (no quota passed)",
+    async (origin) => {
+      mockTx.scan.count.mockImplementation(countMatchingOrigin(manual(5)));
+
+      // The cron worker and the publish webhook pass no quota (poll-check-shop,
+      // webhooks.themes.publish), so no quota count runs at all.
+      await expect(createScan(SHOP_ID, THEME_ID, "Dawn", origin)).resolves.toEqual(baseScan);
+      expect(mockTx.scan.count).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ createdAt: expect.anything() }),
+        }),
+      );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // getScanById
 // ---------------------------------------------------------------------------
 

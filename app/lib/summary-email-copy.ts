@@ -8,8 +8,9 @@
  * Honesty rules: the card never says emails are sent while sending is not
  * configured, and never promises more than the email does (only when something
  * changed: new or fixed findings, or an app that is no longer active; for
- * Professional while the store speed report is live, also a noticeable speed
- * change, which can trigger a send on its own, gc-2wnf).
+ * Standard and Professional while the store speed report is live, also a
+ * noticeable speed change, which can trigger a send on its own, gc-2wnf,
+ * gc-d0ui).
  */
 
 export type SummaryCadence = "weekly" | "monthly";
@@ -57,8 +58,8 @@ export function summaryToggleLabel(cadence: SummaryCadence): string {
 
 /**
  * Card paragraph while sending is configured. `speedInSummary`: the email can
- * carry (and be sent for) a store speed change, i.e. Professional with the
- * speed report live (gc-2wnf).
+ * carry (and be sent for) a store speed change, i.e. Standard or Professional
+ * with the speed report live (gc-2wnf, gc-d0ui).
  */
 export function summaryLiveParagraph(email: string | null, speedInSummary = false): string {
   const who = email ?? OWNER_EMAIL_FALLBACK;

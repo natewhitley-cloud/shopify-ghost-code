@@ -1570,3 +1570,82 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Home's scan control: the plan's manual-scan limit (gc-d0ui)
+// ---------------------------------------------------------------------------
+
+describe("Home scan control: manual-scan limit copy (gc-d0ui)", () => {
+  /** The "New Scan" card of a rendered Home. */
+  function scanCardOf(html: string): string {
+    const start = html.indexOf("<s-heading>New Scan</s-heading>");
+    expect(start).toBeGreaterThan(-1);
+    return html.slice(start, html.indexOf("<s-heading>Scan History</s-heading>", start));
+  }
+
+  function usage(used: number, limit: number, period: "day" | "week" | "month", start: string) {
+    (getScanUsage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      used,
+      limit,
+      period,
+      periodStart: new Date(start),
+    });
+  }
+
+  it("Professional under the cap: 'N of 5 used today', no upgrade link, never 'Unlimited scans'", async () => {
+    setPlan("Professional");
+    (canUseMultipleThemes as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    usage(4, 5, "day", "2026-10-19T00:00:00Z");
+
+    const card = scanCardOf(renderDashboard(await runLoader()));
+
+    expect(card).toContain("4 of 5 used today");
+    expect(card).not.toMatch(/unlimited/i);
+    expect(card).not.toContain("Upgrade for more scans");
+    expect(card).not.toMatch(/<s-button[^>]*disabled/);
+  });
+
+  it("Professional at the cap: disabled, the next-available time, and no upsell", async () => {
+    setPlan("Professional");
+    (canUseMultipleThemes as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    usage(5, 5, "day", "2026-10-19T00:00:00Z");
+
+    const data = await runLoader();
+    expect(data.scanUsage).toEqual({
+      used: 5,
+      limit: 5,
+      period: "day",
+      nextScanAt: "2026-10-20T00:00:00.000Z",
+    });
+    const card = scanCardOf(renderDashboard(data));
+
+    expect(card).toContain("5 of 5 used today");
+    expect(card).toMatch(
+      /Your next scan is available <time[^>]*dateTime="2026-10-20T00:00:00.000Z"/,
+    );
+    expect(card).toMatch(/<s-button[^>]*disabled/);
+    expect(card).not.toMatch(/upgrade|unlimited/i);
+    expect(card).not.toContain('href="/app/settings"');
+  });
+
+  it("Standard at the weekly cap keeps its 'Upgrade for more scans' link", async () => {
+    setPlan("Standard");
+    usage(1, 1, "week", "2026-10-19T00:00:00Z");
+
+    const card = scanCardOf(renderDashboard(await runLoader()));
+
+    expect(card).toContain("1 of 1 used this week");
+    expect(card).toContain("Upgrade for more scans");
+    expect(card).not.toContain("Your next scan is available");
+  });
+
+  it("Free at the monthly cap: 'used this month' and the upgrade link", async () => {
+    setPlan("free");
+    usage(1, 1, "month", "2026-10-01T00:00:00Z");
+
+    const card = scanCardOf(renderDashboard(await runLoader()));
+
+    expect(card).toContain("1 of 1 used this month");
+    expect(card).toContain("Upgrade for more scans");
+  });
+});

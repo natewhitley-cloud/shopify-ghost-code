@@ -2,10 +2,13 @@
  * The Store speed page's plan-gated report read (gc-wt3y), shared by the page
  * loader (app/routes/app.speed.tsx) and the Sidekick speed tool (gc-5nok), so
  * both gate exactly the same way:
- *   - Professional (`speedReport`): every recent report, as the full view.
- *   - Free / Standard (`freeSpeedTest`): ONLY FREE_TEST reports (a downgraded
- *     shop's Professional history stays hidden), stripped to the free test's
- *     view (homepage score, core timings, ONE costliest app).
+ *   - Standard / Professional (`speedReport`): every recent report, as the
+ *     full view (a FREE_TEST report from before an upgrade included), with the
+ *     plan's cadence (Standard monthly, Professional weekly) and whether it
+ *     has Run now (Professional only, gc-d0ui).
+ *   - Free (`freeSpeedTest`): ONLY FREE_TEST reports (a downgraded shop's
+ *     paid history stays hidden), stripped to the free test's view (homepage
+ *     score, core timings, ONE costliest app).
  *   - A plan with neither: no report data is read at all.
  *
  * `requestedAt` (the Run now / free test slot) is read for the page; the
@@ -32,19 +35,31 @@ import {
 export type SpeedPageReport =
   | { access: "locked" }
   | { access: "free"; freeTest: FreeSpeedTestView; requestedAt: Date | null }
-  | { access: "pro"; view: SpeedReportView; requestedAt: Date | null };
+  | {
+      access: "report";
+      view: SpeedReportView;
+      cadence: "weekly" | "monthly";
+      runNow: boolean;
+      requestedAt: Date | null;
+    };
 
 export async function readSpeedPageReport(
   shop: { id: string; plan: string },
   now: Date,
 ): Promise<SpeedPageReport> {
   const features = getPlanFeatures(shop.plan);
-  if (features.speedReport) {
+  if (features.speedReport && features.speedReportCadence !== "none") {
     const [rows, requestedAt] = await Promise.all([
       getRecentSpeedReports(shop.id),
       getSpeedReportRequestedAt(shop.id),
     ]);
-    return { access: "pro", view: buildSpeedReportView(rows, now), requestedAt };
+    return {
+      access: "report",
+      view: buildSpeedReportView(rows, now),
+      cadence: features.speedReportCadence,
+      runNow: features.speedRunNow,
+      requestedAt,
+    };
   }
   if (!features.freeSpeedTest) return { access: "locked" };
 

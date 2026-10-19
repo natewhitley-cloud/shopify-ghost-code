@@ -2,11 +2,13 @@
  * Tests for app/routes/app.speed.tsx (gc-wt3y Store speed page).
  *
  *   - DARK: loader and action 404 while SPEED_REPORT_LIVE_ENABLED is off.
- *   - Free / Standard: the free speed test (homepage score + costliest app,
- *     once ever) plus one upgrade ask; the loader strips every Pro-only field.
+ *   - Free: the free speed test (homepage score + costliest app, once ever)
+ *     plus one upgrade ask; the loader strips every full-report field.
  *   - A plan with neither (freeSpeedTest narrowed off): the locked teaser; no
  *     report data is read.
  *   - Professional: the report view + Run-now availability.
+ *   - Standard (gc-d0ui): the same report view, monthly, no Run now, the next
+ *     monthly date; no upgrade ask.
  *   - Action: delegates to requestSpeedReportRunNow for the SESSION shop.
  *   - Rendering of every status state with the exact merchant copy.
  */
@@ -141,14 +143,14 @@ describe("loader", () => {
     expect(mockReports).not.toHaveBeenCalled();
   });
 
-  it("a plan with neither the report nor the free test (narrowed to Free): locked teaser, no report data read", async () => {
-    const plan = "Standard";
+  it("a plan with neither the report nor the free test (free test narrowed off): locked teaser, no report data read", async () => {
+    const plan = "free";
     const actual = await vi.importActual<typeof import("../../app/lib/billing.server")>(
       "../../app/lib/billing.server",
     );
-    // The one-line narrowing: Standard's freeSpeedTest set to false.
+    // The one-line narrowing: Free's freeSpeedTest set to false.
     mockFeatures.mockImplementation((p: string) =>
-      p === "Standard"
+      p === "free"
         ? { ...actual.getPlanFeatures(p), freeSpeedTest: false }
         : actual.getPlanFeatures(p),
     );
@@ -181,12 +183,15 @@ describe("loader", () => {
     ]);
     const last = new Date(Date.now() - 60 * 60_000);
     mockRequestedAt.mockResolvedValue(last);
-    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "pro" }>;
-    expect(data.access).toBe("pro");
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "report" }>;
+    expect(data.access).toBe("report");
     expect(data.latest!.id).toBe("r1");
     expect(data.lastResults!.id).toBe("r1");
     expect(data.previousResults).toBeNull();
     expect(data.runNowAvailableAt).toBe(new Date(last.getTime() + 24 * 3600_000).toISOString());
+    expect(data.cadence).toBe("weekly");
+    expect(data.runNow).toBe(true);
+    expect(data.nextMonthlyAt).toBeNull();
     expect(mockReports).toHaveBeenCalledWith("shop-1");
   });
 
@@ -201,7 +206,7 @@ describe("loader", () => {
 // ---------------------------------------------------------------------------
 
 describe("loader: speed_teaser nudge", () => {
-  it.each(["free", "Standard"])(
+  it.each(["free"])(
     "plan %s, never shown: records `shown` for the unmodified session shop",
     async (plan) => {
       mockShop.mockResolvedValue({ ...PRO, plan });
@@ -220,6 +225,13 @@ describe("loader: speed_teaser nudge", () => {
   it("Professional sees no teaser, so nothing is recorded", async () => {
     await loader(loaderArgs());
     expect(mockNudge).not.toHaveBeenCalled();
+  });
+
+  it("Standard (monthly report, gc-d0ui) sees no teaser, so nothing is recorded", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "Standard" });
+    await loader(loaderArgs());
+    expect(mockNudge).not.toHaveBeenCalled();
+    expect(mockTrial).not.toHaveBeenCalled();
   });
 
   it("dark: nothing is recorded", async () => {
@@ -394,15 +406,30 @@ function report(status: string, pages: SpeedPageResult[] = [], extra: object = {
   };
 }
 
-function pro(over: Partial<Extract<SpeedLoaderData, { access: "pro" }>> = {}): SpeedLoaderData {
+function pro(over: Partial<Extract<SpeedLoaderData, { access: "report" }>> = {}): SpeedLoaderData {
   return {
-    access: "pro",
+    access: "report",
+    cadence: "weekly",
+    runNow: true,
+    nextMonthlyAt: null,
     latest: null,
     lastResults: null,
     previousResults: null,
     runNowAvailableAt: null,
     ...over,
   };
+}
+
+/** Standard's view (gc-d0ui): monthly, no Run now, the next monthly date. */
+function standard(
+  over: Partial<Extract<SpeedLoaderData, { access: "report" }>> = {},
+): SpeedLoaderData {
+  return pro({
+    cadence: "monthly",
+    runNow: false,
+    nextMonthlyAt: "2026-11-01T08:10:00.000Z",
+    ...over,
+  });
 }
 
 describe("rendering", () => {
@@ -669,7 +696,7 @@ describe("loader: free speed test", () => {
     mockShop.mockResolvedValue({ ...PRO, plan: "free" });
   });
 
-  it.each(["free", "Standard"])(
+  it.each(["free"])(
     "%s, unused, nothing run yet: available, reading only FREE_TEST reports",
     async (plan) => {
       mockShop.mockResolvedValue({ ...PRO, plan });
@@ -790,13 +817,102 @@ describe("loader: upgrade after the free test", () => {
       row("SCHEDULED", "COMPLETED", [HOME_PAGE, PRODUCT_PAGE], { id: "weekly", createdAt: newer }),
       row("FREE_TEST", "COMPLETED", [HOME_PAGE], { id: "free-1", createdAt: older }),
     ]);
-    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "pro" }>;
-    expect(data.access).toBe("pro");
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "report" }>;
+    expect(data.access).toBe("report");
     // Pro reads every origin (no filter).
     expect(mockReports).toHaveBeenCalledWith("shop-1");
     expect(data.lastResults!.id).toBe("weekly");
     expect(data.previousResults).toMatchObject({ id: "free-1", origin: "FREE_TEST" });
     expect(mockUsedAt).not.toHaveBeenCalled();
+  });
+});
+
+describe("Standard: the monthly report (gc-d0ui)", () => {
+  beforeEach(() => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "Standard" });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("loader: the full report view, monthly, no Run now, the next monthly date", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T12:00:00Z"));
+    const created = new Date("2026-10-04T08:12:00Z");
+    mockReports.mockResolvedValue([
+      row("SCHEDULED", "COMPLETED", [HOME_PAGE, PRODUCT_PAGE], { id: "oct", createdAt: created }),
+    ]);
+    // A stale Run-now stamp (e.g. from a Professional past) never offers Run now.
+    mockRequestedAt.mockResolvedValue(new Date("2026-10-19T11:00:00Z"));
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "report" }>;
+    expect(data.access).toBe("report");
+    expect(data.cadence).toBe("monthly");
+    expect(data.runNow).toBe(false);
+    expect(data.runNowAvailableAt).toBeNull();
+    expect(data.nextMonthlyAt).toBe("2026-11-01T08:10:00.000Z");
+    expect(data.lastResults!.id).toBe("oct");
+    expect(data.lastResults!.pages.map((p) => p.page)).toEqual(["home", "product"]);
+    // The full history (every origin), not only FREE_TEST; no free test reads.
+    expect(mockReports).toHaveBeenCalledWith("shop-1");
+    expect(mockUsedAt).not.toHaveBeenCalled();
+    expect(JSON.stringify(data)).not.toContain("pricing_plans");
+  });
+
+  it("loader: the free test is no longer offered; an old FREE_TEST report is still shown", async () => {
+    mockReports.mockResolvedValue([
+      row("FREE_TEST", "COMPLETED", [HOME_PAGE], { id: "free-1", createdAt: new Date() }),
+    ]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "report" }>;
+    expect(data.access).toBe("report");
+    expect(data.lastResults).toMatchObject({ id: "free-1", origin: "FREE_TEST" });
+    expect(data).not.toHaveProperty("freeTest");
+    const html = render(data);
+    expect(html).toContain("Results from");
+    expect(html).not.toContain("Run your free speed test");
+    expect(html).not.toContain("Run speed test now");
+  });
+
+  it("render, no report yet: the first monthly test's date, no Run now, no locked teaser or upsell", () => {
+    const html = render(standard());
+    expect(html).toContain("Tested once a month with Google PageSpeed Insights.");
+    expect(html).toMatch(
+      /Your first monthly speed test runs on <time[^>]*dateTime="2026-11-01T08:10:00.000Z"/,
+    );
+    expect(html).not.toContain("Run speed test now");
+    expect(html).not.toContain("run it now");
+    expect(html).not.toContain("Sunday");
+    expect(html).not.toContain("See which apps slow your store");
+    expect(html).not.toMatch(/upgrade|free trial|pricing_plans/i);
+  });
+
+  it("render, with results: the report and the next monthly date, never Run now", () => {
+    const lastResults = report("COMPLETED", [HOME_PAGE]);
+    const html = render(standard({ latest: lastResults, lastResults }));
+    expect(html).toContain("Apps slowing your store");
+    expect(html).toMatch(/Next monthly test: <time[^>]*dateTime="2026-11-01T08:10:00.000Z"/);
+    expect(html).not.toContain("Run speed test now");
+    expect(html).not.toContain("Tested every week");
+  });
+
+  it("render, failed: tries again next month, never 'next week' or 'run it now'", () => {
+    const html = render(standard({ latest: report("FAILED", [], { failureReason: "timeout" }) }));
+    expect(html).toContain("We&#x27;ll try again next month.");
+    expect(html).not.toContain("next week");
+    expect(html).not.toContain("run it now");
+  });
+
+  it("action: a forged Run-now POST goes to the Professional-only service, whose refusal passes through", async () => {
+    mockRunNow.mockResolvedValue({
+      ok: false,
+      error: "Running a speed test now is part of the Professional plan.",
+    });
+    await expect(action(actionArgs({ intent: "run-now" }))).resolves.toEqual({
+      ok: false,
+      error: "Running a speed test now is part of the Professional plan.",
+    });
+    expect(mockRunNow).toHaveBeenCalledWith({ ...PRO, plan: "Standard" }, expect.any(Date));
+    expect(mockFreeTest).not.toHaveBeenCalled();
   });
 });
 
@@ -828,11 +944,11 @@ describe("action: free speed test", () => {
     mockShop.mockResolvedValue({ ...PRO, plan: "free" });
     mockRunNow.mockResolvedValue({
       ok: false,
-      error: "Store speed reports are part of the Professional plan.",
+      error: "Running a speed test now is part of the Professional plan.",
     });
     await expect(action(actionArgs({ intent: "run-now" }))).resolves.toEqual({
       ok: false,
-      error: "Store speed reports are part of the Professional plan.",
+      error: "Running a speed test now is part of the Professional plan.",
     });
     expect(mockFreeTest).not.toHaveBeenCalled();
   });

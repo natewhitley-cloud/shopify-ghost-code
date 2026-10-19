@@ -19,6 +19,7 @@ import {
   loadSummarySpeed,
   pickSummarySpeed,
   SUMMARY_SPEED_MAX_AGE_MS,
+  SUMMARY_SPEED_MONTHLY_MAX_AGE_MS,
   summarySpeedLines,
 } from "../../app/services/summary-speed.server";
 import type { SummarySpeed } from "../../app/services/summary-speed.server";
@@ -214,6 +215,18 @@ describe("pickSummarySpeed", () => {
     expect(pick([row("r1", at(SUMMARY_SPEED_MAX_AGE_MS), [home(62)])])?.reportId).toBe("r1");
   });
 
+  it("monthly window (gc-d0ui): up to 35 days is fresh, 35 days + 1 ms is not", () => {
+    const at = (ms: number) => new Date(NOW.getTime() - ms);
+    const pickMonthly = (createdAt: Date) =>
+      pickSummarySpeed([row("r1", createdAt, [home(62)])], {
+        now: NOW,
+        lastSummarySentAt: null,
+        maxAgeMs: SUMMARY_SPEED_MONTHLY_MAX_AGE_MS,
+      });
+    expect(pickMonthly(at(SUMMARY_SPEED_MONTHLY_MAX_AGE_MS))?.reportId).toBe("r1");
+    expect(pickMonthly(at(SUMMARY_SPEED_MONTHLY_MAX_AGE_MS + 1))).toBeNull();
+  });
+
   it("already had its chance: a report not newer than the last summary is never sent", () => {
     const rows = [row("r1", LAST_WEEK, [home(62)])];
     expect(pick(rows, new Date(LAST_WEEK.getTime() + 1))).toBeNull();
@@ -270,9 +283,39 @@ describe("loadSummarySpeed", () => {
     expect(mockModel.getRecentSpeedReports).not.toHaveBeenCalled();
   });
 
-  it.each(["Standard", "free"])("plan %s: nothing, and no database read", async (plan) => {
-    expect(await loadSummarySpeed({ ...PRO, plan }, null, NOW)).toBeNull();
+  it("plan free: nothing, and no database read", async () => {
+    expect(await loadSummarySpeed({ ...PRO, plan: "free" }, null, NOW)).toBeNull();
     expect(mockModel.getRecentSpeedReports).not.toHaveBeenCalled();
+  });
+
+  describe("Standard (monthly report, gc-d0ui)", () => {
+    const STANDARD = { id: "shop-1", plan: "Standard" };
+    // Standard's email follows the scan on Nov 1; its report ran on the first
+    // Sunday of October (Oct 4), 28 days earlier.
+    const NOV_1 = new Date("2026-11-01T07:30:00Z");
+    const OCT_4 = new Date("2026-10-04T08:12:00Z");
+
+    it("carries the report from the previous month's first Sunday (inside 35 days)", async () => {
+      mockModel.getRecentSpeedReports.mockResolvedValue([row("r-oct", OCT_4, [home(62)])]);
+      expect(await loadSummarySpeed(STANDARD, null, NOV_1)).toMatchObject({ reportId: "r-oct" });
+    });
+
+    it("a report older than 35 days is not carried", async () => {
+      const old = new Date(NOV_1.getTime() - SUMMARY_SPEED_MONTHLY_MAX_AGE_MS - 1);
+      mockModel.getRecentSpeedReports.mockResolvedValue([row("r-old", old, [home(62)])]);
+      expect(await loadSummarySpeed(STANDARD, null, NOV_1)).toBeNull();
+    });
+
+    it("never twice: a report the last monthly summary already covered is skipped", async () => {
+      mockModel.getRecentSpeedReports.mockResolvedValue([row("r-oct", OCT_4, [home(62)])]);
+      const lastSummary = new Date("2026-10-04T09:00:00Z");
+      expect(await loadSummarySpeed(STANDARD, lastSummary, NOV_1)).toBeNull();
+    });
+
+    it("Professional keeps the 8-day window for the same 28-day-old report", async () => {
+      mockModel.getRecentSpeedReports.mockResolvedValue([row("r-oct", OCT_4, [home(62)])]);
+      expect(await loadSummarySpeed(PRO, null, NOV_1)).toBeNull();
+    });
   });
 
   it("passes the last summary time through (a report already covered is skipped)", async () => {
