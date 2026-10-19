@@ -1837,6 +1837,13 @@ function forwardFinder(haystack: string, needle: string): (from: number) => numb
  *     quote in a tag where no attribute value can start, an unterminated tag,
  *     quote or Liquid tag, a `<![CDATA[` section, and a `<script>` containing
  *     `<!--` (which can change where the script ends).
+ *   - Liquid (gc-cswd). The input is Liquid source, and a Liquid tag can
+ *     render a quote, a comment opener or a closer. So an HTML comment whose
+ *     body holds `{{` or `{%` is not blanked (its body is walked as markup),
+ *     a `<script>`/`<style>` block or `.js.liquid`/`.css.liquid` file is
+ *     blanked only up to its first Liquid tag, and a Liquid tag as an
+ *     unquoted attribute value (`alt={{ x }}`) stops blanking for the rest of
+ *     the file. The cost: a commented-out block containing Liquid is reported.
  *   - `//` is never a comment start when it follows `:` (`https://`) or is
  *     itself the start of a `//host.tld` URL. So a bare `//cdn.polyfill.io/x`
  *     line in JS stays reported even though JS reads it as a comment.
@@ -1857,6 +1864,16 @@ export function blankInertComments(content: string, filename: string): string {
   const findHtmlClose = forwardFinder(content, "-->");
   const findHtmlBangClose = forwardFinder(content, "--!>");
   const findHtmlOpen = forwardFinder(content, "<!--");
+  const findLiquidOutput = forwardFinder(content, "{{");
+  const findLiquidTag = forwardFinder(content, "{%");
+  // gc-cswd: where the first Liquid `{{` or `{%` at or after `from` starts,
+  // capped at `to`. Liquid can render a quote, a comment opener or closer, so
+  // comment blanking never crosses one (see the doc comment above).
+  const firstLiquid = (from: number, to: number): number => {
+    const output = findLiquidOutput(from);
+    const tag = findLiquidTag(from);
+    return Math.min(output === -1 ? to : output, tag === -1 ? to : tag, to);
+  };
 
   // True when a `label.label` hostname starts at `k`.
   const startsHost = (k: number): boolean => {
@@ -1979,7 +1996,10 @@ export function blankInertComments(content: string, filename: string): string {
   };
 
   if (isJsFile || isCssFile) {
-    scanCode(0, content.length, isJsFile);
+    // A `.js.liquid` / `.css.liquid` asset is rendered first: blank only up
+    // to its first Liquid tag (gc-cswd). A plain asset is never rendered.
+    const n = content.length;
+    scanCode(0, name === filename.toLowerCase() ? n : firstLiquid(0, n), isJsFile);
   } else {
     const n = content.length;
     // `<tag` followed by whitespace, `/` or `>`.
@@ -2009,8 +2029,9 @@ export function blankInertComments(content: string, filename: string): string {
     // Index of the `>` that ends the tag whose name starts at `from`, following
     // the HTML tokenizer: a `>` inside a quoted attribute value does not end
     // it, and a quote opens a value only straight after `name=`. Liquid tags
-    // are opaque. -1 when in doubt: no `>`, an unclosed quote or Liquid tag, or
-    // a quote anywhere else (HTML reads that one as a plain character).
+    // are opaque. -1 when in doubt: no `>`, an unclosed quote or Liquid tag, a
+    // Liquid tag as an unquoted attribute value (gc-cswd), or a quote anywhere
+    // else (HTML reads that one as a plain character).
     const tagEnd = (from: number): number => {
       let state = TAG_NAME;
       for (let j = from; j < n; j++) {
@@ -2020,6 +2041,9 @@ export function blankInertComments(content: string, filename: string): string {
           const end = liquidEnd(j);
           if (end === -1) return -1;
           if (end !== j) {
+            // gc-cswd: as an unquoted attribute value, it can render the quote
+            // that opens one (`alt={{ '"' }}`), moving where the tag ends.
+            if (state === BEFORE_ATTR_VALUE || state === UNQUOTED_ATTR_VALUE) return -1;
             j = end - 1;
             c = CC_LBRACE; // whatever it renders counts as one ordinary char
           }
@@ -2068,7 +2092,15 @@ export function blankInertComments(content: string, filename: string): string {
         const dash = findHtmlClose(lt + 2);
         const bang = findHtmlBangClose(lt + 4);
         if (dash === -1 && bang === -1) break;
-        i = bang === -1 || (dash !== -1 && dash < bang) ? dash + 3 : bang + 4;
+        const close = bang === -1 || (dash !== -1 && dash < bang) ? dash : bang;
+        // gc-cswd: a body holding Liquid may not be a comment once rendered
+        // (`{% if false %}<!--{% endif %}`, `<!-- {{ "-->" }}`). Do not blank
+        // it; read `<!--` as text and walk the body as markup.
+        if (firstLiquid(lt + 4, close) < close) {
+          i = lt + 4;
+          continue;
+        }
+        i = close === dash ? dash + 3 : bang + 4;
         blanked.push([lt, i]);
         continue;
       }
@@ -2097,8 +2129,9 @@ export function blankInertComments(content: string, filename: string): string {
         // `</script>`, so where this block ends is in doubt.
         const escape = findHtmlOpen(i);
         if (escape !== -1 && escape < end) break;
-        scanCode(i, end, true);
-      } else if (raw === "style") scanCode(i, end, false);
+        // gc-cswd: blank only up to the block's first Liquid tag.
+        scanCode(i, firstLiquid(i, end), true);
+      } else if (raw === "style") scanCode(i, firstLiquid(i, end), false);
       i = end;
     }
   }

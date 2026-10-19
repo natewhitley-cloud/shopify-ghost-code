@@ -7573,6 +7573,62 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     ],
     ["an unterminated quote in a JS file", JS, `var s = "a\n/*";\n${U} /* */`, ["3:polyfill.io"]],
     ["a quote ended by a lone \\r", JS, `var s = 'a\r/*';\r${U} /* */`, ["1:polyfill.io"]],
+    // 5. Liquid that renders comment or quote syntax (gc-cswd). The four
+    // bypasses from the bead, then variants of the same rules.
+    [
+      "a comment opener and closer each inside {% if false %}",
+      THEME,
+      `{% if false %}<!--{% endif %}\n${P}\n{% if false %}-->{% endif %}`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a comment closed early by --> inside a Liquid output",
+      THEME,
+      `<!-- {{ "-->" }}\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a comment closed early by a Liquid-rendered --> the source does not spell",
+      THEME,
+      `<!-- {{ "--" }}>\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a /* inside a script after a Liquid output that renders a quote",
+      THEME,
+      `<script>var a = {{ '"' }} /* ";\n${U}\n*/</script>`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "<!-- inside an attribute value opened by a Liquid-rendered quote",
+      THEME,
+      `<img alt={{ '"' }}> <!--">\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a Liquid-holding comment body that opens a quote hiding a later comment",
+      THEME,
+      `{% if false %}<!--{% endif %}<img alt="{% if false %}-->{% endif %} <!--">\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a Liquid tag inside an unquoted attribute value",
+      THEME,
+      `<img alt=x{{ ' b="' }}> <!--">\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a /* inside a <style> after a Liquid output",
+      THEME,
+      `<style>a{content:{{ '"' }} /* "}\n@import url(https://cdn.polyfill.io/x.css);\n*/</style>`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a /* in a .js.liquid asset after a Liquid output",
+      "assets/theme.js.liquid",
+      `var a = {{ '"' }} /* ";\n${U}\n*/`,
+      ["2:polyfill.io"],
+    ],
   ])(
     "good-faith entry DOES fire (in doubt, report) for %s",
     (_label, filename, content, expected) => {
@@ -7612,6 +7668,23 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
       "a second inline <script> after one that stopped the guard",
       THEME,
       "<script>var a = `${b}`;</script>\n<script>\n// see https://polyfill.io\n</script>",
+    ],
+    // gc-cswd: the Liquid rules stay local to the comment or block holding Liquid.
+    ["a comment holding Liquid, then a plain one", THEME, `<!-- {{ x }} -->\n<!-- ${P} -->`],
+    [
+      "a script block holding Liquid, then a plain comment",
+      THEME,
+      `<script>var s = {{ settings | json }};</script>\n<!-- ${P} -->`,
+    ],
+    [
+      "Liquid in a script AFTER the commented reference",
+      THEME,
+      `<script>\n// see https://polyfill.io\nvar s = {{ settings | json }};\n</script>`,
+    ],
+    [
+      "a plain .js asset (never rendered) holding {{",
+      JS,
+      "var t = '{{ x }}';\n// see https://polyfill.io",
     ],
   ])("good-faith entry still does NOT fire after %s", (_label, filename, content) => {
     expect(domainsFound(filename, content)).toEqual([]);
