@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-10-12
+> **Last updated:** 2026-10-19
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -144,6 +144,14 @@ Positioning: "theme health" / "theme checker" searches have no purpose-built inc
 **Theme type and version (all plans).** Each scan records `Scan.themeInfo` from files it already fetched: the theme's name, version and author (`config/settings_schema.json` `theme_info`) and whether it is Online Store 2.0 (has a JSON template) or **vintage** (Liquid templates only). A vintage theme is flagged on the checklist; it is not a finding, so it never changes finding counts, the Free preview, the diff or the summary email. "Version behind latest" is not shown: there is no public source for a theme's latest version.
 
 **Unpublished themes (all plans).** The checklist counts the themes shoppers do not see against Shopify's 20-theme limit (development themes excluded), and for any that have a scan shows that scan's finding count. Scanning a theme other than the published one is still Professional-only (`maxThemes`); a count shown here comes from a scan the shop already ran.
+
+### Shopify Sidekick tools (gc-5nok, built, NOT deployed)
+
+**Sidekick works on every plan; each tool gates exactly as the app page it reads.** Two read-only tools (`extensions/sidekick-tools`, backends `/api/sidekick/latest-scan` and `/api/sidekick/speed`), no extra price and no plan of their own:
+
+- `get_latest_scan_summary`: Home's view of the latest successful scan on every plan (total, counts by impact area, Theme health verdict). Its top findings are Home's "Start here" rows, so Free gets only its preview rows plus the never-paywalled findings. Known malicious code is listed in full on EVERY plan, ignored findings included, as the scan page's security alert lists it. A Theme health reason that names a plan (Free's plan-gated checks) is returned as "Not included in the current plan." so a Sidekick answer never reads as a plan pitch.
+- `get_speed_summary`: the Store speed page's own plan-gated read (`readSpeedPageReport`). Professional gets the latest report with results (each tested page, top 5 apps by processing time). Free and Standard get only their one free homepage test (score, timings, the ONE costliest app). A plan with neither gets `not_available_on_plan`. While `SPEED_REPORT_LIVE_ENABLED` is off the tool says the report is not available.
+- No upgrade wording anywhere in the extension or its responses (App Store rules 2.2.8 / 2.2.9). `not_available_on_plan` is a plain statement, and the instructions tell Sidekick never to suggest changing plans.
 
 ### Merchant summary emails (gc-ol95, LIVE since 2026-10-09)
 
