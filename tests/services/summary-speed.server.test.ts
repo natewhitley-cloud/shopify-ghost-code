@@ -97,6 +97,7 @@ describe("pickSummarySpeed", () => {
       score: 62,
       scoreDelta: null,
       topApp: KLAVIYO,
+      regressions: [],
     });
   });
 
@@ -245,6 +246,48 @@ describe("pickSummarySpeed", () => {
   });
 });
 
+describe("pickSummarySpeed: named regressions (gc-vgqc)", () => {
+  // Same score, same top 3 by processing time: immaterial without naming.
+  const before = home(60, [KLAVIYO, RECHARGE, JUDGEME, appRow("Tiny", 10, 5_000)]);
+  const after = home(60, [KLAVIYO, RECHARGE, JUDGEME, appRow("Tiny", 10, 140_000)]);
+  const rows = [row("r2", LAST_WEEK, [after]), row("r1", TWO_WEEKS, [before])];
+
+  it("a named regression alone makes the section (and is a material change)", () => {
+    expect(isMaterialSpeedChange(after, before)).toBe(false);
+    const r = pickSummarySpeed(rows, { now: NOW, lastSummarySentAt: null, nameRegressions: true });
+    expect(r).toMatchObject({ reportId: "r2", scoreDelta: 0 });
+    expect(r!.regressions).toEqual([
+      expect.objectContaining({ name: "Tiny", kind: "up", sizeUp: true, timeUp: false }),
+    ]);
+  });
+
+  it("without naming (monthly) the same reports send no section", () => {
+    expect(pick(rows)).toBeNull();
+  });
+
+  it("first report: nothing is named (no baseline)", () => {
+    const r = pickSummarySpeed([rows[0]], {
+      now: NOW,
+      lastSummarySentAt: null,
+      nameRegressions: true,
+    });
+    expect(r).toMatchObject({ reportId: "r2", regressions: [] });
+  });
+
+  it("baseline is the newest earlier report WITH a homepage result (a failed week is skipped)", () => {
+    const failedHome = { ...home(null), status: "FAILED" as const, metrics: undefined };
+    const r = pickSummarySpeed(
+      [
+        rows[0],
+        row("r-failed", new Date(LAST_WEEK.getTime() - DAY), [failedHome], "PARTIAL"),
+        rows[1],
+      ],
+      { now: NOW, lastSummarySentAt: null, nameRegressions: true },
+    );
+    expect(r!.regressions.map((x) => x.name)).toEqual(["Tiny"]);
+  });
+});
+
 describe("isMaterialSpeedChange", () => {
   it("costliest app gone (none now) is a change", () => {
     expect(isMaterialSpeedChange(home(60, []), home(60, [KLAVIYO]))).toBe(true);
@@ -318,6 +361,27 @@ describe("loadSummarySpeed", () => {
     });
   });
 
+  describe("named regressions by plan (gc-vgqc)", () => {
+    const named = [
+      row("r2", LAST_WEEK, [home(60, [KLAVIYO, appRow("PushOwl", 400, 140_000)])]),
+      row("r1", TWO_WEEKS, [home(60, [KLAVIYO])]),
+    ];
+
+    it("Professional (weekly): names the new app", async () => {
+      mockModel.getRecentSpeedReports.mockResolvedValue(named);
+      const r = await loadSummarySpeed(PRO, null, NOW);
+      expect(r!.regressions).toEqual([expect.objectContaining({ name: "PushOwl", kind: "new" })]);
+    });
+
+    it("Standard (monthly): never names an app, even with the same reports", async () => {
+      mockModel.getRecentSpeedReports.mockResolvedValue(named);
+      const r = await loadSummarySpeed({ id: "shop-1", plan: "Standard" }, null, NOW);
+      // PushOwl entered the top 3, so the section still goes out, unnamed.
+      expect(r).toMatchObject({ reportId: "r2", regressions: [] });
+      expect(summarySpeedLines(r!).join("\n")).not.toContain("is new since");
+    });
+  });
+
   it("passes the last summary time through (a report already covered is skipped)", async () => {
     expect(await loadSummarySpeed(PRO, NOW, NOW)).toBeNull();
   });
@@ -339,6 +403,7 @@ describe("summarySpeedLines", () => {
     score: 62,
     scoreDelta: 5,
     topApp: KLAVIYO,
+    regressions: [],
     ...over,
   });
 
@@ -389,6 +454,36 @@ describe("summarySpeedLines", () => {
         "Klaviyo used 4.0 s of processing time and 621 KB on your homepage.",
       );
     });
+  });
+
+  it("named apps (gc-vgqc): one line each after the costliest app, then the caveat", () => {
+    const lines = summarySpeedLines(
+      speed({
+        regressions: [
+          {
+            name: "Judge.me",
+            kind: "up",
+            current: { mainThreadMs: 900, transferBytes: 340_000 },
+            previous: { mainThreadMs: 400, transferBytes: 120_000 },
+            timeUp: true,
+            sizeUp: true,
+          },
+          {
+            name: "Evil\r\nInjected",
+            kind: "new",
+            current: { mainThreadMs: 0, transferBytes: 140_000 },
+            previous: null,
+            timeUp: false,
+            sizeUp: true,
+          },
+        ],
+      }),
+    );
+    expect(lines.slice(2)).toEqual([
+      "Judge.me's processing time on your homepage rose from 0.4 s to 0.9 s and its download size from 120 KB to 340 KB.",
+      "Evil Injected is new since the test before and adds 140 KB on your homepage.",
+      "Some apps skip loading during speed tests, so their real cost can be higher.",
+    ]);
   });
 
   it("no app line when no app added processing time", () => {

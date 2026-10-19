@@ -618,6 +618,142 @@ export function formatSpeedDelta(
 }
 
 // ---------------------------------------------------------------------------
+// Per-app speed regressions (gc-vgqc; Professional's weekly report)
+// ---------------------------------------------------------------------------
+
+/** An app's download size must rise by at least this many bytes (100 KB) to be named. */
+export const SPEED_REGRESSION_MIN_BYTES = 100_000;
+/** An app's processing time must rise by at least this many ms to be named. */
+export const SPEED_REGRESSION_MIN_MS = 200;
+/** ...AND by at least this share of its previous value (25%). */
+export const SPEED_REGRESSION_MIN_RATIO = 0.25;
+/** At most this many apps are named (email and Speed page alike). */
+export const SPEED_REGRESSION_MAX_APPS = 3;
+
+/**
+ * One app named as new or costlier vs the previous comparable report.
+ * `previous` is null for a new app. `timeUp` / `sizeUp`: which cost passed its
+ * floor (for a new app, measured from zero).
+ */
+export type SpeedAppRegression = {
+  name: string;
+  kind: "new" | "up";
+  current: { mainThreadMs: number; transferBytes: number };
+  previous: { mainThreadMs: number; transferBytes: number } | null;
+  timeUp: boolean;
+  sizeUp: boolean;
+};
+
+/** A rise past its absolute floor AND at least SPEED_REGRESSION_MIN_RATIO of the old value. */
+function rosePast(before: number, after: number, floor: number): boolean {
+  const rise = after - before;
+  return rise >= floor && rise >= before * SPEED_REGRESSION_MIN_RATIO;
+}
+
+/**
+ * The apps to name for one page (gc-vgqc): an app NEW in the current per-app
+ * list (absent from the previous one) whose cost passes a floor, or an app
+ * whose download size rose by >= SPEED_REGRESSION_MIN_BYTES or processing time
+ * by >= SPEED_REGRESSION_MIN_MS, that rise also >= 25% of its previous value.
+ *
+ * Noise guards: both pages must be OK with metrics and have tested the SAME
+ * URL; otherwise nothing is named (so an app is never "new" because the
+ * previous page failed or tested a different product). Only matched apps
+ * (`apps`), never unmatched third-party hosts.
+ *
+ * Order: biggest processing-time rise first, then biggest download-size rise,
+ * then name; capped at SPEED_REGRESSION_MAX_APPS. Pure; shared by the summary
+ * email and the Store speed page.
+ */
+export function speedAppRegressions(
+  current: SpeedPageResult,
+  previous: SpeedPageResult | undefined | null,
+): SpeedAppRegression[] {
+  if (!previous || current.status !== "OK" || previous.status !== "OK") return [];
+  if (!current.metrics || !previous.metrics) return [];
+  if (!current.url || current.url !== previous.url) return [];
+
+  const before = new Map((previous.apps ?? []).map((a) => [a.name, a]));
+  const found: SpeedAppRegression[] = [];
+  for (const app of current.apps ?? []) {
+    const old = before.get(app.name);
+    const prev = old ? { mainThreadMs: old.mainThreadMs, transferBytes: old.transferBytes } : null;
+    const timeUp = rosePast(prev?.mainThreadMs ?? 0, app.mainThreadMs, SPEED_REGRESSION_MIN_MS);
+    const sizeUp = rosePast(
+      prev?.transferBytes ?? 0,
+      app.transferBytes,
+      SPEED_REGRESSION_MIN_BYTES,
+    );
+    if (!timeUp && !sizeUp) continue;
+    found.push({
+      name: app.name,
+      kind: prev ? "up" : "new",
+      current: { mainThreadMs: app.mainThreadMs, transferBytes: app.transferBytes },
+      previous: prev,
+      timeUp,
+      sizeUp,
+    });
+  }
+  const rise = (r: SpeedAppRegression, key: "mainThreadMs" | "transferBytes") =>
+    r.current[key] - (r.previous?.[key] ?? 0);
+  return found
+    .sort(
+      (a, b) =>
+        rise(b, "mainThreadMs") - rise(a, "mainThreadMs") ||
+        rise(b, "transferBytes") - rise(a, "transferBytes") ||
+        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+    )
+    .slice(0, SPEED_REGRESSION_MAX_APPS);
+}
+
+/**
+ * The Store speed page badges for one named app: ["New"], or "Up 0.5 s" /
+ * "Up 120 KB" for each cost that passed its floor.
+ */
+export function speedRegressionBadges(r: SpeedAppRegression): string[] {
+  if (r.kind === "new") return ["New"];
+  const badges: string[] = [];
+  const prev = r.previous!;
+  if (r.timeUp) badges.push(`Up ${formatSeconds(r.current.mainThreadMs - prev.mainThreadMs)}`);
+  if (r.sizeUp) badges.push(`Up ${formatBytes(r.current.transferBytes - prev.transferBytes)}`);
+  return badges;
+}
+
+/** "Judge.me's" / "Yotpo Reviews'" (no "s's"). */
+function possessive(name: string): string {
+  return /s$/i.test(name) ? `${name}'` : `${name}'s`;
+}
+
+/**
+ * The summary email sentence for one named homepage app (gc-vgqc), e.g.
+ *   "Klaviyo is new since the test before and adds 140 KB and 0.3 s of processing time on your homepage."
+ *   "Judge.me's processing time on your homepage rose from 0.4 s to 0.9 s."
+ *   "Judge.me's download size on your homepage rose from 120 KB to 340 KB."
+ *   "Judge.me's processing time on your homepage rose from 0.4 s to 0.9 s and its download size from 120 KB to 340 KB."
+ * A new app's cost that rounds to zero ("0 KB", "0.0 s") is left out. `name`
+ * is passed separately so the email can sanitize it.
+ */
+export function speedRegressionLine(r: SpeedAppRegression, name: string = r.name): string {
+  const c = r.current;
+  if (r.kind === "new") {
+    const parts: string[] = [];
+    if (Math.round(c.transferBytes / 1000) > 0) parts.push(formatBytes(c.transferBytes));
+    if (Math.round(c.mainThreadMs / 100) > 0) {
+      parts.push(`${formatSeconds(c.mainThreadMs)} of processing time`);
+    }
+    return `${name} is new since the test before and adds ${parts.join(" and ")} on your homepage.`;
+  }
+  const p = r.previous!;
+  const time = `from ${formatSeconds(p.mainThreadMs)} to ${formatSeconds(c.mainThreadMs)}`;
+  const size = `from ${formatBytes(p.transferBytes)} to ${formatBytes(c.transferBytes)}`;
+  if (r.timeUp && r.sizeUp) {
+    return `${possessive(name)} processing time on your homepage rose ${time} and its download size ${size}.`;
+  }
+  if (r.timeUp) return `${possessive(name)} processing time on your homepage rose ${time}.`;
+  return `${possessive(name)} download size on your homepage rose ${size}.`;
+}
+
+// ---------------------------------------------------------------------------
 // Free speed test (pure; plans without the full report)
 // ---------------------------------------------------------------------------
 

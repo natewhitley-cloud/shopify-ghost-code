@@ -14,8 +14,11 @@
  *     emailed twice (e.g. a week whose speed run failed would otherwise repeat
  *     last week's report, which is still inside the 8-day window);
  *   - and it is the shop's FIRST report with a homepage result, or it changed
- *     materially vs the previous one (isMaterialSpeedChange).
- * A material change is on its own a reason to send (hasSummaryChanges).
+ *     materially vs the previous one (isMaterialSpeedChange), or (weekly
+ *     cadence only, gc-vgqc) it names an app that is new or costlier
+ *     (speedAppRegressions).
+ * A material change (a named app included) is on its own a reason to send
+ * (hasSummaryChanges).
  *
  * Timing: the email follows the Sunday 06:40 UTC scan and the speed cron runs
  * at 08:10 UTC, so the email usually carries LAST week's report; the copy
@@ -25,7 +28,10 @@
  * (21 to 31 days old, inside the 35-day window).
  *
  * Content: the homepage score (and its change), the costliest app by
- * processing time with its download size, and a link to the Store speed page.
+ * processing time with its download size, then (Professional's weekly report
+ * only, gc-vgqc) up to 3 apps that are new or whose cost jumped, each with its
+ * delta, plus the "some apps skip loading" caveat, and a link to the Store
+ * speed page. Standard's monthly email keeps the section without naming.
  * App names and numbers only; never a URL tested, a file or code.
  */
 
@@ -38,8 +44,12 @@ import {
   isSpeedReportWithResults,
   readSpeedPages,
   type SpeedCostRow,
+  SPEED_CAVEAT,
+  speedAppRegressions,
+  type SpeedAppRegression,
   type SpeedPageResult,
   speedPageDelta,
+  speedRegressionLine,
   type SpeedReportRowLike,
   topCostlyApps,
 } from "../lib/speed-report";
@@ -73,6 +83,11 @@ export type SummarySpeed = {
   scoreDelta: number | null;
   /** The costliest app on the homepage by processing time (null = none). */
   topApp: SpeedCostRow | null;
+  /**
+   * gc-vgqc: homepage apps new or costlier vs the previous comparable report
+   * (speedAppRegressions, at most 3). Always empty on the monthly cadence.
+   */
+  regressions: SpeedAppRegression[];
 };
 
 function homeOf(pages: SpeedPageResult[]): SpeedPageResult | null {
@@ -107,7 +122,13 @@ export function isMaterialSpeedChange(
  */
 export function pickSummarySpeed(
   rows: readonly SpeedReportRowLike[],
-  opts: { now: Date; lastSummarySentAt: Date | null; maxAgeMs?: number },
+  opts: {
+    now: Date;
+    lastSummarySentAt: Date | null;
+    maxAgeMs?: number;
+    /** Name new / costlier apps (weekly cadence only, gc-vgqc). Default false. */
+    nameRegressions?: boolean;
+  },
 ): SummarySpeed | null {
   // The newest report with results (COMPLETED or PARTIAL) AND a homepage
   // result (audit MED-5: a newer PARTIAL one is not skipped for an older
@@ -138,7 +159,8 @@ export function pickSummarySpeed(
     previous = homeOf(readSpeedPages(row.pages));
     if (previous) break;
   }
-  if (previous && !isMaterialSpeedChange(home, previous)) return null;
+  const regressions = opts.nameRegressions ? speedAppRegressions(home, previous) : [];
+  if (previous && regressions.length === 0 && !isMaterialSpeedChange(home, previous)) return null;
 
   return {
     reportId: report.id,
@@ -146,6 +168,7 @@ export function pickSummarySpeed(
     score: home.metrics!.score,
     scoreDelta: previous ? (speedPageDelta(home, previous)?.score ?? null) : null,
     topApp: topCostlyApps(home.apps ?? [], 1)[0] ?? null,
+    regressions,
   };
 }
 
@@ -168,7 +191,14 @@ export async function loadSummarySpeed(
       : SUMMARY_SPEED_MAX_AGE_MS;
   try {
     const rows = await getRecentSpeedReports(shop.id);
-    return pickSummarySpeed(rows, { now, lastSummarySentAt, maxAgeMs });
+    return pickSummarySpeed(rows, {
+      now,
+      lastSummarySentAt,
+      maxAgeMs,
+      // Naming is Professional's weekly report only (gc-vgqc); Standard's
+      // monthly section stays as it was (gc-d0ui).
+      nameRegressions: features.speedReportCadence === "weekly",
+    });
   } catch (error) {
     logger.warn("summary speed section unavailable", {
       context: "summary-speed",
@@ -215,6 +245,9 @@ function emailAppName(name: string): string {
  * The section's lines:
  *   "Last speed test (Oct 4, 2026): your homepage scored 62 / 100, up 5 from the test before."
  *   "Klaviyo used 4.0 s of processing time and 621 KB on your homepage."
+ *   then one line per named app (gc-vgqc), e.g.
+ *   "Judge.me's processing time on your homepage rose from 0.4 s to 0.9 s.",
+ *   and after them the "some apps skip loading" caveat (SPEED_CAVEAT).
  * The change clause is left out for a first report (or a non-comparable one);
  * the app line is left out when no app added measurable processing time.
  */
@@ -231,6 +264,10 @@ export function summarySpeedLines(speed: SummarySpeed): string[] {
   ];
   if (speed.topApp) {
     lines.push(costliestAppLine({ ...speed.topApp, name: emailAppName(speed.topApp.name) }));
+  }
+  if (speed.regressions.length > 0) {
+    for (const r of speed.regressions) lines.push(speedRegressionLine(r, emailAppName(r.name)));
+    lines.push(SPEED_CAVEAT);
   }
   return lines;
 }

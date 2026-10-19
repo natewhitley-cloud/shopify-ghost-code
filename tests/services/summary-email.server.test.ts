@@ -82,6 +82,29 @@ const SPEED: SummarySpeed = {
     unusedPct: 40,
     requestCount: 3,
   },
+  regressions: [],
+};
+/** gc-vgqc: a Professional section naming two apps (one new, one costlier). */
+const SPEED_NAMED: SummarySpeed = {
+  ...SPEED,
+  regressions: [
+    {
+      name: "Judge.me",
+      kind: "up",
+      current: { mainThreadMs: 900, transferBytes: 120_000 },
+      previous: { mainThreadMs: 400, transferBytes: 118_000 },
+      timeUp: true,
+      sizeUp: false,
+    },
+    {
+      name: "PushOwl",
+      kind: "new",
+      current: { mainThreadMs: 300, transferBytes: 140_000 },
+      previous: null,
+      timeUp: true,
+      sizeUp: true,
+    },
+  ],
 };
 const SPEED_URL = "https://admin.shopify.com/store/my-store/apps/ghost-code/app/speed";
 
@@ -330,6 +353,7 @@ describe("nothing changed => no email", () => {
     ["an app no longer active", { inactiveApps: [app("Judge.me")] }],
     ["an app cleaned up", { cleanedApps: [app("Klaviyo")] }],
     ["a material speed change (gc-2wnf)", { speed: SPEED }],
+    ["a named speed regression (gc-vgqc)", { speed: SPEED_NAMED }],
   ])("%s alone is a change and sends one email", async (_label, over) => {
     const c = { ...NO_CHANGES, ...over };
     expect(hasSummaryChanges(c)).toBe(true);
@@ -829,6 +853,50 @@ describe("body", () => {
       const h = html(opts);
       expect(h).not.toMatch(/[\r]|Evil\n/);
       expect(h).toContain(`Evil Injected${"x".repeat(67)} used 4.0 s`);
+    });
+
+    it("text: named apps (gc-vgqc) follow the costliest app, then the caveat", () => {
+      expect(
+        text({
+          changes: changes({ inactiveApps: [], cleanedApps: [], speed: SPEED_NAMED }),
+          speedUrl: SPEED_URL,
+        }),
+      ).toContain(
+        [
+          "Last speed test (Oct 11, 2026): your homepage scored 62 / 100, up 5 from the test before.",
+          "Klaviyo used 4.0 s of processing time and 621 KB on your homepage.",
+          "Judge.me's processing time on your homepage rose from 0.4 s to 0.9 s.",
+          "PushOwl is new since the test before and adds 140 KB and 0.3 s of processing time on your homepage.",
+          "Some apps skip loading during speed tests, so their real cost can be higher.",
+          "",
+          "See your store speed in GhostCode:",
+          SPEED_URL,
+        ].join("\n"),
+      );
+    });
+
+    it("HTML: the same named lines in the speed block, escaped (gc-vgqc)", () => {
+      const named: SummarySpeed = {
+        ...SPEED_NAMED,
+        regressions: [{ ...SPEED_NAMED.regressions[1], name: '<i>"Owl" & Co</i>' }],
+      };
+      const h = html({ changes: changes({ speed: named }), speedUrl: SPEED_URL });
+      expect(h).toContain(
+        "Klaviyo used 4.0 s of processing time and 621 KB on your homepage.<br>&lt;i&gt;&quot;Owl&quot; &amp; Co&lt;/i&gt; is new since the test before and adds 140 KB and 0.3 s of processing time on your homepage.<br>Some apps skip loading during speed tests, so their real cost can be higher.",
+      );
+      expect(h).not.toContain("<i>");
+      const h2 = html({ changes: changes({ speed: SPEED_NAMED }), speedUrl: SPEED_URL });
+      expect(h2).toContain(
+        "Judge.me&#39;s processing time on your homepage rose from 0.4 s to 0.9 s.",
+      );
+    });
+
+    it("no named apps: no regression lines and no caveat (gc-vgqc)", () => {
+      for (const t of [text(withSpeed()), html(withSpeed())]) {
+        expect(t).not.toContain("is new since");
+        expect(t).not.toContain(" rose from ");
+        expect(t).not.toContain("Some apps skip loading");
+      }
     });
 
     it("no speed section without a speed change, or without the link", () => {
