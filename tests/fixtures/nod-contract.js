@@ -217,7 +217,16 @@ export function validateDigest(d) {
       noExtra(r, "research", ["title", "counts", "queue"]);
       req(typeof r.title === "string" && r.title.length > 0 && r.title.length <= 60, "research.title must be 1 to 60 characters");
       if (!Array.isArray(r.counts) || r.counts.length < 1 || r.counts.length > 6) errs.push("research.counts must be an array of 1 to 6");
-      else r.counts.forEach((c, i) => {
+      const countKeys = new Set(), hosts = new Set();
+      if (Array.isArray(r.counts)) r.counts.forEach((c, i) => {
+        if (isObj(c) && countKeys.has(c.key)) errs.push(`research.counts[${i}].key "${c.key}" is duplicated`);
+        if (isObj(c)) countKeys.add(c.key);
+      });
+      if (Array.isArray(r.queue)) r.queue.forEach((q, i) => {
+        if (isObj(q) && hosts.has(q.host)) errs.push(`research.queue[${i}].host "${q.host}" is duplicated`);
+        if (isObj(q)) hosts.add(q.host);
+      });
+      if (Array.isArray(r.counts) && r.counts.length >= 1 && r.counts.length <= 6) r.counts.forEach((c, i) => {
         const p = `research.counts[${i}]`;
         if (!isObj(c)) return errs.push(`${p} must be an object`);
         noExtra(c, p, ["key", "label", "open", "new7d"]);
