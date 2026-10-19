@@ -35,6 +35,7 @@ export const PLAN_LISTING_BULLETS: Record<TilePlan, readonly string[]> = {
     "Up to 5 findings shown in full",
     "Single theme scanning",
     FREE_SPEED_TEST_BULLET,
+    "Malicious code and app incident alerts",
     "Ask Sidekick about your scan results",
   ],
   [PLANS.STANDARD]: [

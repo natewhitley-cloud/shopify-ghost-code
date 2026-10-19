@@ -48,9 +48,10 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 4. Up to 5 findings shown in full
 5. Single theme scanning
 6. One-time homepage speed test
-7. Ask Sidekick about your scan results
+7. Malicious code and app incident alerts
+8. Ask Sidekick about your scan results
 
-> Live on the Partner Dashboard Free plan card (2026-10-19). The in-app Settings Free tile lists the same seven bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on. Bullet 7 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
+> Live on the Partner Dashboard Free plan card (2026-10-19). The in-app Settings Free tile lists the same eight bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on; bullet 7 ("Malicious code and app incident alerts", never paywalled on any plan) always shows. Bullet 8 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
 
 > Owner action after deploy: paste bullet 4 ("Up to 5 findings shown in full", 30 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "Preview of top finding in full". It matches the in-app Settings Free tile (gc-97k.10: up to 5 findings, never more than half).
 

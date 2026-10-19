@@ -44,6 +44,25 @@ describe("planTileBullets", () => {
     expect(TRIAL_BULLET).toBe("7-day free trial");
   });
 
+  it("Free: the live 8-bullet card in order; the security alerts bullet shows even when speed is dark", () => {
+    expect(PLAN_LISTING_BULLETS[PLANS.FREE]).toEqual([
+      "First scan always free",
+      "1 scan per month after first",
+      "Findings grouped by impact, with counts",
+      "Up to 5 findings shown in full",
+      "Single theme scanning",
+      FREE_SPEED_TEST_BULLET,
+      "Malicious code and app incident alerts",
+      "Ask Sidekick about your scan results",
+    ]);
+    expect(planTileBullets(PLANS.FREE, { speedLive: false, trialEligible: false })).toContain(
+      "Malicious code and app incident alerts",
+    );
+    for (const plan of TILE_PLANS) {
+      for (const b of PLAN_LISTING_BULLETS[plan]) expect(b.length).toBeLessThanOrEqual(40);
+    }
+  });
+
   it("never mutates the constants", () => {
     planTileBullets(PLANS.STANDARD, { speedLive: true, trialEligible: true });
     expect(PLAN_LISTING_BULLETS[PLANS.STANDARD]).not.toContain(TRIAL_BULLET);
