@@ -35,10 +35,17 @@ import {
   D,
   H,
   NOW,
+  SECRET_FILENAME,
+  SECRET_PATH,
+  SECRET_SNIPPET,
+  SECRET_SUGGESTION,
   SHOP_DOMAINS,
   ago,
   makeFakeDb,
+  scanDomains,
   shops,
+  signatureSubmissions,
+  unknownScripts,
   type FakeDb,
   type Row,
 } from "../fixtures/nod-digest-fixture";
@@ -113,6 +120,7 @@ describe("buildNodDigest", () => {
         "errors",
         "series",
         "journey",
+        "research",
         "merchants",
       ].sort(),
     );
@@ -512,9 +520,20 @@ describe("buildNodDigest", () => {
     await buildNodDigest(NOW);
     expect(fake.touched).toEqual([]);
     expect(new Set(fake.findManyCalls)).toEqual(
-      new Set(["shop", "scan", "finding", "appRemoval", "opsEvent"]),
+      new Set([
+        "shop",
+        "scan",
+        "finding",
+        "appRemoval",
+        "opsEvent",
+        "unknownScript",
+        "scanDomain",
+        "signatureSubmission",
+      ]),
     );
-    expect(new Set(fake.groupByCalls)).toEqual(new Set(["scan", "appRemoval"]));
+    expect(new Set(fake.groupByCalls)).toEqual(
+      new Set(["scan", "appRemoval", "unknownScript", "scanDomain"]),
+    );
   });
 });
 
@@ -592,5 +611,260 @@ describe("buildNodDigest journey", () => {
     const json = JSON.stringify((await buildNodDigest(NOW)).journey);
     for (const domain of SHOP_DOMAINS) expect(json).not.toContain(domain);
     expect(json).not.toMatch(/myshopify/i);
+  });
+});
+
+describe("buildNodDigest research (NOD ADR-011)", () => {
+  const research = async () => (await buildNodDigest(NOW)).research!;
+  const item = (r: Awaited<ReturnType<typeof research>>, host: string) =>
+    r.queue.find((q) => q.host === host);
+
+  it("titles the section and lists the three counts in order", async () => {
+    const r = await research();
+    expect(r.title).toBe("Signature research");
+    expect(r.counts.map((c) => [c.key, c.label])).toEqual([
+      ["unknown_script_hosts", "Unknown script hosts"],
+      ["unmatched_hosts", "Unmatched hosts"],
+      ["pending_suggestions", "Merchant suggestions to review"],
+    ]);
+  });
+
+  it("counts unknown script hosts: benign filtered, legacy null domain parsed, excluded shops ignored", async () => {
+    const r = await research();
+    // alpha, beta (legacy), gamma (one store), other-store.myshopify, IP, jota.
+    // Not fonts.googleapis.com (benign), not internal-only.delta.dev (internal shop only).
+    expect(r.counts[0]).toMatchObject({ open: 6, new7d: 2 }); // new: beta, myshopify host
+  });
+
+  it("counts unmatched hosts excluding unknown-script hosts, matched and benign rows", async () => {
+    const r = await research();
+    // kappa, solo-host.lambda.net, fresh.mu-cdn.com; not cdn.alpha-app.com.
+    expect(r.counts[1]).toMatchObject({ open: 3, new7d: 1 }); // new: fresh.mu-cdn.com
+  });
+
+  it("counts pending suggestions as an all-time backlog of non-excluded shops", async () => {
+    const r = await research();
+    // sub1 (1d) + sub3 (20d, outside 7d); sub4 is the internal shop's.
+    expect(r.counts[2]).toEqual({
+      key: "pending_suggestions",
+      label: "Merchant suggestions to review",
+      open: 2,
+      new7d: 1,
+    });
+    fake = makeFakeDb({
+      signatureSubmission: [
+        ...signatureSubmissions,
+        { ...signatureSubmissions[0], id: "sub_old", createdAt: ago(200 * D) },
+      ],
+    });
+    expect((await research()).counts[2]).toMatchObject({ open: 3, new7d: 1 });
+  });
+
+  it("uses the first sighting ever (any shop, legacy rows included) for new7d and firstSeenAt", async () => {
+    const r = await research();
+    // jota: window rows are all within 7d, but the internal shop saw it 20d ago.
+    expect(item(r, "cdn.jota-app.com")?.firstSeenAt).toBe(iso(ago(20 * D)));
+    // alpha: first seen 50d ago, before the window.
+    expect(item(r, "cdn.alpha-app.com")?.firstSeenAt).toBe(iso(ago(50 * D)));
+    // beta: legacy null-domain rows only, first seen 5d ago.
+    expect(item(r, "legacy.beta-tools.io")?.firstSeenAt).toBe(iso(ago(5 * D)));
+    // Removing jota's internal sighting makes it new: unknown script new7d goes 2 -> 3.
+    fake = makeFakeDb({
+      unknownScript: unknownScripts.filter(
+        (u) => !(u.scanId === "sc_int_old" && u.domain === "cdn.jota-app.com"),
+      ),
+    });
+    const r2 = await research();
+    expect(r2.counts[0]).toMatchObject({ open: 6, new7d: 3 });
+    // Removing gamma's 50d-old legacy row makes gamma new too (legacy lookup is used).
+    fake = makeFakeDb({
+      unknownScript: unknownScripts.filter(
+        (u) => !(u.scanId === "sc_pro_old" && String(u.url).includes("solo.gamma-shop.com")),
+      ),
+    });
+    expect((await research()).counts[0]).toMatchObject({ open: 6, new7d: 3 });
+  });
+
+  it("queues only hosts at 2+ stores, never myshopify or IP hosts, sorted by shops then sightings then host", async () => {
+    const r = await research();
+    expect(r.queue).toEqual([
+      {
+        host: "api.kappa-svc.com",
+        kind: "unmatched_host",
+        label: "Unmatched host",
+        shops: 3,
+        sightings: 3,
+        firstSeenAt: iso(ago(15 * D)),
+        lastSeenAt: iso(ago(2 * H)),
+      },
+      {
+        host: "cdn.alpha-app.com",
+        kind: "unknown_script",
+        label: "Unknown script",
+        shops: 2, // the internal shop's sighting is not counted
+        sightings: 3,
+        firstSeenAt: iso(ago(50 * D)),
+        lastSeenAt: iso(ago(2 * H)),
+        suggestions: 2, // sub1 + sub2; internal sub4 ignored
+      },
+      {
+        host: "cdn.jota-app.com",
+        kind: "unknown_script",
+        label: "Unknown script",
+        shops: 2,
+        sightings: 2,
+        firstSeenAt: iso(ago(20 * D)),
+        lastSeenAt: iso(ago(2 * H)),
+        suggestions: 0,
+      },
+      {
+        host: "fresh.mu-cdn.com",
+        kind: "unmatched_host",
+        label: "Unmatched host",
+        shops: 2,
+        sightings: 2,
+        firstSeenAt: iso(ago(5 * D)),
+        lastSeenAt: iso(ago(2 * H)),
+      },
+      {
+        host: "legacy.beta-tools.io",
+        kind: "unknown_script",
+        label: "Unknown script",
+        shops: 2,
+        sightings: 2,
+        firstSeenAt: iso(ago(5 * D)),
+        lastSeenAt: iso(ago(2 * H)),
+        suggestions: 1, // via a legacy null-domain script row
+      },
+    ]);
+    const hosts = r.queue.map((q) => q.host);
+    // One-store hosts are counted but never named.
+    expect(hosts).not.toContain("solo.gamma-shop.com");
+    expect(hosts).not.toContain("solo-host.lambda.net");
+    expect(hosts.some((h) => h.includes("myshopify"))).toBe(false);
+    expect(hosts).not.toContain("203.0.113.5");
+  });
+
+  it("drops a host below 2 stores when a shop is excluded", async () => {
+    process.env.OPERATOR_EXCLUDE_SHOPS = "std-merchant.myshopify.com";
+    const r = await research();
+    expect(item(r, "cdn.alpha-app.com")).toBeUndefined(); // now free only
+    expect(item(r, "api.kappa-svc.com")).toMatchObject({ shops: 2, sightings: 2 });
+    // The 203.0.113.5 host is now one store; counts still include alpha.
+    expect(r.counts[0].open).toBe(6);
+  });
+
+  it("lowercases hosts and merges case variants", async () => {
+    fake = makeFakeDb({
+      scanDomain: [{ ...scanDomains[0], domain: "API.Kappa-Svc.com" }, ...scanDomains.slice(1)],
+    });
+    const r = await research();
+    expect(item(r, "api.kappa-svc.com")).toMatchObject({ shops: 3, sightings: 3 });
+    expect(r.queue.every((q) => q.host === q.host.toLowerCase())).toBe(true);
+  });
+
+  it("caps the queue at 25", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      const host = `cdn.vendor${String(i).padStart(2, "0")}.com`;
+      many.push(
+        { ...unknownScripts[0], id: `m${i}a`, url: `https://${host}/a.js`, domain: host },
+        {
+          ...unknownScripts[0],
+          id: `m${i}b`,
+          scanId: "sc_std",
+          url: `https://${host}/a.js`,
+          domain: host,
+        },
+      );
+      // Extra sightings so sort order is by sightings for the first few.
+      if (i < 3)
+        many.push({
+          ...unknownScripts[0],
+          id: `m${i}c`,
+          url: `https://${host}/b.js`,
+          domain: host,
+        });
+    }
+    fake = makeFakeDb({ unknownScript: many, scanDomain: [], signatureSubmission: [] });
+    const r = await research();
+    expect(r.queue).toHaveLength(25);
+    expect(r.counts[0].open).toBe(30);
+    expect(r.queue.slice(0, 3).map((q) => [q.host, q.sightings])).toEqual([
+      ["cdn.vendor00.com", 3],
+      ["cdn.vendor01.com", 3],
+      ["cdn.vendor02.com", 3],
+    ]);
+    expect(r.queue[3].host).toBe("cdn.vendor03.com");
+    expect(r.queue[24].host).toBe("cdn.vendor24.com");
+    expect(validateDigest(await buildNodDigest(NOW))).toEqual([]);
+  });
+
+  it("never outputs suggestion text, urls, filenames, snippets or shop identifiers", async () => {
+    const d = await buildNodDigest(NOW);
+    const json = JSON.stringify(d.research);
+    for (const forbidden of [SECRET_SUGGESTION, SECRET_PATH, SECRET_FILENAME, SECRET_SNIPPET]) {
+      expect(JSON.stringify(d)).not.toContain(forbidden);
+    }
+    for (const domain of SHOP_DOMAINS) expect(json).not.toContain(domain);
+    for (const s of shops) expect(json).not.toContain(s.id as string);
+    expect(json).not.toMatch(/myshopify|https?:|\/\//i);
+    for (const q of d.research!.queue) {
+      expect(Object.keys(q).sort()).toEqual(
+        [
+          "host",
+          "kind",
+          "label",
+          "shops",
+          "sightings",
+          "firstSeenAt",
+          "lastSeenAt",
+          ...(q.kind === "unknown_script" ? ["suggestions"] : []),
+        ].sort(),
+      );
+    }
+    // suggestedAppName is never even selected.
+    const subQueries = fake.findManyArgs.filter((c) => c.model === "signatureSubmission");
+    expect(subQueries.length).toBeGreaterThan(0);
+    for (const c of subQueries)
+      expect(JSON.stringify(c.args?.select)).not.toContain("suggestedAppName");
+  });
+
+  it("sends zeros and an empty queue when there is nothing to research", async () => {
+    fake = makeFakeDb({ unknownScript: [], scanDomain: [], signatureSubmission: [] });
+    const d = await buildNodDigest(NOW);
+    expect(d.research).toEqual({
+      title: "Signature research",
+      counts: [
+        { key: "unknown_script_hosts", label: "Unknown script hosts", open: 0, new7d: 0 },
+        { key: "unmatched_hosts", label: "Unmatched hosts", open: 0, new7d: 0 },
+        { key: "pending_suggestions", label: "Merchant suggestions to review", open: 0, new7d: 0 },
+      ],
+      queue: [],
+    });
+    expect(validateDigest(d)).toEqual([]);
+  });
+
+  it("omits the section, not the digest, when it cannot be computed", async () => {
+    const base = makeFakeDb();
+    fake = {
+      ...base,
+      db: new Proxy(base.db, {
+        get: (t, prop: string) => {
+          if (prop === "unknownScript") throw new Error("db down");
+          return (t as Record<string, unknown>)[prop];
+        },
+      }),
+    };
+    const d = await buildNodDigest(NOW);
+    expect(d.research).toBeUndefined();
+    expect(d.value.length).toBe(5);
+    expect(validateDigest(d)).toEqual([]);
+  });
+
+  it("passes the NOD contract validator with the research section", async () => {
+    const d = await buildNodDigest(NOW);
+    expect(d.research!.queue.length).toBeGreaterThan(0);
+    expect(validateDigest(d)).toEqual([]);
   });
 });

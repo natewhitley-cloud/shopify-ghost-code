@@ -8,8 +8,9 @@ export const ERROR_CATEGORIES = ["api", "webhook", "token", "encryption", "job",
 const MERCHANT_KEYS = ["id", "plan", "installedAt", "lastActiveAt", "actions7d", "actions30d"];
 const TOP_KEYS = [
   "contractVersion", "app", "generatedAt", "lifecycle", "installs", "revenue",
-  "value", "engagement", "nudges", "errors", "series", "journey", "merchants",
+  "value", "engagement", "nudges", "errors", "series", "journey", "research", "merchants",
 ];
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 // Object built-ins: as keys they would shadow or replace prototype properties when stage times are merged.
 const RESERVED_KEYS = ["__proto__", "constructor"];
 const JOURNEY_MERCHANT_KEYS = ["id", "installedAt", "uninstalledAt", "plan", "reached"];
@@ -205,6 +206,40 @@ export function validateDigest(d) {
           req(stageKeys.has(k), `${p}.reached.${k} is not a journey stage`);
           req(isIso(v), `${p}.reached.${k} must be a timestamp`);
         }
+      });
+    }
+  }
+
+  if (d.research !== undefined) {
+    const r = d.research;
+    if (!isObj(r)) errs.push("research must be an object");
+    else {
+      noExtra(r, "research", ["title", "counts", "queue"]);
+      req(typeof r.title === "string" && r.title.length > 0 && r.title.length <= 60, "research.title must be 1 to 60 characters");
+      if (!Array.isArray(r.counts) || r.counts.length < 1 || r.counts.length > 6) errs.push("research.counts must be an array of 1 to 6");
+      else r.counts.forEach((c, i) => {
+        const p = `research.counts[${i}]`;
+        if (!isObj(c)) return errs.push(`${p} must be an object`);
+        noExtra(c, p, ["key", "label", "open", "new7d"]);
+        req(typeof c.key === "string" && KEY_RE.test(c.key), `${p}.key must match ${KEY_RE}`);
+        req(typeof c.label === "string" && c.label.length > 0 && c.label.length <= 60, `${p}.label must be 1 to 60 characters`);
+        counts(c, p, ["open", "new7d"]);
+        if (isCount(c.open) && isCount(c.new7d)) req(c.new7d <= c.open, `${p}.new7d cannot exceed open`);
+      });
+      if (!Array.isArray(r.queue) || r.queue.length > 25) errs.push("research.queue must be an array of at most 25");
+      else r.queue.forEach((q, i) => {
+        const p = `research.queue[${i}]`;
+        if (!isObj(q)) return errs.push(`${p} must be an object`);
+        noExtra(q, p, ["host", "kind", "label", "shops", "sightings", "firstSeenAt", "lastSeenAt", "suggestions"]);
+        // ADR-011: a third-party host only; a store's own domain must never appear.
+        req(typeof q.host === "string" && HOST_RE.test(q.host) && !q.host.includes("myshopify"), `${p}.host must be a lowercase third-party hostname`);
+        req(typeof q.kind === "string" && KEY_RE.test(q.kind), `${p}.kind must match ${KEY_RE}`);
+        req(typeof q.label === "string" && q.label.length > 0 && q.label.length <= 60, `${p}.label must be 1 to 60 characters`);
+        counts(q, p, ["shops", "sightings"]);
+        if (isCount(q.shops)) req(q.shops >= 2, `${p}.shops must be at least 2 (ADR-011)`);
+        if (q.suggestions !== undefined) counts(q, p, ["suggestions"]);
+        req(isIso(q.firstSeenAt) && isIso(q.lastSeenAt), `${p}.firstSeenAt and lastSeenAt must be timestamps`);
+        if (isIso(q.firstSeenAt) && isIso(q.lastSeenAt)) req(Date.parse(q.firstSeenAt) <= Date.parse(q.lastSeenAt), `${p}.firstSeenAt cannot be after lastSeenAt`);
       });
     }
   }

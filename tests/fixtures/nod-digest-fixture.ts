@@ -1,9 +1,11 @@
 /**
  * In-memory fake of the Prisma delegates the NOD digest loader reads (shop,
- * scan, finding, appRemoval, opsEvent), plus a fixture world. Only findMany and
- * groupBy (with _min) exist; any other access (a write) is recorded in
- * `touched` so tests can assert read-only. `finding.scan` is the one relation:
- * it filters and selects through the scan row with id = finding.scanId.
+ * scan, finding, appRemoval, opsEvent, unknownScript, scanDomain,
+ * signatureSubmission), plus a fixture world. Only findMany and groupBy (with
+ * _min) exist; any other access (a write) is recorded in `touched` so tests can
+ * assert read-only. Relations (`finding.scan`, `signatureSubmission.unknownScript`)
+ * filter and select through the related row by its foreign key. Where clauses
+ * support equality (null included), `in`, `gte`, `lt` and `OR`.
  */
 
 export const NOW = new Date("2026-10-17T12:00:00.000Z");
@@ -110,11 +112,13 @@ const scans: Row[] = [
   scan("sc_pro_failed", "shop_pro", ago(55 * D), "FAILED", ago(55 * D), 0),
 ];
 
-// Scans that are not in the scans-run list (uninstalled shop, failed), kept
-// separate so the activity rows' counts stay unchanged.
+// Scans that are not in the scans-run list (uninstalled shop, failed, excluded
+// shop), kept separate so the activity rows' counts stay unchanged.
 // sc_gone_failed's resolved count proves failed scans are not summed.
 const extraScans: Row[] = [
   scan("sc_gone_failed", "shop_gone", ago(12 * H), "FAILED", ago(12 * H), 5),
+  // Internal shop, before the 7-day window: a first sighting that is not "new".
+  scan("sc_int_old", "shop_internal", ago(20 * D), "COMPLETED", ago(20 * D), 0),
 ];
 
 const finding = (id: string, scanId: string, findingType: string): Row => ({
@@ -294,21 +298,193 @@ const opsEvents: Row[] = [
   },
 ];
 
-type Tables = Record<"shop" | "scan" | "finding" | "appRemoval" | "opsEvent", Row[]>;
+// ---- Research (NOD ADR-011) world ----
+// Strings that must never reach the payload (merchant free text, paths, code).
+export const SECRET_SUGGESTION = "Secret Merchant Suggestion";
+export const SECRET_PATH = "secret-path-xyz";
+export const SECRET_FILENAME = "snippets/secret-file.liquid";
+export const SECRET_SNIPPET = "SECRET_SNIPPET_CODE";
+
+let usSeq = 0;
+const us = (
+  scanId: string,
+  createdAt: Date,
+  url: string,
+  domain: string | null,
+  id = `us_${++usSeq}`,
+): Row => ({
+  id,
+  scanId,
+  createdAt,
+  url,
+  domain,
+  filename: SECRET_FILENAME,
+  lineNumber: 1,
+  resourceType: "script",
+  codeSnippet: SECRET_SNIPPET,
+});
+const scriptUrl = (host: string) => `https://${host}/${SECRET_PATH}.js`;
+
+export const unknownScripts: Row[] = [
+  // cdn.alpha-app.com: free + std (+ internal, ignored) in the window; first
+  // seen 50d ago at shop_pro. shops 2, sightings 3, not new.
+  us("sc_free1", ago(2 * H), scriptUrl("cdn.alpha-app.com"), "cdn.alpha-app.com", "us_alpha_free"),
+  us("sc_free2", ago(3 * D), scriptUrl("cdn.alpha-app.com"), "cdn.alpha-app.com"),
+  us("sc_std", ago(15 * D), scriptUrl("cdn.alpha-app.com"), "cdn.alpha-app.com", "us_alpha_std"),
+  us("sc_int", ago(1 * D), scriptUrl("cdn.alpha-app.com"), "cdn.alpha-app.com", "us_alpha_int"),
+  us("sc_pro_old", ago(50 * D), scriptUrl("cdn.alpha-app.com"), "cdn.alpha-app.com"),
+  // legacy.beta-tools.io: legacy null domain rows, host parsed from url. New (5d).
+  us("sc_gone", ago(5 * D), scriptUrl("legacy.beta-tools.io"), null, "us_beta_gone"),
+  us("sc_free1", ago(2 * H), "//legacy.beta-tools.io/other.js", null),
+  // solo.gamma-shop.com: one store in the window; a legacy row 50d ago makes it not new.
+  us("sc_free1", ago(2 * H), scriptUrl("solo.gamma-shop.com"), "solo.gamma-shop.com", "us_gamma"),
+  us("sc_pro_old", ago(50 * D), scriptUrl("solo.gamma-shop.com"), null),
+  // Benign library (Google Fonts): never counted.
+  us(
+    "sc_free1",
+    ago(2 * H),
+    "https://fonts.googleapis.com/css?family=Inter",
+    "fonts.googleapis.com",
+  ),
+  us(
+    "sc_std",
+    ago(15 * D),
+    "https://fonts.googleapis.com/css?family=Inter",
+    "fonts.googleapis.com",
+  ),
+  // A myshopify host at two stores: counted (new), never queued.
+  us(
+    "sc_free1",
+    ago(2 * H),
+    scriptUrl("cdn.other-store.myshopify.com"),
+    "cdn.other-store.myshopify.com",
+  ),
+  us(
+    "sc_gone",
+    ago(5 * D),
+    scriptUrl("cdn.other-store.myshopify.com"),
+    "cdn.other-store.myshopify.com",
+  ),
+  // An IP address host (port dropped by URL parsing) at two stores: counted, never queued.
+  us("sc_free1", ago(2 * H), `http://203.0.113.5:8080/${SECRET_PATH}.js`, "203.0.113.5"),
+  us("sc_std", ago(15 * D), `http://203.0.113.5:8080/${SECRET_PATH}.js`, "203.0.113.5"),
+  // cdn.jota-app.com: two stores in the last 7d, but first seen 20d ago at the
+  // internal shop: first sighting is all-time and any shop, so not new.
+  us("sc_free1", ago(2 * H), scriptUrl("cdn.jota-app.com"), "cdn.jota-app.com"),
+  us("sc_gone", ago(5 * D), scriptUrl("cdn.jota-app.com"), "cdn.jota-app.com"),
+  us("sc_int_old", ago(20 * D), scriptUrl("cdn.jota-app.com"), "cdn.jota-app.com"),
+  // Seen only at the internal shop: not counted at all.
+  us("sc_int", ago(1 * D), scriptUrl("internal-only.delta.dev"), "internal-only.delta.dev"),
+  // Malformed url, legacy null domain: no host, skipped.
+  us("sc_free1", ago(2 * H), "not a url", null),
+];
+
+const sd = (
+  scanId: string,
+  createdAt: Date,
+  domain: string,
+  flags: { matched?: boolean; benign?: boolean } = {},
+): Row => ({
+  id: `sd_${scanId}_${domain}`,
+  scanId,
+  createdAt,
+  domain,
+  matched: flags.matched ?? false,
+  benign: flags.benign ?? false,
+  appName: null,
+  sources: ["script"],
+  refCount: 1,
+});
+
+export const scanDomains: Row[] = [
+  // api.kappa-svc.com: three stores. shops 3, sightings 3, not new.
+  sd("sc_free1", ago(2 * H), "api.kappa-svc.com"),
+  sd("sc_gone", ago(5 * D), "api.kappa-svc.com"),
+  sd("sc_std", ago(15 * D), "api.kappa-svc.com"),
+  // Same host as an unknown script: not an unmatched host.
+  sd("sc_free1", ago(2 * H), "cdn.alpha-app.com"),
+  sd("sc_std", ago(15 * D), "cdn.alpha-app.com"),
+  // Matched or benign: never counted.
+  sd("sc_free1", ago(2 * H), "known.app-sig.com", { matched: true }),
+  sd("sc_std", ago(15 * D), "known.app-sig.com", { matched: true }),
+  sd("sc_free1", ago(2 * H), "cdn.benign-cdn.com", { benign: true }),
+  sd("sc_std", ago(15 * D), "cdn.benign-cdn.com", { benign: true }),
+  // One store: counted, not queued.
+  sd("sc_std", ago(15 * D), "solo-host.lambda.net"),
+  // fresh.mu-cdn.com: new, two stores; an older MATCHED row at shop_pro would
+  // make it not new, so it has none.
+  sd("sc_free1", ago(2 * H), "fresh.mu-cdn.com"),
+  sd("sc_gone", ago(5 * D), "fresh.mu-cdn.com"),
+  // Internal shop only: not counted.
+  sd("sc_int", ago(1 * D), "internal-only.nu.dev"),
+];
+
+const sub = (
+  id: string,
+  unknownScriptId: string,
+  shopId: string,
+  status: string,
+  createdAt: Date,
+): Row => ({
+  id,
+  unknownScriptId,
+  shopId,
+  status,
+  createdAt,
+  suggestedAppName: SECRET_SUGGESTION,
+  reviewedAt: null,
+});
+
+export const signatureSubmissions: Row[] = [
+  sub("sub1", "us_alpha_free", "shop_free", "PENDING", ago(1 * D)),
+  sub("sub2", "us_alpha_std", "shop_std", "ACCEPTED", ago(10 * D)),
+  sub("sub3", "us_beta_gone", "shop_gone", "PENDING", ago(20 * D)), // legacy null domain
+  sub("sub4", "us_alpha_int", "shop_internal", "PENDING", ago(1 * D)), // internal: ignored
+  sub("sub5", "us_gamma", "shop_free", "REJECTED", ago(2 * D)),
+];
+
+type Tables = Record<
+  | "shop"
+  | "scan"
+  | "finding"
+  | "appRemoval"
+  | "opsEvent"
+  | "unknownScript"
+  | "scanDomain"
+  | "signatureSubmission",
+  Row[]
+>;
+
+// model -> relation field -> [related model, foreign key on this model]
+const RELATIONS: Record<string, Record<string, [keyof Tables, string]>> = {
+  finding: { scan: ["scan", "scanId"] },
+  signatureSubmission: { unknownScript: ["unknownScript", "unknownScriptId"] },
+};
+
+const related = (row: Row, model: string, field: string, tables: Tables) => {
+  const rel = RELATIONS[model]?.[field];
+  return rel ? tables[rel[0]].find((r) => r.id === row[rel[1]]) : undefined;
+};
 
 function matches(row: Row, where: Row | undefined, model: string, tables: Tables): boolean {
   if (!where) return true;
   for (const [field, cond] of Object.entries(where)) {
-    if (model === "finding" && field === "scan") {
-      const s = tables.scan.find((r) => r.id === row.scanId);
-      if (!s || !matches(s, cond as Row, "scan", tables)) return false;
+    if (field === "OR") {
+      if (!(cond as Row[]).some((w) => matches(row, w, model, tables))) return false;
+      continue;
+    }
+    const rel = RELATIONS[model]?.[field];
+    if (rel) {
+      const r = related(row, model, field, tables);
+      if (!r || !matches(r, cond as Row, rel[0], tables)) return false;
       continue;
     }
     const v = row[field];
     if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
-      const c = cond as { in?: unknown[]; gte?: Date };
+      const c = cond as { in?: unknown[]; gte?: Date; lt?: Date };
       if (c.in && !c.in.includes(v)) return false;
       if (c.gte && !(v instanceof Date && v >= c.gte)) return false;
+      if (c.lt && !(v instanceof Date && v < c.lt)) return false;
     } else if (v !== cond) return false;
   }
   return true;
@@ -323,9 +499,10 @@ function project(
   if (!select) return { ...row };
   return Object.fromEntries(
     Object.entries(select).map(([k, sel]) => {
-      if (model === "finding" && k === "scan") {
-        const s = tables.scan.find((r) => r.id === row.scanId)!;
-        return [k, project(s, (sel as { select: Record<string, unknown> }).select, "scan", tables)];
+      const rel = RELATIONS[model]?.[k];
+      if (rel) {
+        const r = related(row, model, k, tables)!;
+        return [k, project(r, (sel as { select: Record<string, unknown> }).select, rel[0], tables)];
       }
       return [k, row[k]];
     }),
@@ -375,6 +552,9 @@ export function makeFakeDb(overrides?: Partial<Tables>): FakeDb {
     finding: findings,
     appRemoval: appRemovals,
     opsEvent: opsEvents,
+    unknownScript: unknownScripts,
+    scanDomain: scanDomains,
+    signatureSubmission: signatureSubmissions,
     ...overrides,
   };
   const delegate = (model: keyof Tables) =>
