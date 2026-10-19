@@ -191,6 +191,7 @@ describe("extensions/sidekick-tools/src/index.js at runtime", () => {
       async () => Promise.reject(new TypeError("Failed to fetch")),
     ],
     ["a network failure", async () => Promise.reject(new TypeError("failed"))],
+    ["a 200 JSON body without a results list", async () => Response.json({ error: "unexpected" })],
   ])("returns a short factual error on %s instead of throwing", async (_label, impl) => {
     vi.stubGlobal("fetch", vi.fn(impl));
     const handlers = await registerTools();

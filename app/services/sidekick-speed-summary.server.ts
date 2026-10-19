@@ -40,7 +40,6 @@ import {
 } from "../lib/speed-report";
 import type {
   FreeSpeedTestResult,
-  SpeedFailureCode,
   SpeedPageResult,
   SpeedReportSummaryView,
 } from "../lib/speed-report";
@@ -88,7 +87,7 @@ export type SidekickSpeedPage =
 
 export type SidekickSpeedSummary =
   | { status: "not_available_on_plan"; message: string }
-  | { status: "no_data"; reason: SpeedNoDataReason; message: string; url: string }
+  | { status: "no_data"; reason: SpeedNoDataReason; message: string; url?: string }
   | {
       status: "ok";
       reportDate: string;
@@ -107,6 +106,7 @@ export const SPEED_NOT_LIVE_MESSAGE =
   "The GhostCode store speed report is not available right now.";
 export const SPEED_NOT_ON_PLAN_MESSAGE =
   "The store speed report is not included in the current plan.";
+export const SPEED_NO_RESULT_MESSAGE = "GhostCode has no speed result for this store yet.";
 export const SPEED_NO_REPORT_MESSAGE =
   "No speed report has run for this store yet. The first weekly report runs on Sunday.";
 export const SPEED_RUNNING_NOW_MESSAGE =
@@ -119,13 +119,13 @@ export const FREE_TEST_RESULT_MISSING_MESSAGE = "The free speed test result is n
 export const PRO_SCOPE =
   "The latest speed report with results: each tested page with the apps that cost it the most processing time.";
 export const FREE_SCOPE =
-  "The store's one free homepage speed test: the homepage score, core timings and the app that cost the most processing time. Other apps' costs and the product page are not included in the current plan.";
+  "The store's one free homepage speed test: the homepage score, core timings and the one app that cost the most processing time.";
 
 function noData(reason: SpeedNoDataReason, message: string): SidekickSpeedSummary {
   return { status: "no_data", reason, message, url: SPEED_URL };
 }
 
-/** A date as the page shows it would be locale-formatted; ISO here. */
+/** The calendar day (YYYY-MM-DD) of an ISO timestamp, for message text. */
 function day(iso: string): string {
   return iso.slice(0, 10);
 }
@@ -224,9 +224,12 @@ function freePage(result: FreeSpeedTestResult): SidekickSpeedPage {
 }
 
 export async function getSidekickSpeedSummary(shopDomain: string): Promise<SidekickSpeedSummary> {
-  if (!isSpeedReportLive()) return noData("not_available", SPEED_NOT_LIVE_MESSAGE);
+  // While the page 404s (dark flag) there is nothing to link to: no url.
+  if (!isSpeedReportLive()) {
+    return { status: "no_data", reason: "not_available", message: SPEED_NOT_LIVE_MESSAGE };
+  }
   const shop = await getShopMetadata(shopDomain);
-  if (!shop) return noData("not_run", SPEED_NO_REPORT_MESSAGE);
+  if (!shop) return noData("not_run", SPEED_NO_RESULT_MESSAGE);
 
   const report = await readSpeedPageReport(shop, new Date());
 
@@ -238,7 +241,10 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
     const { freeTest } = report;
     switch (freeTest.state) {
       case "used":
-        if (!freeTest.result) return noData("failed", FREE_TEST_RESULT_MISSING_MESSAGE);
+        // A used stamp without its report should not happen; the page shows nothing.
+        if (!freeTest.result) {
+          return noData("free_test_unavailable", FREE_TEST_RESULT_MISSING_MESSAGE);
+        }
         return {
           status: "ok",
           reportDate: freeTest.result.createdAt,
@@ -264,9 +270,7 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
         }
         return noData(
           "failed",
-          `The free speed test on ${day(attempt.createdAt)} did not finish. ${speedFailureMessage(
-            attempt.failureReason as SpeedFailureCode | null,
-          )} It was not used up and can be run again from the Store speed page.`,
+          `The free speed test on ${day(attempt.createdAt)} did not finish. ${speedFailureMessage(attempt.failureReason)} It was not used up and can be run again from the Store speed page.`,
         );
       }
     }

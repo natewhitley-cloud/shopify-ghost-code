@@ -42,6 +42,7 @@ import {
   MAX_SPEED_APPS,
   PRO_SCOPE,
   SPEED_NO_REPORT_MESSAGE,
+  SPEED_NO_RESULT_MESSAGE,
   SPEED_NOT_LIVE_MESSAGE,
   SPEED_NOT_ON_PLAN_MESSAGE,
   SPEED_PAUSED_MESSAGE,
@@ -375,6 +376,15 @@ describe("getSidekickSpeedSummary: Free and Standard (the free speed test)", () 
     expect(r.pages[0]).toMatchObject({ costliestApps: [], appsNote: FREE_TEST_NO_APP });
   });
 
+  it("used stamp without its report (should not happen): no_data, not a failure", async () => {
+    setPlan("free");
+    mockUsedAt.mockResolvedValue(new Date());
+    expect(await getSidekickSpeedSummary(DOMAIN)).toMatchObject({
+      status: "no_data",
+      reason: "free_test_unavailable",
+    });
+  });
+
   it("free test not run yet: no_data", async () => {
     setPlan("free");
     expect(await getSidekickSpeedSummary(DOMAIN)).toEqual({
@@ -449,9 +459,9 @@ describe("getSidekickSpeedSummary: gates", () => {
     expect(mockReports).not.toHaveBeenCalled();
   });
 
-  it("dark (SPEED_REPORT_LIVE_ENABLED off): not available, nothing read", async () => {
+  it("dark (SPEED_REPORT_LIVE_ENABLED off): not available, no link to the 404 page, nothing read", async () => {
     delete process.env.SPEED_REPORT_LIVE_ENABLED;
-    expect(await getSidekickSpeedSummary(DOMAIN)).toMatchObject({
+    expect(await getSidekickSpeedSummary(DOMAIN)).toEqual({
       status: "no_data",
       reason: "not_available",
       message: SPEED_NOT_LIVE_MESSAGE,
@@ -461,7 +471,12 @@ describe("getSidekickSpeedSummary: gates", () => {
 
   it("shop row missing: no_data", async () => {
     mockShop.mockResolvedValue(null);
-    expect(await getSidekickSpeedSummary(DOMAIN)).toMatchObject({ status: "no_data" });
+    expect(await getSidekickSpeedSummary(DOMAIN)).toEqual({
+      status: "no_data",
+      reason: "not_run",
+      message: SPEED_NO_RESULT_MESSAGE,
+      url: SPEED_URL,
+    });
     expect(mockReports).not.toHaveBeenCalled();
   });
 });

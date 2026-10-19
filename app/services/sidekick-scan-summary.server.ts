@@ -34,6 +34,7 @@ import { loadThemeHealth } from "./theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { computeLaneSummary, laneLabelForLane, soWhatForLane } from "../lib/finding-consequence";
+import { buildFindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
@@ -43,7 +44,7 @@ import {
   themeHealthVerdict,
 } from "../lib/theme-health";
 import { findingLocation, toTopFindingViews } from "../lib/top-findings";
-import { getFindingsForScan, getTypeCountsForScan } from "../models/finding.server";
+import { getTopFindingsInGroup, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getCompletedScansForShop, getScanById, getScansForShop } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
@@ -181,8 +182,9 @@ export async function getSidekickScanSummary(
           keptFindings,
           findingTypesWithheldByPlan(features),
         ),
+    // Bounded: a compromised theme can hold thousands of hits.
     maliciousFound > 0
-      ? getFindingsForScan(scan.id, { findingType: "MALICIOUS_SCRIPT" })
+      ? getTopFindingsInGroup(scan.id, "MALICIOUS_SCRIPT", null, MAX_MALICIOUS_LISTED)
       : Promise.resolve([]),
   ]);
 
@@ -195,7 +197,12 @@ export async function getSidekickScanSummary(
     status: "ok",
     scanDate: scan.completedAt.toISOString(),
     themeName: scan.themeName,
-    totalFindings: summary.total,
+    // Home's findings tile: ignored malicious findings are added back.
+    totalFindings: buildFindingsTile({
+      filteredTotal: summary.total,
+      maliciousFound,
+      maliciousKept: summary.byType.MALICIOUS_SCRIPT ?? 0,
+    }).total,
     byImpact: computeLaneSummary(summary.byType).map((row) => ({
       area: row.label,
       count: row.count,
@@ -211,12 +218,12 @@ export async function getSidekickScanSummary(
     })),
     maliciousCode: {
       found: maliciousFound,
-      findings: maliciousRows.slice(0, MAX_MALICIOUS_LISTED).map((f) => ({
+      findings: maliciousRows.map((f) => ({
         location: findingLocation(f),
         app: f.appName,
         description: f.description,
       })),
-      moreNotListed: maliciousRows.length > MAX_MALICIOUS_LISTED,
+      moreNotListed: maliciousFound > maliciousRows.length,
     },
     themeHealth,
     newerScanInProgress: latestIsRunning && latestScan.id !== scan.id,
@@ -261,7 +268,9 @@ async function readThemeHealth(
       checks: labels,
       reason: reason !== null && PLAN_NAME.test(reason) ? PLAN_GAP_REASON : reason,
     })),
-    theme: groups.theme ? `${groups.theme.statusLabel}: ${groups.theme.detail ?? ""}`.trim() : null,
+    theme: groups.theme
+      ? [groups.theme.statusLabel, groups.theme.detail].filter(Boolean).join(": ")
+      : null,
     unpublishedThemes: groups.unpublished?.detail ?? null,
   };
 }

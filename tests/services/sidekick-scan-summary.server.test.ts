@@ -380,7 +380,9 @@ describe("getSidekickScanSummary: Free plan", () => {
     mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set(["BadApp"]) });
     const r = await okSummary();
     expect(r.topFindings).toEqual([]);
-    expect(r.totalFindings).toBe(0);
+    // Home's findings tile adds ignored malicious findings back: never 0 here.
+    expect(r.totalFindings).toBe(1);
+    expect(r.byImpact).toEqual([]);
     expect(r.maliciousCode.found).toBe(1);
     expect(r.maliciousCode.findings.map((m) => m.app)).toEqual(["BadApp"]);
     expect(r.themeHealth?.verdict).toBe(MALICIOUS_VERDICT);

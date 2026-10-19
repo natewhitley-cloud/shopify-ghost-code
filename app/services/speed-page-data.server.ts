@@ -8,6 +8,9 @@
  *     view (homepage score, core timings, ONE costliest app).
  *   - A plan with neither: no report data is read at all.
  *
+ * `requestedAt` (the Run now / free test slot) is read for the page; the
+ * Sidekick tool ignores it, an accepted extra indexed read to keep ONE gate.
+ *
  * Read-only and side-effect free: the page's upgrade ask and its nudge
  * telemetry stay in the route. Reaches only the read-only speed data modules
  * (the model and the pure lib), never the PageSpeed client or the worker.
