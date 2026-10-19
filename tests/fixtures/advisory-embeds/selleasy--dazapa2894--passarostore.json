@@ -1,0 +1,28 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/dazapa2894/passarostore/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/dazapa2894/passarostore/main/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "8746983209849429782": {
+        "type": "shopify://apps/dealeasy/blocks/app-embed/e47a8634-0496-480d-9e46-6f7fafd34b30",
+        "disabled": false
+      },
+      "3636041076704339800": {
+        "type": "shopify://apps/onvoard-aov-progress-bar/blocks/initialize/73a9be24-355c-420e-90ba-44b9c69509c0",
+        "disabled": true
+      },
+      "18228966181090706294": {
+        "type": "shopify://apps/selleasy/blocks/app-embed/790c1a03-a71f-4bc1-9869-00dad526d3c2",
+        "disabled": false
+      },
+      "3847134708050210359": {
+        "type": "shopify://apps/transcy/blocks/switcher_embed_block/bce4f1c0-c18c-43b0-b0b2-a1aefaa44573",
+        "disabled": true
+      }
+    }
+  }
+}

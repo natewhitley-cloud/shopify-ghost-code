@@ -1,0 +1,40 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/Litework-Workspace/sunniland_patio/blob/ffa491aa27a14e87e3c9c07e088a57b9ca090d97/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/Litework-Workspace/sunniland_patio/ffa491aa27a14e87e3c9c07e088a57b9ca090d97/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "10042746950867549768": {
+        "type": "shopify://apps/hulk-product-options/blocks/app-embed/380168ef-9475-4244-a291-f66b189208b5",
+        "disabled": false
+      },
+      "10384935893930344104": {
+        "type": "shopify://apps/seoant-broken-link-redirect/blocks/brokenlink-404/cc7b1996-e567-42d0-8862-356092041863",
+        "disabled": false
+      },
+      "16278478101612877664": {
+        "type": "shopify://apps/pagefly-page-builder/blocks/app-embed/83e179f7-59a0-4589-8c66-c0dddf959200",
+        "disabled": false
+      },
+      "855628211100114053": {
+        "type": "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/2632fe16-c075-4321-a88b-50b567f42507",
+        "disabled": false
+      },
+      "15683396631634586217": {
+        "type": "shopify://apps/inbox/blocks/chat/841fc607-4181-4ad1-842d-e24d7f8bad6b",
+        "disabled": false
+      },
+      "16237003337219470499": {
+        "type": "shopify://apps/appstle-loyalty/blocks/appstle-loyalty/1886c0f8-77b6-4a85-af11-b43cc17ae1c1",
+        "disabled": false
+      },
+      "14060646107696862457": {
+        "type": "shopify://apps/judge-me-reviews/blocks/judgeme_core/61ccd3b1-a9f2-4160-9fe9-4fec8413e5d8",
+        "disabled": false
+      }
+    }
+  }
+}

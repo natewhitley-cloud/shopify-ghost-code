@@ -1,0 +1,20 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/Novatize/shopify-formation/blob/master/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/Novatize/shopify-formation/master/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "5946647744298494267": {
+        "type": "shopify://apps/wishlist-plus/blocks/wishlist-app-embed/80c3b1fc-3a8f-407e-8367-ffdeebb8b612",
+        "disabled": false
+      },
+      "10274264662263595587": {
+        "type": "shopify://apps/wishlist-plus/blocks/wishlist-collections-embed/80c3b1fc-3a8f-407e-8367-ffdeebb8b612",
+        "disabled": false
+      }
+    }
+  }
+}

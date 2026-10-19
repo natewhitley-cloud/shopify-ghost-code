@@ -1,0 +1,36 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/va1ia/omjuice/blob/7f80a002f6dc6047a64ef9c3af963d2b5b092074/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/va1ia/omjuice/7f80a002f6dc6047a64ef9c3af963d2b5b092074/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "10042746950867549768": {
+        "type": "shopify://apps/hulk-product-options/blocks/app-embed/380168ef-9475-4244-a291-f66b189208b5",
+        "disabled": false
+      },
+      "855628211100114053": {
+        "type": "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/2632fe16-c075-4321-a88b-50b567f42507",
+        "disabled": false
+      },
+      "4067984192778377217": {
+        "type": "shopify://apps/getcho/blocks/delivery_picker/019bc875-6e97-7ae6-9936-32826d137537",
+        "disabled": false
+      },
+      "10280838536583102783": {
+        "type": "shopify://apps/getcho/blocks/date_picker_with_time/019bc875-6e97-7ae6-9936-32826d137537",
+        "disabled": false
+      },
+      "12215553388412338944": {
+        "type": "shopify://apps/getcho/blocks/cart_same_day_status/019bc875-6e97-7ae6-9936-32826d137537",
+        "disabled": false
+      },
+      "17746309047874952937": {
+        "type": "shopify://apps/getcho/blocks/same_day_badge_embed/019bc875-6e97-7ae6-9936-32826d137537",
+        "disabled": false
+      }
+    }
+  }
+}

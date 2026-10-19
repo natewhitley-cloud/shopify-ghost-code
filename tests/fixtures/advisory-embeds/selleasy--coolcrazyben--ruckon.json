@@ -1,0 +1,28 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/coolcrazyben/RuckOn/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/coolcrazyben/RuckOn/main/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "855628211100114053": {
+        "type": "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/2632fe16-c075-4321-a88b-50b567f42507",
+        "disabled": false
+      },
+      "10436698916776057164": {
+        "type": "shopify://apps/appstle-subscription/blocks/appstle-subscription-helper/fe257d39-6f88-4f35-ab08-bd437e3aa94e",
+        "disabled": false
+      },
+      "18228966181090706294": {
+        "type": "shopify://apps/selleasy/blocks/app-embed/790c1a03-a71f-4bc1-9869-00dad526d3c2",
+        "disabled": false
+      },
+      "4644077978495408606": {
+        "type": "shopify://apps/appstle-memberships/blocks/appstle-membership-helper/76528d70-5fbe-48f8-8e19-590d109aa2b7",
+        "disabled": false
+      }
+    }
+  }
+}

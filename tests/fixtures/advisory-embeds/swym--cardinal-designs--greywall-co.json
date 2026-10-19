@@ -1,0 +1,24 @@
+/*
+ * Advisory precision fixture (gc-q5z8). Source: https://github.com/cardinal-designs/greywall-co/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/cardinal-designs/greywall-co/main/config/settings_data.json), fetched 2026-10-19.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "855628211100114053": {
+        "type": "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/2632fe16-c075-4321-a88b-50b567f42507",
+        "disabled": false
+      },
+      "17671105283805716901": {
+        "type": "shopify://apps/wishlist-plus/blocks/wishlist-app-embed/80c3b1fc-3a8f-407e-8367-ffdeebb8b612",
+        "disabled": false
+      },
+      "17676003713258389143": {
+        "type": "shopify://apps/wishlist-plus/blocks/wishlist-collections-embed/80c3b1fc-3a8f-407e-8367-ffdeebb8b612",
+        "disabled": false
+      }
+    }
+  }
+}
