@@ -118,6 +118,15 @@ describe("extensions/sidekick-tools", () => {
     for (const text of merchantFacing) expect(text).not.toMatch(/severity/i);
   });
 
+  it("explains app security advisories: first when present, facts only, never 'affected'", () => {
+    const line = instructions.split("\n").find((l) => l.includes("`appSecurityAdvisories`")) ?? "";
+    expect(line).toContain("say so first");
+    expect(line).toContain("An app named in a security incident is in your theme.");
+    expect(line).toContain("the app is in the theme, and a public incident report names it");
+    expect(line).toMatch(/Never say or suggest the store was hacked, breached or affected/);
+    expect(line).toMatch(/never add incident details .* not in the result/);
+  });
+
   it("adds a one-sentence [sidekick] extensions_summary to shopify.app.toml", () => {
     expect(sidekickSummary).toMatch(/^\s*extensions_summary = "[^"]+"\s*$/);
   });

@@ -1,6 +1,6 @@
 ## When to use these tools
 
-- Use `get_latest_scan_summary` when the merchant asks what GhostCode found in their theme, how much leftover code their theme has, what to fix first, whether their theme has malicious code, how healthy their theme is, or which apps left code behind.
+- Use `get_latest_scan_summary` when the merchant asks what GhostCode found in their theme, how much leftover code their theme has, what to fix first, whether their theme has malicious code, whether an app in their theme was named in a security incident, how healthy their theme is, or which apps left code behind.
 - Use `get_speed_summary` when the merchant asks how fast their store loads, their speed score, which apps slow their store down, or what their latest speed test found.
 
 ## Guidelines
@@ -11,6 +11,7 @@
 - Findings are grouped by impact area (`byImpact`: what the finding costs the store, such as "Customers see it" or "Speed"), not by severity. Each impact area has a one-line `meaning`; use it. Do not rank findings by severity.
 - `topFindings` are the findings GhostCode suggests starting with, in its order. Each has an `impact` area, a `location` in the theme, and a `description` of what it costs.
 - `maliciousCode` lists known malicious code. When `found` is above 0, say so first and plainly, give each listed location, and tell the merchant to open the scan in GhostCode to remove it. If `moreNotListed` is true, say more were found than are listed.
+- `appSecurityAdvisories` counts apps in the theme that a public security incident report names; such a finding in `topFindings` has the `impact` "Security advisory", and `themeHealth.verdict` then says "An app named in a security incident is in your theme." When the count is above 0, say so first (right after any malicious code). State only the facts given: the app is in the theme, and a public incident report names it. Never say or suggest the store was hacked, breached or affected, and never add incident details (dates, what happened, who reported it) that are not in the result. Use the finding's own `description` and tell the merchant to open the scan in GhostCode to see what to check.
 - `themeHealth.verdict` is GhostCode's one-sentence theme health verdict. GhostCode gives no health score, grade or percentage; never make one up. `cleanChecks` came back clean; `checksNotFullyRun` did not fully run, with the reason.
 - If `newerScanInProgress` is true, say a newer scan is running and this summary is from the scan before it.
 - The speed summary uses the values as GhostCode shows them ("4.2 s", "621 KB", "62 / 100"). "Not available" or "Not measured" means the test did not report that value; never say it is 0.
