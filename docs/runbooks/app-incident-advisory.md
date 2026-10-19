@@ -8,8 +8,18 @@ in `config/settings_data.json` (gc-14x5.1). It states two facts: the theme
 loads the app's code (or has its embed on), and a public report names the
 app. It never says the store was affected. In-app only, every plan, no email.
 
-Current entries (2026-10-19): Hulk Product Options (host only; embed handle
-not yet verified), Swym Wishlist Plus (embed only), Selleasy (host and embed).
+Current entries (2026-10-19): Hulk Product Options (host and embed),
+Swym Wishlist Plus (embed only), Selleasy (host and embed).
+
+How it shows (gc-q5z8): a red "Security risk" banner per advisory at the top of
+Home and of the scan page (the same `SecurityRiskBanner` as known malicious
+code), the Home findings tile turns red ("N findings, k security risks"),
+Theme health shows the red verdict "An app named in a security incident is in
+your theme." with a failed "App security advisories" chip, and "Start here"
+names the app. The banner quotes the entry's own `report` sentence (each
+vendor's own words, so Selleasy's says "phishing page", Swym's "fake checkout
+page"). An advisory honours ignores everywhere: an ignored one has no banner,
+does not count as a security risk and leaves the chip green.
 
 The finding records which signal matched:
 
@@ -36,10 +46,22 @@ When both match, the host signal wins (one finding per entry).
    dark it also counts scans of DRAFT themes, which never get an advisory once
    live. So it answers "how many shops would this touch, at most", not "is
    each hit right". Zero is a valid result.
-3. Precision review on a dev store (this is the review; do it before the
-   flag goes on in production). Set the flag on a dev environment and scan a
-   dev-store theme that holds the listed script tag in each of these forms,
-   one at a time:
+3. Precision review (this is the review; do it before the flag goes on in
+   production). Verification bar (Nathan, 2026-10-19): dev-store installs are
+   impossible because Hulk Product Options, Swym Wishlist Plus and Selleasy are
+   all delisted, so each embed handle must be seen in several UNRELATED public
+   `settings_data.json` files, and the detector must be precise over those
+   real files as fixtures:
+   - `npx vitest run tests/services/app-incident-advisory-fixtures.server.test.ts`
+     passes: nine real public files (three per entry, sources in each
+     fixture's header, `tests/fixtures/advisory-embeds/`) each fire only their
+     own entry, once; the sibling embeds in them (Swym's
+     wishlist-collections-embed, Logbase's DealEasy, Hulk Form Builder, Hulk
+     Discounts, Klaviyo, Judge.me and others) fire nothing; and each file with
+     its own entry flipped to `"disabled": true` fires nothing.
+   - Script hosts: set the flag on a dev environment and scan a dev-store
+     theme that holds the listed script tag in each of these forms, one at a
+     time:
    - live in `layout/theme.liquid`: expect ONE advisory, the notice on the
      scan page, the line on Home, and the host absent from "Unrecognized
      Scripts";
@@ -47,14 +69,13 @@ When both match, the host signal wins (one finding per entry).
    - only in an unpublished copy of the theme: scan that copy and expect none;
    - mentioned but not loaded (a link, a stylesheet): expect none, and the
      stylesheet still listed under "Unrecognized Scripts".
-   - For each entry with `embedHandles`: install the app on the dev store,
-     turn its app embed ON and confirm the `type` in `settings_data.json`
-     starts with the listed handle (expect ONE advisory with the embed
-     wording), then turn the embed OFF (expect none), then uninstall the app.
-     This dev-store install is REQUIRED before the flag goes on, even though
-     the handles were taken from public `settings_data.json` files.
-     Then ignore the advisory on a Free dev store and confirm it leaves the
-     scan page and Home.
+   - Embeds: no install is needed (or possible). Optionally paste one fixture's
+     blocks into a dev-store theme's `config/settings_data.json` and scan:
+     expect ONE advisory with the embed wording, and none with the entry's
+     `"disabled": true`.
+   - Ignore the advisory on a Free dev store and confirm the banner leaves the
+     scan page and Home, the tile is no longer red for it and the Theme health
+     chip turns green.
 4. Set `APP_INCIDENT_ADVISORY_LIVE_ENABLED=true` (exactly `true`) in
    production. From the next scan of a published theme the finding is stored
    and shown. Scans taken before the flag never report it as "new".
@@ -86,25 +107,37 @@ Inclusion bar, all required:
     domain or a lookalike (`evil-upsell-app.logbase.io`) never matches.
   - `embedHandles`: the app embed block type WITHOUT its uuid,
     `shopify://apps/<app-handle>/blocks/<block-name>`, lower-case. Verification
-    bar: seen in the `current.blocks` of at least one real public
-    `settings_data.json` (record where in the comment), and confirmed by a
-    dev-store install before the flag goes on (see "Turn it on"). A match is
+    bar: seen in the `current.blocks` of at least two unrelated real public
+    `settings_data.json` files (record where in the comment), and added to the
+    fixture precision test (`tests/fixtures/advisory-embeds/`, see "Turn it
+    on"); a dev-store install is a bonus, not required (delisted apps cannot
+    be installed). A match is
     that prefix plus one segment (the uuid); another block or another app of
     the same vendor never matches. Only an ENABLED embed (no
     `"disabled": true`) fires.
 - If no key can be verified, leave the field empty with a TODO comment
-  rather than guess (Hulk's embed handle today).
+  rather than guess.
 - `reviewBy`: 90 days after the incident, or after the renewal.
 - `summary`: what the report says, nothing about the merchant's store, no
-  dashes, no trailing period.
+  dashes, no trailing period. Part of the STORED finding description: changing
+  it orphans existing findings' link and wording (they fall back to neutral
+  copy), so treat it as fixed once the flag is on.
+- `report` and `reportedByDeveloper` (gc-q5z8): the banner's facts, in the
+  source's own words, completing "On {incidentDate}, ..." (no dash, no
+  trailing period), and whether the source is the developer's own statement
+  ("its developer reported a security incident", "Read {App}'s statement")
+  or a third-party report ("it was named in a security incident report",
+  "Read the report"). Not stored, so it can be corrected at any time.
 
 To renew: re-read the report, look for a vendor statement, then set a new
 `reviewBy`. To retire: delete the entry. A test fails from the day after
 `reviewBy` until one of the two is done.
 
-The card copy is per finding TYPE and is written for a checkout phishing
-report (`CARD_COPY_OVERRIDES` in `app/lib/finding-remediation.ts`). An entry
-for a different kind of incident needs per-entry copy first.
+The card copy (`CARD_COPY_OVERRIDES` in `app/lib/finding-remediation.ts`) is
+per finding TYPE and is neutral about the incident ("A security incident
+report names this app"); the incident itself is described per entry by
+`report`. The self-check steps are about a checkout redirect: an entry for a
+different kind of incident needs its own steps first.
 
 ## Kill switch
 
