@@ -50,7 +50,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 6. One-time homepage speed test
 7. Ask Sidekick about your scan results
 
-> Owner action after deploy (gc-d0ui): paste bullet 6 ("One-time homepage speed test", 28 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "One free homepage speed test". It matches the in-app Settings Free tile (shown there only while `SPEED_REPORT_LIVE_ENABLED` is on). Bullet 7 ("Ask Sidekick about your scan results", 36 chars) belongs on the card only once the Sidekick extension (gc-5nok) is deployed; it is not on the in-app tile.
+> Live on the Partner Dashboard Free plan card (2026-10-19). The in-app Settings Free tile lists the same seven bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on. Bullet 7 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
 
 > Owner action after deploy: paste bullet 4 ("Up to 5 findings shown in full", 30 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "Preview of top finding in full". It matches the in-app Settings Free tile (gc-97k.10: up to 5 findings, never more than half).
 
@@ -86,14 +86,14 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 5. Monthly auto-scan + findings trend
 6. Monthly store speed report, cost per app
 
-> Owner action after deploy (gc-d0ui): paste bullet 6 ("Monthly store speed report, cost per app", 40 of 40 chars) into the Managed Pricing Standard plan card, replacing "7-day free trial". Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same string while `SPEED_REPORT_LIVE_ENABLED` is on.
+> Live on the Partner Dashboard Standard plan card (2026-10-19). Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same six bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on.
 
 > **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only _outcomes_ (Broken Links
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of _mechanics_, so
 > ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
 > still enforced. (2026-10-09, gc-iefo: bullet 5 was "Weekly auto-scan + findings trend"; Nathan set the live
 > Partner Dashboard card to "Monthly auto-scan + findings trend". The 1/week manual cap is no longer
-> stated on the card; it stays on the in-app Settings page plan tile.) Checkout
+> stated on the card, and since gc-4wvb not on the in-app Settings tile either; Home's scan control still shows it.) Checkout
 > bullet is tense-neutral on purpose; the checkout.liquid sunset fully passed on Aug 28,
 > 2025 for every store (in-app copy made past tense in gc-oam). Apply these in Partner Dashboard → Managed Pricing.
 
@@ -120,13 +120,14 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 **App listing features (max 40 chars each):**
 
 1. All features in Standard
-2. Up to 5 scans a day
-3. Unlimited theme scanning
-4. Auto-rescan on theme publish
-5. Scan diffing (New/Resolved)
-6. Weekly store speed report, cost per app
+2. Up to 5 manual theme scans a day
+3. Auto-rescan on theme publish
+4. Weekly automatic scans
+5. Weekly store speed report, cost per app
+6. Scan diffing (New/Resolved)
+7. Scan every theme in your store
 
-> Owner action after deploy (gc-d0ui): on the Managed Pricing Professional plan card, replace "Unlimited scans" with bullet 2 ("Up to 5 scans a day", 19 chars), replace "Weekly automatic scans" with bullet 6 ("Weekly store speed report, cost per app", 39 chars) and delete "7-day free trial" (Shopify renders the trial line itself). The in-app Settings Professional tile says "Up to 5 scans a day" and, while the speed report is live, lists bullet 6 (it keeps "Weekly automatic scans" too). Consider telling paw-naturals, which bought "Unlimited scans".
+> These are the LIVE Partner Dashboard plan card bullets (published 2026-10-19). Since gc-4wvb the in-app Settings tiles render all three plans' lists from one constants module (`app/lib/plan-tiles.ts`, `PLAN_LISTING_BULLETS`), and a test keeps them equal to the three "App listing features" lists in this doc, so the tile and the card say the same thing. In-app differences: each plan's speed bullet (Free bullet 6, Standard bullet 6, Professional bullet 5) shows only while `SPEED_REPORT_LIVE_ENABLED` is on, and a trial-eligible Free shop sees "7-day free trial" added to both paid tiles (Shopify renders the trial line on the card itself). Consider telling paw-naturals, which bought "Unlimited scans".
 
 ### Store speed report (gc-wt3y, LIVE since 2026-10-11: `SPEED_REPORT_LIVE_ENABLED=true`)
 
