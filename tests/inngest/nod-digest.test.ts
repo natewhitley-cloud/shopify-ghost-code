@@ -53,13 +53,7 @@ import {
 } from "../fixtures/nod-digest-fixture";
 
 const iso = (d: Date) => d.toISOString();
-const VALUE_KEYS = [
-  "apps_cleaned",
-  "leftovers_removed",
-  "malicious_shops",
-  "findings_resolved",
-  "scans",
-] as const;
+const VALUE_KEYS = ["apps_cleaned", "leftovers_removed", "malicious_shops", "scans"] as const;
 const zeroActions = Object.fromEntries(VALUE_KEYS.map((k) => [k, 0]));
 
 // The malicious_shops numbers as the previous query computed them: findings
@@ -185,7 +179,6 @@ describe("buildNodDigest", () => {
       "apps_cleaned",
       "leftovers_removed",
       "malicious_shops",
-      "findings_resolved",
       "scans",
     ]);
     for (const v of value) {
@@ -242,16 +235,16 @@ describe("buildNodDigest", () => {
     });
   });
 
-  it("sums resolved findings over successful scans completed in the window", async () => {
+  it("omits findings_resolved from value[] and every merchant's actions (scanner noise)", async () => {
     const d = await buildNodDigest(NOW);
-    // free 1h (2) + 3d (0), gone 5d (1), std 15d (4). Dropped: internal (9),
-    // gone's FAILED scan 12h ago (5), pro's 50d scan.
-    expect(valueRow(d, "findings_resolved")).toMatchObject({
-      label: "Findings resolved",
-      d1: 2,
-      d7: 3,
-      d30: 7,
-    });
+    expect(d.value.map((v) => v.key)).not.toContain("findings_resolved");
+    expect(d.merchants.length).toBeGreaterThan(0);
+    for (const m of d.merchants) {
+      expect(m.actions7d).not.toHaveProperty("findings_resolved");
+      expect(m.actions30d).not.toHaveProperty("findings_resolved");
+      expect(Object.keys(m.actions7d).sort()).toEqual([...VALUE_KEYS].sort());
+      expect(Object.keys(m.actions30d).sort()).toEqual([...VALUE_KEYS].sort());
+    }
   });
 
   it("attaches a one-line caveat of at most 200 characters to every value row", async () => {
@@ -264,8 +257,6 @@ describe("buildNodDigest", () => {
         "May include items the merchant ignored rather than removed, or a scanner update stopped flagging; counted once per theme scanned",
       malicious_shops:
         "Detection only: does not confirm the merchant saw it. Includes shops warned again about the same script on a later scan",
-      findings_resolved:
-        "Also counts findings a scanner update stopped flagging, and a finding that disappears and comes back counts each time it disappears",
       scans: "Includes scheduled and theme-publish automatic scans, and failed scans",
     });
     for (const v of value) {
@@ -299,7 +290,6 @@ describe("buildNodDigest", () => {
         createdAt: ago(60 * D), // windows key on completedAt, not createdAt
         status: "COMPLETED",
         completedAt: at,
-        resolvedFindingCount: 1,
       })),
       finding: [
         { id: "f1", scanId: "sc1", findingType: "MALICIOUS_SCRIPT" },
@@ -309,7 +299,6 @@ describe("buildNodDigest", () => {
     const d = await buildNodDigest(NOW);
     expect(valueRow(d, "apps_cleaned")).toMatchObject({ d1: 1, d7: 3, d30: 5 });
     expect(valueRow(d, "leftovers_removed")).toMatchObject({ d1: 10, d7: 30, d30: 50 });
-    expect(valueRow(d, "findings_resolved")).toMatchObject({ d1: 1, d7: 3, d30: 5 });
     // sc1 (1d + 1ms) is in d7 not d1; sc4 (30d) is in d30.
     expect(valueRow(d, "malicious_shops")).toMatchObject({ d1: 0, d7: 1, d30: 1 });
     expect(valueRow(d, "scans")).toMatchObject({ d1: 0, d7: 0, d30: 0 });
@@ -318,14 +307,12 @@ describe("buildNodDigest", () => {
       apps_cleaned: 3,
       leftovers_removed: 30,
       malicious_shops: 1,
-      findings_resolved: 3,
     });
     expect(d.merchants[0].actions30d).toEqual({
       scans: 0,
       apps_cleaned: 5,
       leftovers_removed: 50,
       malicious_shops: 1,
-      findings_resolved: 5,
     });
     expect(valueRow(d, "malicious_shops")).toMatchObject(
       await maliciousViaScanRelation(["shop_edge"]),
@@ -428,13 +415,12 @@ describe("buildNodDigest", () => {
     }
     const free = merchants.find((m) => m.id === "shop_free")!;
     expect(free.plan).toBe("Free");
-    // free: sc_free1 (2 resolved, two malicious findings = 1 shop) + sc_free2, ar_free (3).
+    // free: sc_free1 (two malicious findings = 1 shop) + sc_free2, ar_free (3).
     const freeActions = {
       scans: 2,
       apps_cleaned: 1,
       leftovers_removed: 3,
       malicious_shops: 1,
-      findings_resolved: 2,
     };
     expect(free.actions7d).toEqual(freeActions);
     expect(free.actions30d).toEqual(freeActions);
@@ -445,7 +431,6 @@ describe("buildNodDigest", () => {
       apps_cleaned: 1,
       leftovers_removed: 5,
       malicious_shops: 0, // f7 is not malicious
-      findings_resolved: 4,
     });
     expect(free.lastActiveAt).toBe(new Date(NOW.getTime() - 2 * 3_600_000).toISOString());
     const pro = merchants.find((m) => m.id === "shop_pro")!;
@@ -989,7 +974,7 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     };
     const d = await buildNodDigest(NOW);
     expect(d.research).toBeUndefined();
-    expect(d.value.length).toBe(5);
+    expect(d.value.length).toBe(VALUE_KEYS.length);
     expect(validateDigest(d)).toEqual([]);
   });
 

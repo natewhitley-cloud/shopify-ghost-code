@@ -14,8 +14,8 @@
  * the exclude set (gc-zeh).
  *
  * value[] leads with outcomes (NOD ADR-010): apps cleaned up and their
- * leftover items (AppRemoval CLEANED), shops warned about a malicious script,
- * findings resolved; then scans run (activity). Rows that can overstate carry a
+ * leftover items (AppRemoval CLEANED), shops warned about a malicious script;
+ * then scans run (activity). Rows that can overstate carry a
  * caveat. `journey` gives each non-excluded shop still in the DB (uninstalled
  * ones included) its all-time first scan, first results view and first
  * confirmed cleanup; NOD keeps that history after the shop is deleted.
@@ -63,12 +63,7 @@ import {
 
 export type NodErrorCategory = "api" | "webhook" | "job" | "other";
 
-export type NodValueKey =
-  | "apps_cleaned"
-  | "leftovers_removed"
-  | "malicious_shops"
-  | "findings_resolved"
-  | "scans";
+export type NodValueKey = "apps_cleaned" | "leftovers_removed" | "malicious_shops" | "scans";
 
 export interface NodValueRow {
   key: NodValueKey;
@@ -609,7 +604,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
           select: { shopId: true, stateChangedAt: true, leftoverCount: true },
         });
   const cleanedAt = (r: (typeof cleaned)[number]) => r.stateChangedAt as Date;
-  // Successful scans completed in the window (resolved findings, malicious warnings).
+  // Successful scans completed in the window (malicious warnings).
   const doneScans =
     nonExcludedIds.length === 0
       ? []
@@ -619,7 +614,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
             completedAt: { gte: d30 },
             shopId: { in: nonExcludedIds },
           },
-          select: { id: true, shopId: true, completedAt: true, resolvedFindingCount: true },
+          select: { id: true, shopId: true, completedAt: true },
         });
   // Malicious findings on those same scans, looked up by scanId (@@index([scanId])).
   const doneScanById = new Map(doneScans.map((s) => [s.id, s]));
@@ -696,16 +691,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
       (s) => s.shopId,
       (ss) => new Set(ss.map((s) => s.shopId)).size,
     ),
-    metric(
-      "findings_resolved",
-      "Findings resolved",
-      // resolvedFindingCount is a gross diff against the theme's previous scan.
-      "Also counts findings a scanner update stopped flagging, and a finding that disappears and comes back counts each time it disappears",
-      doneScans,
-      (s) => s.completedAt as Date,
-      (s) => s.shopId,
-      (ss) => ss.reduce((n, s) => n + s.resolvedFindingCount, 0),
-    ),
+    // findings_resolved removed 2026-10-18: resolvedFindingCount mostly counts findings a scanner update stopped flagging; restore when real fixes can be told apart.
     // Activity, not an outcome: every scan of an active install, any status.
     metric(
       "scans",
