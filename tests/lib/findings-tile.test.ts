@@ -12,6 +12,7 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 0, maliciousFound: 2, maliciousKept: 0 })).toEqual({
       total: 2,
       tone: "critical",
+      securityRisks: 2,
     });
   });
 
@@ -20,6 +21,7 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 3, maliciousFound: 2, maliciousKept: 1 })).toEqual({
       total: 4,
       tone: "critical",
+      securityRisks: 2,
     });
   });
 
@@ -27,6 +29,7 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 0, maliciousFound: 0, maliciousKept: 0 })).toEqual({
       total: 0,
       tone: "success",
+      securityRisks: 0,
     });
   });
 
@@ -34,6 +37,7 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 7, maliciousFound: 0, maliciousKept: 0 })).toEqual({
       total: 7,
       tone: "warning",
+      securityRisks: 0,
     });
   });
 
@@ -41,6 +45,7 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 5, maliciousFound: 2, maliciousKept: 2 })).toEqual({
       total: 5,
       tone: "critical",
+      securityRisks: 2,
     });
   });
 
@@ -64,6 +69,34 @@ describe("buildFindingsTile (gc-j8xq)", () => {
     expect(buildFindingsTile({ filteredTotal: 3, maliciousFound: 1, maliciousKept: 2 })).toEqual({
       total: 3,
       tone: "critical",
+      securityRisks: 1,
     });
+  });
+
+  // gc-q5z8: an app named in a security incident is a security risk too.
+  it("a non-ignored advisory turns the tile critical and counts as a security risk", () => {
+    expect(
+      buildFindingsTile({
+        filteredTotal: 13,
+        maliciousFound: 0,
+        maliciousKept: 0,
+        advisoryKept: 1,
+      }),
+    ).toEqual({ total: 13, tone: "critical", securityRisks: 1 });
+  });
+
+  it("an ignored advisory (advisoryKept 0) neither counts nor turns the tile red", () => {
+    expect(
+      buildFindingsTile({ filteredTotal: 4, maliciousFound: 0, maliciousKept: 0, advisoryKept: 0 }),
+    ).toEqual({ total: 4, tone: "warning", securityRisks: 0 });
+    expect(
+      buildFindingsTile({ filteredTotal: 0, maliciousFound: 0, maliciousKept: 0, advisoryKept: 0 }),
+    ).toEqual({ total: 0, tone: "success", securityRisks: 0 });
+  });
+
+  it("malicious code and advisories add up: every malicious finding plus the kept advisories", () => {
+    expect(
+      buildFindingsTile({ filteredTotal: 5, maliciousFound: 2, maliciousKept: 1, advisoryKept: 2 }),
+    ).toEqual({ total: 6, tone: "critical", securityRisks: 4 });
   });
 });

@@ -22,6 +22,7 @@ import { logger } from "../lib/logger.server";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import { safeErrorFields } from "../lib/safe-error";
 import {
+  advisoryHealthRow,
   buildThemeHealthChecklist,
   type HealthRow,
   type ThemeInventoryItem,
@@ -105,22 +106,27 @@ async function buildRows(input: LoadThemeHealthInput): Promise<HealthRow[]> {
     }));
   }
 
-  return buildThemeHealthChecklist({
+  const coverage = {
+    skippedCategories: scan.skippedCategories,
+    cappedCategories: scan.cappedCategories,
+    unreachableCategories: scan.unreachableCategories,
+    liveTypes: parseLiveFindingTypes(scan.liveFindingTypes),
+    liveNow: new Set<string>(Object.values(FindingType).filter(isSoftLaunchLive)),
+    planWithheld: findingTypesWithheldByPlan(features),
+    isPublishedTheme: input.mainThemeId === null ? null : scan.themeId === input.mainThemeId,
+  };
+  const rows = buildThemeHealthChecklist({
     scanId: scan.id,
     typeCounts,
-    coverage: {
-      skippedCategories: scan.skippedCategories,
-      cappedCategories: scan.cappedCategories,
-      unreachableCategories: scan.unreachableCategories,
-      liveTypes: parseLiveFindingTypes(scan.liveFindingTypes),
-      liveNow: new Set<string>(Object.values(FindingType).filter(isSoftLaunchLive)),
-      planWithheld: findingTypesWithheldByPlan(features),
-      isPublishedTheme: input.mainThemeId === null ? null : scan.themeId === input.mainThemeId,
-    },
+    coverage,
     fullList: Boolean(features.showFindingDetails),
     themeInfo: parseThemeInfo(scan.themeInfo),
     scanThemeName: scan.themeName,
     themes: inventory,
     scriptTagsStopped: input.now.getTime() >= SCRIPT_TAG_SUNSET_AT_MS,
   });
+  // The "App security advisories" check (gc-q5z8), from the ignore-filtered
+  // advisory count: an advisory honours ignores.
+  const advisory = advisoryHealthRow(scan.id, typeCounts.APP_INCIDENT_ADVISORY ?? 0, coverage);
+  return advisory ? [...rows, advisory] : rows;
 }

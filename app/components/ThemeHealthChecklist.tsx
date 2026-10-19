@@ -14,6 +14,7 @@ import {
   COLOR_WARNING,
   CRIT_BD,
   CRIT_BG,
+  CRIT_TEXT_STRONG,
   LANE_GREY_FILL,
   sectionCard,
   sectionHeader,
@@ -61,6 +62,7 @@ const DOT_COLOR: Record<HealthVerdictTone, string> = {
   ok: COLOR_SUCCESS,
   neutral: LANE_GREY_FILL,
   warn: COLOR_WARNING,
+  critical: COLOR_CRITICAL,
 };
 
 const chipList: React.CSSProperties = {
@@ -90,6 +92,14 @@ const chipOk: React.CSSProperties = {
   color: SUCCESS_TEXT_STRONG,
 };
 const chipWarn: React.CSSProperties = { ...chip, background: WARN_BD, color: WARN_TEXT_STRONG };
+/** A check that found a security risk (gc-q5z8: an open app security advisory). */
+const chipFailed: React.CSSProperties = {
+  ...chip,
+  background: CRIT_BD,
+  color: CRIT_TEXT_STRONG,
+  fontWeight: 600,
+};
+const WARNING_SIGN = "\u26a0";
 
 const actionBox: React.CSSProperties = {
   display: "flex",
@@ -103,7 +113,11 @@ const actionBox: React.CSSProperties = {
   background: WARN_BG,
 };
 
-const CATEGORY_ORDER = new Map<string, number>(HEALTH_CATEGORIES.map((c, i) => [c.key, i]));
+const CATEGORY_ORDER = new Map<string, number>([
+  ...HEALTH_CATEGORIES.map((c, i) => [c.key, i] as const),
+  // The advisory check (gc-q5z8) sits right after known malicious code.
+  ["app-advisories", 0.5] as const,
+]);
 
 /**
  * How one check shows as a chip. Green ONLY for a status of exactly "clean":
@@ -112,6 +126,7 @@ const CATEGORY_ORDER = new Map<string, number>(HEALTH_CATEGORIES.map((c, i) => [
  */
 function chipOf(row: HealthRow): { style: React.CSSProperties; glyph: string; prefix: string } {
   if (row.status === "clean") return { style: chipOk, glyph: TICK, prefix: "Clean: " };
+  if (row.status === "issues") return { style: chipFailed, glyph: WARNING_SIGN, prefix: "Found: " };
   return {
     style: chipWarn,
     glyph: "!",
@@ -192,7 +207,9 @@ function MaliciousLine({ row }: { row: HealthRow }) {
  *     full and none found anything; grey when another check found something.
  *   - Chips: one per check that is clean (green) or did not fully run (amber).
  *     A check that FOUND something has no chip: its findings are in the lanes,
- *     and repeating them would duplicate the card above.
+ *     and repeating them would duplicate the card above. The exception is
+ *     "App security advisories" with an advisory open (gc-q5z8): a failed red
+ *     chip, first, under the red verdict.
  *   - Action box: why the amber checks did not run and what to do, each
  *     distinct reason stated once under the names it applies to. No button:
  *     Home has its own scan control, and its one upgrade ask.
@@ -219,11 +236,16 @@ export function ThemeHealthChecklist({
   malicious?: HealthRow | null;
 }) {
   const groups = groupHealthRows(rows, maliciousRow);
-  const { theme, unpublished, clean, gaps, malicious } = groups;
+  const { theme, unpublished, clean, gaps, malicious, advisory } = groups;
   const facts = themeFacts(theme, unpublished?.detail ?? null);
-  const chips = [...clean, ...gaps].sort(
-    (a, b) => (CATEGORY_ORDER.get(a.key) ?? 0) - (CATEGORY_ORDER.get(b.key) ?? 0),
-  );
+  // An open advisory is a failed chip, first (gc-q5z8); then every other chip
+  // in category order.
+  const chips = [
+    ...(advisory ? [advisory] : []),
+    ...[...clean, ...gaps].sort(
+      (a, b) => (CATEGORY_ORDER.get(a.key) ?? 0) - (CATEGORY_ORDER.get(b.key) ?? 0),
+    ),
+  ];
   const hasBody = facts.length > 0 || chips.length > 0;
   if (!hasBody && !malicious) return null;
   const verdict = themeHealthVerdict(groups);

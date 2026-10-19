@@ -40,7 +40,7 @@ import {
 } from "./finding-classification";
 import { CONSEQUENCE_MAP, LANES, soWhatForLane, URGENCY_RANK } from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
-import { getFindingCardCopy } from "./finding-remediation";
+import { getFindingCardCopy, isAdvisoryEmbedFinding } from "./finding-remediation";
 import { findingTypeLabel } from "./finding-type-labels";
 
 /** How many findings the "Start here" block shows at most. */
@@ -191,7 +191,9 @@ export function findingCostLine(findingType: FindingType): string {
     return "This code can steal shopper data or send your customers to other sites.";
   }
   if (findingType === "APP_INCIDENT_ADVISORY") {
-    return "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.";
+    // Neutral on purpose (gc-q5z8): each entry's own wording replaces it (see
+    // AdvisoryStartHereCopy); this is only for an entry that is no longer known.
+    return "A security incident report names this app.";
   }
   const lane = CONSEQUENCE_MAP[findingType].primary;
   return lane === null ? "" : soWhatForLane(lane);
@@ -208,25 +210,12 @@ export function findingLocation(
   if (isStorefrontFinding(finding.findingType)) {
     return "Your storefront's script tags";
   }
+  // An advisory matched by its app embed (gc-q5z8): the line is always 1 and
+  // says nothing; what matched is the embed.
+  if (isAdvisoryEmbedFinding(finding)) return `${finding.filename} · app embed turned on`;
   return finding.lineNumber > 0
     ? `${finding.filename}, line ${finding.lineNumber}`
     : finding.filename;
-}
-
-/** DOM id of the scan page's advisory notice (the target of Home's advisory line). */
-export const ADVISORY_SECTION_ID = "app-security-advisories";
-
-/**
- * Home's one line about the latest scan's non-ignored affected-app advisories
- * (gc-14x5), or null when there are none: "1 app security advisory to review".
- * It accounts for the part of the findings tile that is not a "leftover item":
- * tile = leftover items + advisories (+ ignored malicious code, added back).
- */
-export function advisoryNoticeLine(count: number): string | null {
-  if (count <= 0) return null;
-  return count === 1
-    ? "1 app security advisory to review"
-    : `${count} app security advisories to review`;
 }
 
 /** DOM id of a finding's row on the scan page (the "See how to fix" target). */
@@ -237,8 +226,8 @@ export function findingAnchorId(id: string): string {
 /**
  * Where a top finding links on the scan page:
  *   - Malicious: its row in the security alert (every plan).
- *   - Affected-app advisory: its card in the advisories section above the
- *     list (every plan; it is not in the list).
+ *   - Affected-app advisory: its Security risk banner above the list (every
+ *     plan; it is not in the list). The banner carries the finding's anchor.
  *   - Free (`fullList` false): its preview row, on the same unfiltered page.
  *   - Standard / Professional: the full list filtered to its type, so the row
  *     is on the first page unless 50+ findings of that type rank above it by
@@ -266,21 +255,43 @@ function startHereOverrides(findingType: FindingType): Pick<TopFindingView, "tit
   return copy.title === null ? {} : { title: copy.title, linkLabel: copy.startHereLinkLabel };
 }
 
-/** Build the block's rows. `fullList` is true when the plan shows the full list. */
+/**
+ * Per-finding wording for affected-app advisories (gc-q5z8), keyed by finding
+ * id: the entry's app name and its report sentence ("On 13 October 2026,
+ * Logbase (Selleasy's developer) reported that ..."). Resolved on the server
+ * (advisoryStartHereCopy), where the curated list lives.
+ */
+export type AdvisoryStartHereCopy = Readonly<Record<string, { appName: string; report: string }>>;
+
+/** The Start here title of an advisory whose app is known. */
+export function advisoryStartHereTitle(appName: string): string {
+  return `${appName} is in your theme and was named in a security incident`;
+}
+
+/**
+ * Build the block's rows. `fullList` is true when the plan shows the full list.
+ * `advisoryCopy` names the app and its own incident wording on an advisory row.
+ */
 export function toTopFindingViews(
   scanId: string,
   findings: readonly TopFindingSource[],
   fullList: boolean,
+  advisoryCopy: AdvisoryStartHereCopy = {},
 ): TopFindingView[] {
-  return findings.map((f) => ({
-    ...startHereOverrides(f.findingType),
-    id: f.id,
-    severity: f.severity,
-    lane: CONSEQUENCE_MAP[f.findingType].primary,
-    typeLabel: findingTypeLabel(f.findingType),
-    location: findingLocation(f),
-    cost: findingCostLine(f.findingType),
-    href: topFindingHref(scanId, f, fullList),
-    appName: f.appName,
-  }));
+  return findings.map((f) => {
+    const advisory = f.findingType === "APP_INCIDENT_ADVISORY" ? advisoryCopy[f.id] : undefined;
+    const overrides = startHereOverrides(f.findingType);
+    return {
+      ...overrides,
+      ...(advisory ? { title: advisoryStartHereTitle(advisory.appName) } : {}),
+      id: f.id,
+      severity: f.severity,
+      lane: CONSEQUENCE_MAP[f.findingType].primary,
+      typeLabel: findingTypeLabel(f.findingType),
+      location: findingLocation(f),
+      cost: advisory ? advisory.report : findingCostLine(f.findingType),
+      href: topFindingHref(scanId, f, fullList),
+      appName: f.appName,
+    };
+  });
 }

@@ -55,6 +55,7 @@ import {
   pickFreePreviewFindings,
 } from "../../app/lib/free-preview";
 import { findingTypesWithheldByPlan } from "../../app/lib/plan-finding-types";
+import { homeRiskSummaryLine } from "../../app/lib/security-risk";
 import {
   buildThemeHealthChecklist,
   groupHealthRows,
@@ -67,7 +68,6 @@ import {
   type HealthCoverageInput,
 } from "../../app/lib/theme-health";
 import {
-  advisoryNoticeLine,
   compareFindingClass,
   compareFindingImportance,
   findingCostLine,
@@ -357,14 +357,31 @@ describe("Start here presentation", () => {
         lane: null,
         typeLabel: "App Security Advisories",
         location: "layout/theme.liquid, line 42",
-        cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+        cost: "A security incident report names this app.",
         href: "/app/scans/scan-1#finding-f1",
         appName: null,
         // Round 3: the row carries the card's headline and its own link text.
-        title: "An app in your theme was named in a checkout phishing report",
+        // gc-q5z8: neutral when the entry is unknown (no per-entry copy passed).
+        title: "An app in your theme was named in a security incident report",
         linkLabel: "See what to check",
       },
     ]);
+  });
+
+  it("gc-q5z8: with the entry's copy the row names the app and uses its own wording", () => {
+    const embed = { ...finding, filename: "config/settings_data.json", lineNumber: 1 };
+    const [view] = toTopFindingViews("scan-1", [embed], true, {
+      f1: {
+        appName: "Selleasy",
+        report:
+          "On 13 October 2026, Logbase (Selleasy's developer) reported that an unauthorized script on some stores sent shoppers to a phishing page.",
+      },
+    });
+    expect(view.title).toBe("Selleasy is in your theme and was named in a security incident");
+    expect(view.cost).toContain("phishing page");
+    expect(view.cost).not.toContain("fake checkout");
+    expect(view.location).toBe("config/settings_data.json · app embed turned on");
+    expect(view.linkLabel).toBe("See what to check");
   });
 
   it("no other type's row gets a title or link text override", () => {
@@ -410,21 +427,19 @@ describe("Start here presentation", () => {
 // Rule 4: tone. Not malicious code.
 // ---------------------------------------------------------------------------
 
-describe("Home findings tile: an advisory is a normal finding, never critical", () => {
-  it("an advisory alone is a warning tile counting 1, not a critical one", () => {
-    // Home feeds maliciousFound / maliciousKept from the MALICIOUS_SCRIPT counts
-    // only; an advisory reaches the tile through the filtered total.
-    expect(buildFindingsTile({ filteredTotal: 1, maliciousFound: 0, maliciousKept: 0 })).toEqual({
-      total: 1,
-      tone: "warning",
-    });
+// gc-q5z8 (Nathan, 2026-10-19): an advisory is now a security risk on Home's
+// tile, reversing round 3's "never critical".
+describe("Home findings tile: an advisory is a security risk (gc-q5z8)", () => {
+  it("an advisory alone is a CRITICAL tile counting 1, with 1 security risk", () => {
+    expect(
+      buildFindingsTile({ filteredTotal: 1, maliciousFound: 0, maliciousKept: 0, advisoryKept: 1 }),
+    ).toEqual({ total: 1, tone: "critical", securityRisks: 1 });
   });
 
   it("an ignored advisory leaves a green zero (it honours ignores; nothing is added back)", () => {
-    expect(buildFindingsTile({ filteredTotal: 0, maliciousFound: 0, maliciousKept: 0 })).toEqual({
-      total: 0,
-      tone: "success",
-    });
+    expect(
+      buildFindingsTile({ filteredTotal: 0, maliciousFound: 0, maliciousKept: 0, advisoryKept: 0 }),
+    ).toEqual({ total: 0, tone: "success", securityRisks: 0 });
   });
 
   it("malicious code beside an advisory is still critical (unchanged)", () => {
@@ -688,7 +703,7 @@ describe("classification", () => {
 describe("remediation copy (the owner's sentences, as written)", () => {
   const WHY = [
     "Your theme loads a script from this app.",
-    "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+    "A security incident report names this app.",
     "GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.",
     "This script loads whether or not the app is still installed.",
   ];
@@ -812,7 +827,7 @@ describe("getFindingCardCopy", () => {
 
   it("an advisory: its own headline, detection sentence, steps, labels, and the notice presentation", () => {
     expect(getFindingCardCopy(ADVISORY)).toEqual({
-      title: "An app in your theme was named in a checkout phishing report",
+      title: "An app in your theme was named in a security incident report",
       confidence: "Matched a script address from a public incident report.",
       stepsHeading: "What to check",
       steps: [
@@ -878,15 +893,20 @@ describe("the advisory steps: one source for the card's list and the how-to stri
   );
 });
 
-describe("Home's advisory line (advisoryNoticeLine)", () => {
+// gc-q5z8: the old "N app security advisories to review" link is replaced by
+// one summary line that accounts for the whole tile.
+describe("Home's security risk summary line (homeRiskSummaryLine)", () => {
   it.each([
-    [0, null],
-    [-1, null],
-    [1, "1 app security advisory to review"],
-    [2, "2 app security advisories to review"],
-    [11, "11 app security advisories to review"],
-  ])("advisoryNoticeLine(%i) is %j", (count, line) => {
-    expect(advisoryNoticeLine(count)).toBe(line);
+    [{ advisories: 0, malicious: 0, leftover: 5 }, null],
+    [{ advisories: 1, malicious: 0, leftover: 12 }, "1 app security advisory, 12 leftover items."],
+    [{ advisories: 2, malicious: 0, leftover: 0 }, "2 app security advisories."],
+    [
+      { advisories: 1, malicious: 2, leftover: 1 },
+      "2 pieces of known malicious code, 1 app security advisory, 1 leftover item.",
+    ],
+    [{ advisories: 0, malicious: 1, leftover: 0 }, "1 piece of known malicious code."],
+  ])("homeRiskSummaryLine(%j) is %j", (input, line) => {
+    expect(homeRiskSummaryLine(input)).toBe(line);
   });
 
   // tile = leftover items (laned findings) + advisories + ignored malicious
@@ -929,9 +949,21 @@ describe("Home's advisory line (advisoryNoticeLine)", () => {
       filteredTotal,
       maliciousFound,
       maliciousKept: counts.MALICIOUS_SCRIPT ?? 0,
+      advisoryKept: advisories,
     });
     expect({ leftover, advisories, addBack: tile.total - filteredTotal }).toEqual(parts);
     expect(tile.total).toBe(parts.leftover + parts.advisories + parts.addBack);
-    expect(advisoryNoticeLine(advisories) === null).toBe(parts.advisories === 0);
+    // The summary line's three numbers (as Home computes them: leftover items
+    // without the kept malicious code, which it names on its own) add up to
+    // the tile, and its security risks are the tile's.
+    const keptMalicious = counts.MALICIOUS_SCRIPT ?? 0;
+    const line = homeRiskSummaryLine({
+      advisories,
+      malicious: maliciousFound,
+      leftover: leftover - keptMalicious,
+    });
+    expect(line === null).toBe(advisories === 0 && maliciousFound === 0);
+    expect(tile.securityRisks).toBe(advisories + maliciousFound);
+    expect(leftover - keptMalicious + advisories + maliciousFound).toBe(tile.total);
   });
 });

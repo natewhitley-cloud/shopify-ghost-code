@@ -7,6 +7,8 @@ import { FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
 import {
+  ADVISORY_HEALTH_LABEL,
+  advisoryHealthRow,
   buildThemeHealthChecklist,
   coverageForType,
   HEALTH_CATEGORIES,
@@ -24,6 +26,7 @@ import {
   themeHealthVerdict,
   themeTitle,
   typesForHealthCategory,
+  VERDICT_ADVISORY,
 } from "../../app/lib/theme-health";
 
 const ALL_TYPES = Object.values(FindingType);
@@ -1493,5 +1496,118 @@ describe("gc-wr81: the Liquid error check cut short by its size cap", () => {
       input({ coverage: capped, typeCounts: { LIQUID_ERROR_RENDERED: 1 } }),
     );
     expect(rowOf(rows, "liquid-errors")).toMatchObject({ status: "issues", count: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-q5z8: the "App security advisories" check
+// ---------------------------------------------------------------------------
+
+describe("advisoryHealthRow (gc-q5z8)", () => {
+  const DARK = new Set<string>(ALL_TYPES.filter((t) => t !== "APP_INCIDENT_ADVISORY"));
+
+  it("an open (non-ignored) advisory: issues, with a count and a link to the scan", () => {
+    expect(advisoryHealthRow("scan-1", 1, FULL_COVERAGE)).toEqual({
+      key: "app-advisories",
+      label: ADVISORY_HEALTH_LABEL,
+      checks: expect.any(String),
+      status: "issues",
+      statusLabel: "1 issue",
+      count: 1,
+      detail: "An app named in a security incident is in your theme.",
+      href: "/app/scans/scan-1",
+    });
+    expect(advisoryHealthRow("scan-1", 2, FULL_COVERAGE)?.detail).toBe(
+      "2 apps named in a security incident are in your theme.",
+    );
+  });
+
+  it("the check ran and nothing is open: clean (a green chip)", () => {
+    expect(advisoryHealthRow("scan-1", 0, FULL_COVERAGE)).toMatchObject({
+      status: "clean",
+      statusLabel: "Clean",
+      count: 0,
+      detail: null,
+      href: null,
+    });
+  });
+
+  it("live now but this scan did not run it: Not checked, with the rescan line", () => {
+    expect(advisoryHealthRow("scan-1", 0, { ...FULL_COVERAGE, liveTypes: DARK })).toMatchObject({
+      status: "not_checked",
+      statusLabel: "Not checked",
+      detail: "Not checked on your last scan. Run a new scan to try again.",
+    });
+    expect(advisoryHealthRow("scan-1", 0, { ...FULL_COVERAGE, liveTypes: null })?.status).toBe(
+      "not_checked",
+    );
+  });
+
+  it("not live for anyone (flag off or every entry expired): no row at all", () => {
+    expect(advisoryHealthRow("scan-1", 0, { ...FULL_COVERAGE, liveNow: DARK })).toBeNull();
+  });
+
+  it("a scan of an unpublished theme: no row (the check reads the published theme only)", () => {
+    expect(
+      advisoryHealthRow("scan-1", 0, { ...FULL_COVERAGE, isPublishedTheme: false }),
+    ).toBeNull();
+  });
+
+  it("an open advisory is reported even when the check is dark now (a stored finding is never hidden)", () => {
+    expect(
+      advisoryHealthRow("scan-1", 1, { ...FULL_COVERAGE, liveNow: DARK, isPublishedTheme: false })
+        ?.status,
+    ).toBe("issues");
+  });
+});
+
+describe("theme health groups and verdict with the advisory check (gc-q5z8)", () => {
+  const rows = (advisoryCount: number, coverage = FULL_COVERAGE) => {
+    const built = buildThemeHealthChecklist(input({ coverage }));
+    const advisory = advisoryHealthRow("scan-1", advisoryCount, coverage);
+    return advisory ? [...built, advisory] : built;
+  };
+
+  it("an open advisory is its own group, never a clean chip", () => {
+    const groups = groupHealthRows(rows(1));
+    expect(groups.advisory?.key).toBe("app-advisories");
+    expect(groups.clean.map((r) => r.key)).not.toContain("app-advisories");
+    expect(groups.gaps.map((r) => r.key)).not.toContain("app-advisories");
+  });
+
+  it("the verdict is red and names the incident, NEVER 'No known malicious code found.'", () => {
+    const verdict = themeHealthVerdict(groupHealthRows(rows(1)));
+    expect(verdict).toEqual({ tone: "critical", text: VERDICT_ADVISORY });
+    expect(VERDICT_ADVISORY).toBe("An app named in a security incident is in your theme.");
+    // Even with every other check clean and nothing else found.
+    expect(verdict?.text).not.toContain("No known malicious code found");
+  });
+
+  it("known malicious code beside it: the malicious line is the verdict (null), the advisory still fails", () => {
+    const groups = groupHealthRows(rows(1), maliciousHealthRow("scan-1", 2));
+    expect(themeHealthVerdict(groups)).toBeNull();
+    expect(groups.advisory?.status).toBe("issues");
+  });
+
+  it("clean advisory check: a green chip and the usual green verdict", () => {
+    const groups = groupHealthRows(rows(0));
+    expect(groups.advisory).toBeNull();
+    expect(groups.clean.map((r) => r.key)).toContain("app-advisories");
+    expect(themeHealthVerdict(groups)).toEqual({
+      tone: "ok",
+      text: "No known malicious code found.",
+    });
+  });
+
+  it("not checked: an amber gap (the verdict says some checks could not run)", () => {
+    const DARK_SCAN = new Set<string>(ALL_TYPES.filter((t) => t !== "APP_INCIDENT_ADVISORY"));
+    const groups = groupHealthRows(rows(0, { ...FULL_COVERAGE, liveTypes: DARK_SCAN }));
+    expect(groups.gaps.map((r) => r.key)).toEqual(["app-advisories"]);
+    expect(themeHealthVerdict(groups)?.tone).toBe("warn");
+  });
+
+  it("the nine category rows are unchanged by an advisory (it is still in no category)", () => {
+    const built = buildThemeHealthChecklist(input({ typeCounts: { APP_INCIDENT_ADVISORY: 3 } }));
+    expect(built).toEqual(buildThemeHealthChecklist(input()));
   });
 });

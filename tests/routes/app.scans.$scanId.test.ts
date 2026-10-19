@@ -2585,9 +2585,9 @@ describe("app.scans.$scanId loader", () => {
 
       const html = await renderPage();
 
-      // The security alert, on every plan, with the finding as a card in it.
-      const start = html.indexOf('<s-banner tone="critical"');
-      const banner = html.slice(start, html.indexOf("</s-banner>", start));
+      // The Security risk banner (gc-q5z8), on every plan, with the finding as a card in it.
+      const start = html.indexOf('<section id="security-risk-mal"');
+      const banner = html.slice(start, html.indexOf("</section>", start));
       expect(start).toBeGreaterThan(-1);
       expect(banner).toMatch(
         /<ul class="findings-list"><li id="finding-mal" style="[^"]*padding:16px;border:1px solid #c9cccf;border-radius:10px;background:#ffffff"/,
@@ -2602,7 +2602,7 @@ describe("app.scans.$scanId loader", () => {
         '<s-button variant="secondary" accessibilityLabel="Copy removal steps for this finding">Copy removal steps</s-button></div></li></ul>',
       );
       // The list below carries one closed disclosure per row, the malicious row included.
-      const list = html.slice(html.indexOf("</s-banner>", start));
+      const list = html.slice(html.indexOf("</section>", start));
       expect(list.match(/<details class="finding-ignore"/g)).toHaveLength(rows.length);
       expect(html.match(/<details/g)).toHaveLength(rows.length);
       expect(html).not.toMatch(/<details[^>]* open/);
@@ -5307,14 +5307,12 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(data.previewFindings.map((f) => f.findingType)).not.toContain("MALICIOUS_SCRIPT");
       expect(data.upgradePreview?.hiddenCount).toBe(2);
       const html = await renderPage();
-      // Critical, and worded for every list entry (polyfill.io was added in
-      // good faith: "attacks on Shopify stores" would be wrong for it).
-      expect(html).toContain(
-        '<s-banner tone="critical" heading="Code from a known malicious source found in your theme">',
-      );
-      expect(html.replace(/<!-- -->/g, "")).toContain(
-        "1 line in your theme references a domain known or credibly reported to serve malicious code. Remove it as soon as possible and follow the steps under each finding. This is shown on every plan.",
-      );
+      // Its Security risk banner (gc-q5z8), worded for every list entry
+      // (polyfill.io was added in good faith: "attacks on Shopify stores"
+      // would be wrong for it).
+      expect(html).toContain('<section id="security-risk-y-mal"');
+      expect(html).toContain(">Security risk</span>");
+      expect(html.replace(/<!-- -->/g, "")).toContain("shown on every plan");
       expect(html).not.toContain("Malicious code found in your theme");
       expect(html).not.toContain("known to be used in attacks");
       expect(html).toContain('id="finding-y-mal"');
@@ -5532,6 +5530,10 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
    * end of its list (a card can hold its own inner list of steps).
    */
   const card = (html: string, id: string) => {
+    // gc-q5z8: an advisory is rendered as its Security risk banner, which
+    // carries the finding's anchor.
+    const banner = html.indexOf(`<section id="finding-${id}"`);
+    if (banner !== -1) return html.slice(banner, html.indexOf("</section>", banner));
     const start = html.indexOf(`<li id="finding-${id}"`);
     if (start === -1) return "";
     const next = html.indexOf('<li id="finding-', start + 1);
@@ -5613,7 +5615,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         id: "adv",
         typeLabel: "App Security Advisories",
         href: "/app/scans/scan-1#finding-adv",
-        cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+        // gc-q5z8: the entry's own wording, and the title names the app.
+        cost: "On 10 October 2026, a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store.",
+        title: "Hulk Product Options is in your theme and was named in a security incident",
       });
       expect(topFindings).toHaveLength(3);
     });
@@ -5679,37 +5683,50 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect((await load("?app=SomeApp")).alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
     });
 
-    it("renders the advisory as its own full card, with no critical alert", async () => {
+    it("renders the advisory as its Security risk banner at the top, in full, on Free (gc-q5z8)", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
 
       const html = await renderPage();
 
-      // Its own list, headed by the type label, above the preview rows.
-      // A warning-toned notice (the security alert's component, not its tone),
-      // headed by the type label, above the preview rows.
-      expect(html).toContain(
-        '<div id="app-security-advisories"><s-banner tone="warning" heading="App Security Advisories">',
-      );
-      expect(
-        html.indexOf('<s-banner tone="warning" heading="App Security Advisories">'),
-      ).toBeLessThan(html.indexOf("Preview: Top 2 Findings"));
+      // The banner, above Total findings and the preview rows; the old amber
+      // "App Security Advisories" section is gone (no duplicate).
+      expect(html).not.toContain('heading="App Security Advisories"');
+      expect(html).not.toContain('id="app-security-advisories"');
       const advisory = card(html, "adv");
-      expect(advisory).toContain(ADVISORY_DESCRIPTION);
-      expect(advisory).toContain("layout/theme.liquid");
-      expect(advisory).toContain(", line 42");
-      expect(advisory).toContain("productoption.hulkapps.com/hulkcode.js");
-      expect(advisory).toContain(">Why it matters</strong>");
-      expect(advisory).toContain("we cannot tell you whether your store was affected");
+      expect(advisory).toContain(">Security risk</span>");
+      expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
+        html.indexOf("Total Findings"),
+      );
+      expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
+        html.indexOf("Preview: Top 2 Findings"),
+      );
+      expect(advisory).toContain(
+        "Hulk Product Options is in your theme, and it was named in a security incident report",
+      );
+      expect(advisory).toContain(
+        "On 10 October 2026, a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store.",
+      );
+      expect(advisory).toContain(
+        "Your live theme loads a script from productoption.hulkapps.com (layout/theme.liquid, line 42).",
+      );
+      expect(advisory).toContain("can&#x27;t tell whether your store was affected");
       expect(advisory).toContain("<li>Open your store in a private (incognito) window");
-      expect(advisory).toContain(">What to check</strong>");
+      expect(advisory).toContain("<li>If you no longer use Hulk Product Options, remove");
+      expect(advisory).toContain(">What to check</h3>");
       expect(advisory).toContain(">Read the report</a>");
+      expect(advisory).toContain(">Copy steps</s-button>");
+      expect(advisory).toContain("shown on every plan");
+      // On the scan page the steps are inline: no "See what to check" button.
+      expect(advisory).not.toContain("See what to check</s-button>");
       expect(advisory).not.toContain("Verify first");
       // Exactly one anchor: the Start here link's target.
       expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
       expect(html).toContain('href="/app/scans/scan-1#finding-adv"');
-      // Not malicious code: no critical security alert on the page.
-      expect(html).not.toContain('<s-banner tone="critical"');
-      expect(html).not.toContain("known malicious source");
+      // Not malicious code: no malicious banner on the page.
+      expect(html).not.toContain('id="security-risk-');
+      expect(html).not.toContain("linked to malicious code");
+      // "Total findings" splits the count (gc-q5z8).
+      expect(html).toContain("5 findings: 1 security risk (above), 4 leftover items (below).");
       // The advisory is the one Free card with the Ignore control (round 2).
       expect(html.match(/<details class="finding-ignore"/g)).toHaveLength(1);
       expect(advisory).toContain(">Ignore this finding<");
@@ -5723,9 +5740,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       const html = await renderPage();
 
-      expect(card(html, "adv")).toContain(ADVISORY_DESCRIPTION);
+      expect(card(html, "adv")).toContain("Hulk Product Options is in your theme");
       expect(html).not.toContain("No leftover code detected in this scan.");
-      expect(html).not.toContain('<s-banner tone="critical"');
+      expect(html).not.toContain('id="security-risk-');
       // Nothing is hidden, so there is no upgrade ask on the page.
       expect(html).not.toMatch(/more findings? on Standard/);
     });
@@ -5890,35 +5907,34 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       const html = await renderPage();
       expect(html).not.toContain('id="finding-adv"');
-      expect(html).not.toContain('<s-banner tone="warning" heading="App Security Advisories">');
-      expect(html).not.toContain('<s-banner tone="critical"');
+      expect(html).not.toContain(">Security risk</span>");
+      expect(html).not.toContain("security risk (above)");
     });
 
-    it("renders ONE advisory card, in its own section above the Findings list, with Ignore", async () => {
+    it("renders ONE advisory banner, above Total findings and the Findings list, with Ignore", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
       servePage([...SCRIPTS, ADVISORY]);
 
       const html = await renderPage();
 
       expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
-      expect(
-        html.split('<s-banner tone="warning" heading="App Security Advisories">'),
-      ).toHaveLength(2);
-      expect(
-        html.indexOf('<s-banner tone="warning" heading="App Security Advisories">'),
-      ).toBeLessThan(html.indexOf('<h2 class="scan-section-title">Findings</h2>'));
+      expect(html.match(/>Security risk<\/span>/g)).toHaveLength(1);
+      expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
+        html.indexOf("Total Findings"),
+      );
       expect(html.indexOf('id="finding-adv"')).toBeLessThan(
         html.indexOf('<h2 class="scan-section-title">Findings</h2>'),
       );
-      // Two lists on the page: the advisory section and the findings list.
-      expect(html.match(/<ul class="findings-list">/g)).toHaveLength(2);
+      // One list on the page: the findings list (the banner holds no card).
+      expect(html.match(/<ul class="findings-list">/g)).toHaveLength(1);
+      expect(html).not.toContain('heading="App Security Advisories"');
       const advisory = card(html, "adv");
-      expect(advisory).toContain(ADVISORY_DESCRIPTION);
+      expect(advisory).toContain("Hulk Product Options is in your theme");
       expect(advisory).toContain(">Ignore this finding<");
       expect(advisory).not.toContain("Ignore all from");
       // The Start here link lands on it.
       expect(html).toContain('href="/app/scans/scan-1#finding-adv"');
-      expect(html).not.toContain('<s-banner tone="critical"');
+      expect(html).not.toContain('id="security-risk-');
       // Every list row is still there, once.
       for (const s of SCRIPTS) {
         expect(html.match(new RegExp(`id="finding-${s.id}"`, "g"))).toHaveLength(1);
@@ -5931,7 +5947,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       const html = await renderPage();
 
-      expect(card(html, "adv")).toContain(ADVISORY_DESCRIPTION);
+      expect(card(html, "adv")).toContain("Hulk Product Options is in your theme");
       expect(html).toContain("No other findings in this scan.");
       expect(html).not.toContain("No findings match these filters.");
       expect(html).not.toContain("No leftover code detected in this scan.");
@@ -6147,7 +6163,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       expect(data.alwaysShownFindings).toEqual([]);
       expect(html).not.toContain('id="finding-adv"');
-      expect(html).not.toContain('<s-banner tone="warning" heading="App Security Advisories">');
+      expect(html).not.toContain(">Security risk</span>");
       expect(html).toContain("4 findings detected");
       // Nothing left on the Free page can be ignored.
       expect(html).not.toMatch(/<details|name="findingId"|Ignore this finding/);
@@ -6183,7 +6199,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
     it("renders exactly these strings, in this order", () => {
       expect(text(html())).toEqual([
-        "An app in your theme was named in a checkout phishing report",
+        "An app in your theme was named in a security incident report",
         "Severity:",
         "HIGH",
         "File:",
@@ -6196,7 +6212,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         ADVISORY_SNIPPET,
         "Copy",
         "Why it matters",
-        "Your theme loads a script from this app. A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
+        "Your theme loads a script from this app. A security incident report names this app. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
         "What to check",
         "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
         "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
@@ -6211,7 +6227,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
     it("the title is the advisory headline, not the type label, with no app suffix", () => {
       expect(html()).toMatch(
-        /<h3 style="[^"]*">An app in your theme was named in a checkout phishing report<\/h3>/,
+        /<h3 style="[^"]*">An app in your theme was named in a security incident report<\/h3>/,
       );
       expect(html()).not.toContain(", app: ");
     });
@@ -6325,7 +6341,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
     it("an advisory without a description renders no empty line", () => {
       const without = html({ description: "" });
-      expect(without).toContain("An app in your theme was named in a checkout phishing report");
+      expect(without).toContain("An app in your theme was named in a security incident report");
       expect(without).not.toContain("Loads code from");
     });
 
@@ -6398,9 +6414,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         expect.objectContaining({ id: "adv", advisoryReportUrl: null }),
       ]);
       const advisory = card(html, "adv");
-      expect(advisory).toContain("An app in your theme was named in a checkout phishing report");
-      expect(advisory).toContain(`>${ADVISORY_DESCRIPTION}</div>`);
-      expect(advisory).toContain(">What to check</strong>");
+      // The entry's wording still applies (gc-q5z8); only the link is withheld.
+      expect(advisory).toContain("Hulk Product Options is in your theme");
+      expect(advisory).toContain(">What to check</h3>");
       expect(advisory).toContain(">Ignore this finding<");
       expect(advisory).not.toContain("Read the report");
       expect(advisory).not.toContain('target="_blank"');
@@ -6477,12 +6493,15 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(data.alwaysShownFindings).toHaveLength(advisories);
       expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY ?? 0).toBe(advisories);
       expect((html.match(/id="finding-adv"/g) ?? []).length).toBe(advisories);
-      expect(html.includes('<s-banner tone="warning" heading="App Security Advisories">')).toBe(
-        advisories > 0,
-      );
-      // 3. Malicious code: the alert, on every plan.
+      expect(html.includes('<section id="finding-adv"')).toBe(advisories > 0);
+      // 3. Malicious code: its banner, on every plan.
       expect(data.maliciousFindings).toHaveLength(malicious);
-      expect(html.includes('<s-banner tone="critical"')).toBe(malicious > 0);
+      expect(html.includes('<section id="security-risk-mal"')).toBe(malicious > 0);
+      // The Total findings note splits the total (gc-q5z8).
+      const risks = advisories + malicious;
+      expect(
+        html.includes(`${kept.length} ${kept.length === 1 ? "finding" : "findings"}: ${risks}`),
+      ).toBe(risks > 0);
       // 4. Everything else: the list (paid) or the preview plus the hidden count (Free).
       if (paid) {
         const listed = data.findings.filter((f) => !f.isIgnored);

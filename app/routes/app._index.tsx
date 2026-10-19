@@ -18,6 +18,7 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
+import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
 import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
@@ -49,6 +50,12 @@ import { safeErrorFields } from "../lib/safe-error";
 import { getNextScanPeriodStart, getScanQuotaPeriod } from "../lib/scan-quota";
 import type { ScanQuotaPeriod } from "../lib/scan-quota";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
+import {
+  findingsTileSubtitle,
+  homeRiskSummaryLine,
+  securityRiskAnchorId,
+  type SecurityRisk,
+} from "../lib/security-risk";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
   SUMMARY_NOTICE_DISMISS,
@@ -63,7 +70,7 @@ import {
 } from "../lib/summary-email-copy";
 import { maliciousHealthRow } from "../lib/theme-health";
 import type { HealthRow } from "../lib/theme-health";
-import { ADVISORY_SECTION_ID, advisoryNoticeLine, toTopFindingViews } from "../lib/top-findings";
+import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
@@ -95,6 +102,7 @@ import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
+import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
@@ -196,6 +204,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       trendChartEnabled: false,
       laneSummary: [] as LaneSummaryRow[],
       advisoryCount: 0,
+      securityRisks: [] as SecurityRisk[],
+      riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
       findingTrend: null,
@@ -390,7 +400,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           )
       : [];
   const topFindings = latestScan
-    ? toTopFindingViews(latestScan.id, topFindingRows, Boolean(features.showFindingDetails))
+    ? toTopFindingViews(
+        latestScan.id,
+        topFindingRows,
+        Boolean(features.showFindingDetails),
+        // gc-q5z8: an advisory row names its app and the entry's own wording.
+        advisoryStartHereCopy(topFindingRows),
+      )
     : [];
 
   // The lanes' "Start here" chip follows the block's first finding whenever
@@ -423,8 +439,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         filteredTotal: latestFilteredTotal,
         maliciousFound: maliciousCount,
         maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
+        // gc-q5z8: a non-ignored advisory is a security risk too (red tile).
+        advisoryKept: advisoryCount,
       })
     : null;
+
+  // A security risk found (gc-q5z8): one line under "Most Recent Findings"
+  // that accounts for the tile, in place of the leftover-items lead. Its parts
+  // add up to the tile: every malicious finding (ignored or not, named on its
+  // own), the non-ignored advisories, and the laned findings without the kept
+  // malicious ones (the lanes count those too).
+  const riskSummaryLine = homeRiskSummaryLine({
+    advisories: advisoryCount,
+    malicious: maliciousCount,
+    leftover:
+      laneSummary.reduce((sum, row) => sum + row.count, 0) -
+      (latestTypeCounts?.MALICIOUS_SCRIPT ?? 0),
+  });
+
+  // Security risk banners (gc-q5z8), at the top of Home on EVERY plan: one
+  // per known malicious domain (every malicious finding, ignored or not, like
+  // the tile and the scan page's alert) and one per non-ignored affected-app
+  // advisory. Only for a successful latest scan; no query when the counts
+  // above say there is nothing to show.
+  const securityRisks: SecurityRisk[] =
+    hasResults && latestScan && latestTypeCounts
+      ? await loadHomeSecurityRisks({
+          shopId: shop.id,
+          scanId: latestScan.id,
+          keptByType: latestTypeCounts,
+          keptFindings: latestKeptFindings,
+          maliciousFound: maliciousCount,
+          now,
+        })
+      : [];
 
   // Finding-count trend: compare the latest scan's total finding count against
   // the previous successful scan's. Fewer findings = improving. Derived from the
@@ -699,6 +747,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     trendChartEnabled,
     laneSummary,
     advisoryCount,
+    securityRisks,
+    riskSummaryLine,
     startHere,
     dominant,
     findingTrend,
@@ -1118,7 +1168,8 @@ export default function Dashboard() {
     scansNeeded,
     trendChartEnabled,
     laneSummary,
-    advisoryCount,
+    securityRisks,
+    riskSummaryLine,
     startHere,
     dominant,
     findingTrend,
@@ -1283,7 +1334,6 @@ export default function Dashboard() {
   // advisory, gc-14x5) is in the tile's total but is not a "leftover item"
   // and has no cost to list, so the lane copy counts lanes only.
   const laneTotal = laneSummary.reduce((sum, row) => sum + row.count, 0);
-  const advisoryLine = advisoryNoticeLine(advisoryCount);
 
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
@@ -1296,6 +1346,20 @@ export default function Dashboard() {
     <s-page heading="GhostCode Scanner">
       <div style={hairline} />
       <div style={groundStyle}>
+        {/* Security risk (gc-q5z8): known malicious code, and apps named in a
+          security incident, at the very top on EVERY plan. Each links to its
+          banner on the scan page, where the steps are. */}
+        {hasResults &&
+          latestScan &&
+          securityRisks.map((risk) => (
+            <SecurityRiskBanner
+              key={securityRiskAnchorId(risk)}
+              risk={risk}
+              scanDate={latestScan.completedAt ?? latestScan.createdAt}
+              checkHref={`/app/scans/${latestScan.id}#${securityRiskAnchorId(risk)}`}
+            />
+          ))}
+
         {/* Error banner — only rendered when the action returns an error */}
         {actionError && (
           <s-banner tone="critical">
@@ -1780,7 +1844,7 @@ export default function Dashboard() {
                               {tile.total}
                             </div>
                             <div className="health-score-subtitle">
-                              {tile.total === 1 ? "finding" : "findings"}
+                              {findingsTileSubtitle(tile.total, tile.securityRisks)}
                             </div>
                             {findingTrend && (
                               <div
@@ -1826,23 +1890,22 @@ export default function Dashboard() {
                                 .
                               </div>
                             )}
-                            {laneSummary.length > 0 && (
+                            {/* A security risk (gc-q5z8): one line that accounts
+                                for the tile (security risks are in no lane), then
+                                "See all". Otherwise the leftover-items lead. */}
+                            {riskSummaryLine ? (
                               <div className="health-read__lead">
-                                {laneTotal} leftover item{laneTotal === 1 ? "" : "s"} from apps
-                                you&apos;ve uninstalled {laneTotal === 1 ? "is" : "are"} still in
-                                your theme. See what each is costing you below.
+                                {riskSummaryLine}{" "}
+                                <Link to={`/app/scans/${latestScan.id}`}>See all</Link>
                               </div>
-                            )}
-                            {/* Affected-app advisories (gc-14x5): in no lane, so
-                                this line accounts for them in the tile's total
-                                and keeps the card from being empty when an
-                                advisory is the only finding. */}
-                            {advisoryLine && (
-                              <div className="health-read__lead">
-                                <Link to={`/app/scans/${latestScan.id}#${ADVISORY_SECTION_ID}`}>
-                                  {advisoryLine}
-                                </Link>
-                              </div>
+                            ) : (
+                              laneSummary.length > 0 && (
+                                <div className="health-read__lead">
+                                  {laneTotal} leftover item{laneTotal === 1 ? "" : "s"} from apps
+                                  you&apos;ve uninstalled {laneTotal === 1 ? "is" : "are"} still in
+                                  your theme. See what each is costing you below.
+                                </div>
+                              )
                             )}
                           </div>
                         </div>

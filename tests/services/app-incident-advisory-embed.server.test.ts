@@ -484,7 +484,7 @@ describe("card copy follows the matched signal", () => {
 
   it("impact: 'Your theme has this app's embed turned on' vs 'Your theme loads a script'", () => {
     expect(getFindingImpact(ADVISORY, SETTINGS)).toBe(
-      "Your theme has this app's embed turned on. A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.",
+      "Your theme has this app's embed turned on. A security incident report names this app. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.",
     );
     expect(getFindingImpact(ADVISORY, "layout/theme.liquid")).toMatch(
       /^Your theme loads a script from this app\. .* This script loads whether or not the app is still installed\.$/,

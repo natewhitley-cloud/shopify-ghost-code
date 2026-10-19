@@ -314,8 +314,8 @@ function gapLine(reason: Gap, category: HealthCategoryKey, whole: boolean): stri
 export type HealthStatus = "issues" | "clean" | "partial" | "not_checked" | "info";
 
 export interface HealthRow {
-  /** A category key, "theme" or "unpublished-themes". */
-  key: HealthCategoryKey | "theme" | "unpublished-themes";
+  /** A category key, "theme", "unpublished-themes" or "app-advisories" (see advisoryHealthRow). */
+  key: HealthCategoryKey | "theme" | "unpublished-themes" | "app-advisories";
   label: string;
   /** One line on what the row covers. Always shown. */
   checks: string;
@@ -580,6 +580,64 @@ export function maliciousHealthRow(scanId: string, count: number): HealthRow | n
   };
 }
 
+export const ADVISORY_HEALTH_LABEL = "App security advisories";
+const ADVISORY_HEALTH_CHECKS =
+  "Apps in your theme whose developer, or a public report, named them in a security incident.";
+
+/**
+ * Home's "App security advisories" check (gc-q5z8), built on its own like
+ * maliciousHealthRow and NOT one of the nine categories: an advisory is a
+ * notice about a public report, so it never counts in a category row
+ * (buildThemeHealthChecklist leaves it out entirely).
+ *
+ *   - `count` > 0 (non-ignored advisories: an advisory honours ignores):
+ *     status "issues". Home shows it as a failed chip and the red verdict
+ *     "An app named in a security incident is in your theme."
+ *   - The check ran on this scan and nothing is open: "clean" (a green chip).
+ *   - The check is live now but this scan did not run it (an older scan, or
+ *     the check failed): "not_checked", with the usual "run a new scan" line.
+ *   - Null (no chip) when the check is not live for anyone (soft-launch flag
+ *     off, or every entry past its review date): like every dark check, a
+ *     check the merchant was never offered is not listed. Also null for a
+ *     scan of an unpublished theme: the check reads only the published theme,
+ *     so "not checked" there would ask for a rescan that cannot help.
+ */
+export function advisoryHealthRow(
+  scanId: string,
+  count: number,
+  coverage: HealthCoverageInput,
+): HealthRow | null {
+  const base = {
+    key: "app-advisories" as const,
+    label: ADVISORY_HEALTH_LABEL,
+    checks: ADVISORY_HEALTH_CHECKS,
+  };
+  if (count > 0) {
+    return {
+      ...base,
+      status: "issues",
+      statusLabel: issuesLabel(count),
+      count,
+      detail: `${count === 1 ? "An app" : `${count} apps`} named in a security incident ${count === 1 ? "is" : "are"} in your theme.`,
+      href: `/app/scans/${scanId}`,
+    };
+  }
+  if (coverage.isPublishedTheme === false) return null;
+  const covered = coverageForType("APP_INCIDENT_ADVISORY", coverage);
+  if (covered === "dark") return null;
+  const none = { count: 0, href: null };
+  if (covered === "checked") {
+    return { ...base, ...none, status: "clean", statusLabel: "Clean", detail: null };
+  }
+  return {
+    ...base,
+    ...none,
+    status: "not_checked",
+    statusLabel: "Not checked",
+    detail: GAP_COPY.not_run,
+  };
+}
+
 export interface ThemeHealthInput {
   scanId: string;
   /**
@@ -693,6 +751,13 @@ export interface HealthRowGroups {
    * groupHealthRows wins over the one in `rows`.
    */
   malicious: HealthRow | null;
+  /**
+   * The "App security advisories" row (gc-q5z8), ONLY when an advisory is
+   * open (status "issues"); null otherwise. Shown as a failed chip, and it
+   * turns the verdict red. A clean or not-checked advisory row goes to
+   * `clean` or `gaps` like any check.
+   */
+  advisory: HealthRow | null;
 }
 
 /**
@@ -723,9 +788,15 @@ export function groupHealthRows(
     gaps: [],
     hasIssues: false,
     malicious,
+    advisory: null,
   };
   for (const row of rows) {
     if (row.key === "theme") groups.theme = row;
+    // The advisory check (advisoryHealthRow, gc-q5z8): open = its own group
+    // (a failed chip and the red verdict), else a chip like any check.
+    else if (row.key === "app-advisories" && row.status === "issues") groups.advisory ??= row;
+    else if (row.key === "app-advisories" && row.status === "clean") groups.clean.push(row);
+    else if (row.key === "app-advisories") groups.gaps.push(row);
     else if (row.key === "unpublished-themes") groups.unpublished = row;
     else if (!CATEGORY_KEYS.has(row.key)) continue;
     else if (row.status === "clean") groups.clean.push(row);
@@ -749,8 +820,10 @@ export function groupHealthRows(
  *                       something (those findings are in Home's lanes).
  *   - "warn" (amber):   a check did not (fully) run. Also the tone when the
  *                       malicious check itself did not run in full.
+ *   - "critical" (red): an app named in a security incident is in the theme
+ *                       (gc-q5z8), whatever else the scan found.
  */
-export type HealthVerdictTone = "ok" | "neutral" | "warn";
+export type HealthVerdictTone = "ok" | "neutral" | "warn" | "critical";
 
 export interface HealthVerdict {
   tone: HealthVerdictTone;
@@ -763,6 +836,9 @@ const VERDICT_MALICIOUS_UNCHECKED =
   "Some checks couldn't run, including the check for malicious code.";
 const VERDICT_GAPS = "No known malicious code found. Some checks couldn't run.";
 const VERDICT_PARTIAL_GAPS = "No known malicious code found. Some checks only partly ran.";
+
+/** The red verdict while an affected-app advisory is open (gc-q5z8). */
+export const VERDICT_ADVISORY = "An app named in a security incident is in your theme.";
 
 /**
  * The one-sentence verdict at the top of Home's theme health section, or null
@@ -782,6 +858,9 @@ const VERDICT_PARTIAL_GAPS = "No known malicious code found. Some checks only pa
  */
 export function themeHealthVerdict(groups: HealthRowGroups): HealthVerdict | null {
   if (groups.malicious) return null;
+  // Never "No known malicious code found." (green or grey) while an advisory
+  // is open (gc-q5z8): that would read as all clear over a security risk.
+  if (groups.advisory) return { tone: "critical", text: VERDICT_ADVISORY };
   const maliciousClean = groups.clean.some(
     (row) => row.key === "malicious" && row.status === "clean",
   );

@@ -17,7 +17,10 @@ import { expect } from "vitest";
 
 import {
   BG_BADGE_SUCCESS,
+  COLOR_CRITICAL,
   COLOR_SUCCESS,
+  CRIT_BD,
+  CRIT_TEXT_STRONG,
   COLOR_WARNING,
   LANE_GREY_FILL,
   SUCCESS_TEXT_STRONG,
@@ -46,19 +49,20 @@ export function expectSection(html: string): void {
 }
 
 /** The verdict dot's tone. */
-export type Tone = "ok" | "neutral" | "warn";
-/** A chip is green or amber, never grey. */
+export type Tone = "ok" | "neutral" | "warn" | "critical";
+/** A chip is green, amber or (an open app security advisory, gc-q5z8) red, never grey. */
 export type ChipTone = Exclude<Tone, "neutral">;
 
 const DOT_TONE: Record<string, Tone> = {
   [COLOR_SUCCESS]: "ok",
   [LANE_GREY_FILL]: "neutral",
   [COLOR_WARNING]: "warn",
+  [COLOR_CRITICAL]: "critical",
 };
 
 /** Text and style only a verdict line has, whatever tags it is built from. */
 const VERDICT_SIGNS =
-  /no known malicious code found|nothing malicious|couldn(?:'|&#x27;)t run, including|border-radius:5px/i;
+  /no known malicious code found|nothing malicious|couldn(?:'|&#x27;)t run, including|named in a security incident is in your theme|border-radius:5px/i;
 
 /**
  * The verdict line (its dot's tone and its sentence), or null when there is
@@ -84,10 +88,11 @@ export function verdictOf(html: string): { tone: Tone; text: string } | null {
 
 export const OK_CHIP = `background:${BG_BADGE_SUCCESS};color:${SUCCESS_TEXT_STRONG}`;
 export const WARN_CHIP = `background:${WARN_BD};color:${WARN_TEXT_STRONG}`;
+export const FAILED_CHIP = `background:${CRIT_BD};color:${CRIT_TEXT_STRONG}`;
 export const HIDDEN = "position:absolute;width:1px;height:1px;";
 
 /** The words every chip carries (visually hidden), whatever its markup. */
-const CHIP_PREFIXES = ["Clean: ", "Not checked: ", "Partly checked: "];
+const CHIP_PREFIXES = ["Clean: ", "Not checked: ", "Partly checked: ", "Found: "];
 /** The prefixes of the amber chips: the checks the action box explains. */
 const GAP_PREFIXES = ["Not checked: ", "Partly checked: "];
 
@@ -115,7 +120,13 @@ export function chipsOf(html: string): Chip[] {
     ),
   ].map(([, style, glyph, hidden, prefix, label]): Chip => {
     expect(hidden.startsWith(HIDDEN), "the prefix is visually hidden").toBe(true);
-    const tone = style.includes(OK_CHIP) ? "ok" : style.includes(WARN_CHIP) ? "warn" : null;
+    const tone = style.includes(OK_CHIP)
+      ? "ok"
+      : style.includes(WARN_CHIP)
+        ? "warn"
+        : style.includes(FAILED_CHIP)
+          ? "critical"
+          : null;
     if (!tone) throw new Error(`chip "${prefix}${label}" has no known tone: ${style}`);
     return { tone, glyph, prefix, label };
   });
@@ -131,6 +142,9 @@ export function chipsOf(html: string): Chip[] {
   );
   expect(count(html, WARN_CHIP), "amber chip colours in the section").toBe(
     chips.filter((c) => c.tone === "warn").length,
+  );
+  expect(count(html, FAILED_CHIP), "red chip colours in the section").toBe(
+    chips.filter((c) => c.tone === "critical").length,
   );
   return chips;
 }

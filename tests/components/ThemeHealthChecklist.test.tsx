@@ -223,6 +223,7 @@ describe("groupHealthRows", () => {
       gaps: [],
       hasIssues: false,
       malicious: null,
+      advisory: null,
     });
   });
 
@@ -256,6 +257,7 @@ describe("groupHealthRows", () => {
       gaps: [],
       hasIssues: true,
       malicious: rows.find((r) => r.key === "malicious"),
+      advisory: null,
     });
     // Without the malicious row, a set of issues rows is in no group at all.
     expect(groupHealthRows(rows.filter((r) => r.key !== "malicious"))).toEqual({
@@ -265,6 +267,7 @@ describe("groupHealthRows", () => {
       gaps: [],
       hasIssues: true,
       malicious: null,
+      advisory: null,
     });
   });
 

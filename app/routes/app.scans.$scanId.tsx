@@ -7,6 +7,7 @@ import { Link, useFetcher, useLoaderData } from "react-router";
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { ScanProgress } from "../components/ScanProgress";
+import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
 import { TopFindings } from "../components/TopFindings";
 import {
   adminResourceLinkLabel,
@@ -60,9 +61,15 @@ import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
+import {
+  advisoryCheckSteps,
+  securityRiskAnchorId,
+  totalFindingsNote,
+  type AdvisoryRisk,
+} from "../lib/security-risk";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
-import { ADVISORY_SECTION_ID, findingAnchorId, toTopFindingViews } from "../lib/top-findings";
+import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
 import { upgradeCtaLabel } from "../lib/trial-cta";
 import {
   buildUpgradePreview,
@@ -122,6 +129,7 @@ import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanCoverage, ScanDiff } from "../services/scan-differ.server";
+import { advisoryStartHereCopy, buildSecurityRisks } from "../services/security-risk.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
@@ -150,6 +158,7 @@ import {
   sectionCard,
   TEXT_DISABLED,
   TEXT_PRIMARY,
+  textSubduedSm,
   TEXT_SUBDUED,
   styles,
   visuallyHidden,
@@ -969,6 +978,55 @@ export function FindingRow({
   );
 }
 
+/**
+ * An affected-app advisory's Security risk banner on the scan page (gc-q5z8):
+ * the banner with the "What to check" steps inline (so no "See what to check"
+ * button), the Copy steps action and, under it all, Ignore. It replaces the
+ * old advisory card, so the finding is shown once. The Ignore control is on
+ * every plan here, Free included: after checking, a merchant must be able to
+ * put it away (an advisory honours ignores; an ignored one has no banner).
+ */
+function AdvisoryRiskBanner({
+  risk,
+  finding,
+  scanDate,
+}: {
+  risk: AdvisoryRisk;
+  /** The stored finding (for the copy text and Ignore); always present for a banner the loader built. */
+  finding: FindingLike | undefined;
+  scanDate: Date | string;
+}) {
+  const steps = advisoryCheckSteps(risk);
+  const copy = getFindingCardCopy("APP_INCIDENT_ADVISORY", risk.finding.filename);
+  return (
+    <SecurityRiskBanner
+      risk={risk}
+      scanDate={scanDate}
+      anchor
+      actions={
+        finding && (
+          <CopyRemovalStepsButton
+            text={buildRemovalInstructions(finding, FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY)}
+            findingType={finding.findingType}
+          />
+        )
+      }
+      footer={finding?.id && <FindingIgnoreControls finding={finding} />}
+    >
+      <div style={{ minWidth: 0 }}>
+        <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+          {copy.stepsHeading}
+        </h3>
+        <ol style={{ ...findingSteps, fontSize: "14px", color: TEXT_PRIMARY }}>
+          {steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+      </div>
+    </SecurityRiskBanner>
+  );
+}
+
 // Finding item styles. The findings used to be a six-column table with fixed
 // column widths, which was wider than the page at embedded-admin widths. Each
 // finding is now a card whose content wraps: no fixed widths, every flex child
@@ -1419,7 +1477,24 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
             alwaysShown: alwaysShownFindings,
           })
       : [];
-  const topFindings = toTopFindingViews(scanId, topFindingRows, canViewDetails);
+  const topFindings = toTopFindingViews(
+    scanId,
+    topFindingRows,
+    canViewDetails,
+    // gc-q5z8: an advisory row names its app and the entry's own wording.
+    advisoryStartHereCopy(topFindingRows),
+  );
+  // Security risk banners (gc-q5z8), at the top on EVERY plan: one per known
+  // malicious domain (all its findings, ignored or not, as the security alert
+  // always showed them) and one per non-ignored advisory. No query: both
+  // lists are loaded above.
+  const securityRisks = scanSuccessful
+    ? buildSecurityRisks({
+        advisories: alwaysShownFindings,
+        malicious: enrichedMaliciousFindings,
+        now,
+      })
+    : [];
   // gc-frda: apps found no longer active on THIS scan, for the block's
   // "New · {App}" badge. Read only when a top row has an app at all.
   const newlyInactiveApps = topFindingRows.some((f) => f.appName !== null)
@@ -1626,8 +1701,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     reviewRequestNonce:
       pagePrompt === "review_popup" ? reviewAttemptNonce(shop.reviewPopupLastAttemptAt) : null,
     maliciousFindings: enrichedMaliciousFindings,
-    // gc-14x5: the scan's non-ignored advisories, shown above the list on every plan.
+    // gc-14x5: the scan's non-ignored advisories, shown in their banners on every plan.
     alwaysShownFindings,
+    // gc-q5z8: the Security risk banners (malicious first), every plan.
+    securityRisks,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -1900,6 +1977,7 @@ export default function ScanDetail() {
     reviewRequestNonce,
     maliciousFindings,
     alwaysShownFindings,
+    securityRisks,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -2051,6 +2129,12 @@ export default function ScanDetail() {
     : null;
 
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
+  // Security risks in the (ignore-filtered) total: non-ignored malicious code
+  // and the non-ignored advisories (gc-q5z8).
+  const riskNote = totalFindingsNote(
+    totalFindings,
+    (findingSummary.byType.MALICIOUS_SCRIPT ?? 0) + alwaysShownFindings.length,
+  );
   // Findings the LIST can hold: everything but the advisories shown above it.
   const listTotal = findingSummary.total - alwaysShownFindings.length;
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
@@ -2292,44 +2376,42 @@ export default function ScanDetail() {
           </s-banner>
         )}
 
-        {/* Security alert: every known-malicious script, in full, on ALL plans
-            (free included). Never paywalled; see the loader comment. */}
-        {maliciousFindings.length > 0 && (
-          <s-banner
-            tone="critical"
-            heading="Code from a known malicious source found in your theme"
-          >
-            <s-stack direction="block" gap="base">
-              <s-text>
-                {maliciousFindings.length === 1
-                  ? "1 line in your theme references"
-                  : `${maliciousFindings.length} lines in your theme reference`}{" "}
-                a domain known or credibly reported to serve malicious code. Remove{" "}
-                {maliciousFindings.length === 1 ? "it" : "them"} as soon as possible and follow the
-                steps under each finding. This is shown on every plan.
-              </s-text>
-              <ul style={{ margin: 0, paddingLeft: "20px" }}>
-                {maliciousFindings.map((f) => (
-                  <li key={f.id}>
-                    <s-text>
-                      {f.filename}:{f.lineNumber}: {f.description}
-                    </s-text>
-                  </li>
-                ))}
-              </ul>
+        {/* Security risk banners (gc-q5z8): known malicious code (one banner
+            per domain, holding every finding's card, ignored or not) and apps
+            named in a security incident (one banner per non-ignored advisory,
+            holding its steps, Copy steps and Ignore), in full on ALL plans
+            (free included). Never paywalled; see the loader comment. Each
+            carries the id Home's "See what to check" links to. */}
+        {securityRisks.map((risk) =>
+          risk.kind === "malicious" ? (
+            <SecurityRiskBanner
+              key={securityRiskAnchorId(risk)}
+              risk={risk}
+              scanDate={scan.completedAt ?? scan.createdAt}
+              anchor
+            >
               <FindingsTable>
-                {maliciousFindings.map((f) => (
-                  <FindingRow
-                    key={f.id}
-                    finding={f}
-                    shopDomain={shopDomain}
-                    themeId={scan.themeId}
-                    anchor
-                  />
-                ))}
+                {maliciousFindings
+                  .filter((f) => risk.findings.some((r) => r.id === f.id))
+                  .map((f) => (
+                    <FindingRow
+                      key={f.id}
+                      finding={f}
+                      shopDomain={shopDomain}
+                      themeId={scan.themeId}
+                      anchor
+                    />
+                  ))}
               </FindingsTable>
-            </s-stack>
-          </s-banner>
+            </SecurityRiskBanner>
+          ) : (
+            <AdvisoryRiskBanner
+              key={securityRiskAnchorId(risk)}
+              risk={risk}
+              finding={alwaysShownFindings.find((f) => f.id === risk.finding.id)}
+              scanDate={scan.completedAt ?? scan.createdAt}
+            />
+          ),
         )}
 
         {/* Stale-results banner (gc-mgi): the theme changed after this scan.
@@ -2415,6 +2497,13 @@ export default function ScanDetail() {
                 <div className="scan-tile__subtitle">
                   {totalFindings === 1 ? "finding detected" : "findings detected"}
                 </div>
+                {/* gc-q5z8: how the total splits between the banners above and
+                    the list below (both ignore-filtered, like the total). */}
+                {riskNote && (
+                  <div style={{ ...textSubduedSm, marginTop: "6px", textAlign: "center" }}>
+                    {riskNote}
+                  </div>
+                )}
                 {scanDiff && (totalNew > 0 || totalResolved > 0) && (
                   <div
                     className={`scan-tile__diff ${
@@ -2631,32 +2720,6 @@ export default function ScanDetail() {
               </Link>
             </div>
           )}
-
-        {/* Affected-app advisories (gc-14x5): a NOTICE above the findings list
-          on EVERY plan, in the same banner component as the security alert
-          but in the warning tone (it is not known malicious code). Each
-          advisory is a full card inside it, never repeated in the list.
-          Never paywalled. The Ignore control is on every plan here, Free
-          included: after checking, a merchant must be able to put it away.
-          The id is the target of Home's "advisories to review" link. */}
-        {isCompleted && alwaysShownFindings.length > 0 && (
-          <div id={ADVISORY_SECTION_ID}>
-            <s-banner tone="warning" heading={FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY}>
-              <FindingsTable>
-                {alwaysShownFindings.map((finding) => (
-                  <FindingRow
-                    key={finding.id}
-                    finding={finding}
-                    scanId={scan.id}
-                    shopDomain={shopDomain}
-                    themeId={scan.themeId}
-                    anchor
-                  />
-                ))}
-              </FindingsTable>
-            </s-banner>
-          </div>
-        )}
 
         {/* Findings detail list — only shown for completed scans */}
         {isCompleted &&

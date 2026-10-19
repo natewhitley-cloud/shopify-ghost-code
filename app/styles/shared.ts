@@ -160,6 +160,8 @@ export const BORDER_STRONG = "#c9cccf";
 // WARN_TEXT because it intentionally diverges from COLOR_WARNING.
 export const CRIT_BD = "#fde8e8";
 export const CRIT_BG = "#fef6f6";
+/** Dark red text on a CRIT_BG / CRIT_BD surface (Security risk titles, failed chips). */
+export const CRIT_TEXT_STRONG = "#8e1f0b";
 export const WARN_BD = "#fdf0cd";
 export const WARN_BG = "#fffcf2";
 export const WARN_TEXT = "#916a00";

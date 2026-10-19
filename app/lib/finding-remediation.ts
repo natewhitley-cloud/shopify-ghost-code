@@ -63,8 +63,12 @@ const ADVISORY_EMBED_STEPS: readonly string[] = [
 ];
 
 /** What the public report says, and what GhostCode cannot know. Shared by both advisory signals. */
+// Neutral on purpose (gc-q5z8): the incident itself is described per entry,
+// in its source's own words (the entry's `report`, shown by the Security risk
+// banner and "Start here"), because the statements differ ("phishing page",
+// "fake checkout page"). This shared sentence must fit every entry.
 const ADVISORY_REPORT_IMPACT =
-  "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.";
+  "A security incident report names this app. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected.";
 
 /**
  * True for an affected-app advisory matched by its app EMBED (gc-14x5.1). The
@@ -386,13 +390,13 @@ const DEFAULT_CARD_COPY: FindingCardCopy = {
  * a script address taken from a public incident report, the "review before
  * removing" badge does not apply, and nothing on it is a primary action.
  *
- * Per TYPE, not per list entry: the wording below is about a checkout
- * phishing report. A second entry for a different kind of incident needs
- * per-entry copy first.
+ * Per TYPE, not per list entry, so the wording below is neutral about the
+ * incident (gc-q5z8): each entry's own wording is shown by the Security risk
+ * banner and "Start here", which name the app.
  */
 const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
   APP_INCIDENT_ADVISORY: {
-    title: "An app in your theme was named in a checkout phishing report",
+    title: "An app in your theme was named in a security incident report",
     confidence: "Matched a script address from a public incident report.",
     stepsHeading: "What to check",
     steps: ADVISORY_STEPS,

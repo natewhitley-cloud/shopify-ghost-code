@@ -57,6 +57,8 @@ vi.mock("../../app/models/app-removal.server", () => ({
 vi.mock("../../app/models/finding.server", () => ({
   getSeverityCountsForScans: vi.fn(),
   getTypeCountsForScan: vi.fn(),
+  // gc-q5z8: the Security risk banners read malicious findings (none by default).
+  getFindingsForScan: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../app/models/ignored-finding.server", () => ({
@@ -90,6 +92,10 @@ vi.mock("../../inngest/client", () => ({
 }));
 
 import { THEME_HEALTH_HEADING } from "../../app/components/ThemeHealthChecklist";
+import {
+  advisoryDescription,
+  APP_INCIDENT_ADVISORIES,
+} from "../../app/data/app-incident-advisories.server";
 import { logger } from "../../app/lib/logger.server";
 import {
   canUseMultipleThemes,
@@ -97,7 +103,11 @@ import {
   getScanUsage,
 } from "../../app/lib/plan-gating.server";
 import type { HealthRow } from "../../app/lib/theme-health";
-import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/models/finding.server";
+import {
+  getFindingsForScan,
+  getSeverityCountsForScans,
+  getTypeCountsForScan,
+} from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
   getCompletedScansForShop,
@@ -676,13 +686,17 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       const data = await runLoader();
       const html = renderDashboard(data);
       const section = sectionOf(html);
-      // Really built, not mocked: all eleven rows, nine of them with findings.
-      expect(data.themeHealth).toHaveLength(11);
-      expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(10);
+      // Really built, not mocked: all eleven rows, nine of them with findings,
+      // plus the App security advisories check (gc-q5z8), which found one.
+      expect(data.themeHealth).toHaveLength(12);
+      expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(11);
       // Rendered: every category found something, so only the theme facts show
-      // (the vintage sentence and the theme library). No chip, no action box,
-      // and no verdict line: the malicious line below is the verdict.
-      expect(chipsOf(section)).toEqual([]);
+      // (the vintage sentence and the theme library). No action box, and no
+      // verdict line: the malicious line below is the verdict. The one chip is
+      // the failed advisory check (a security risk is never hidden).
+      expect(chipsOf(section)).toEqual([
+        { tone: "critical", glyph: "\u26a0", prefix: "Found: ", label: "App security advisories" },
+      ]);
       expect(actionOf(section)).toBeNull();
       expect(verdictOf(section)).toBeNull();
       expect(themeText(section)).toEqual([
@@ -705,7 +719,11 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(section.match(/<s-badge/g)).toHaveLength(1);
       expect(section.match(/<a /g)).toHaveLength(1);
       for (const other of data.themeHealth.filter(
-        (r) => r.status === "issues" && r.key !== "malicious" && r.key !== "theme",
+        (r) =>
+          r.status === "issues" &&
+          r.key !== "malicious" &&
+          r.key !== "theme" &&
+          r.key !== "app-advisories",
       )) {
         expect(section, other.key).not.toContain(other.label);
       }
@@ -1031,13 +1049,13 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
       setPlan(plan);
       scans({ "scan-1": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} } });
       const data = await runLoader();
-      expect(data.findingsTile).toEqual({ total: 2, tone: "critical" });
+      expect(data.findingsTile).toMatchObject({ total: 2, tone: "critical" });
       const html = renderDashboard(data);
       expect(tileOf(html)).toMatchObject({
         tileTone: "critical",
         numberTone: "critical",
         total: 2,
-        noun: "findings",
+        noun: "findings, 2 security risks",
       });
       // (The class names also sit in the page's <style> block: match attributes.)
       expect(html).not.toMatch(/class="[^"]*health-score-(tile|number)--success/);
@@ -1054,7 +1072,7 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
       },
     });
     const data = await runLoader();
-    expect(data.findingsTile).toEqual({ total: 4, tone: "critical" });
+    expect(data.findingsTile).toMatchObject({ total: 4, tone: "critical" });
     expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "critical", total: 4 });
   });
 
@@ -1066,25 +1084,25 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
       },
     });
     const data = await runLoader();
-    expect(data.findingsTile).toEqual({ total: 5, tone: "critical" });
+    expect(data.findingsTile).toMatchObject({ total: 5, tone: "critical" });
   });
 
   it("malicious code with no ignores at all: the stored total, not green", async () => {
     scans({ "scan-1": { found: { MALICIOUS_SCRIPT: 1 }, kept: {} } }, false);
     const data = await runLoader();
     expect(mockFiltered).not.toHaveBeenCalled();
-    expect(data.findingsTile).toEqual({ total: 1, tone: "critical" });
+    expect(data.findingsTile).toMatchObject({ total: 1, tone: "critical" });
     expect(tileOf(renderDashboard(data))).toMatchObject({
       tileTone: "critical",
       total: 1,
-      noun: "finding",
+      noun: "finding, 1 security risk",
     });
   });
 
   it("(c): no malicious, everything ignored -> 0 and green, as before", async () => {
     scans({ "scan-1": { found: { GHOST_SCRIPT: 3 }, kept: {} } });
     const data = await runLoader();
-    expect(data.findingsTile).toEqual({ total: 0, tone: "success" });
+    expect(data.findingsTile).toMatchObject({ total: 0, tone: "success" });
     expect(tileOf(renderDashboard(data))).toMatchObject({
       tileTone: "success",
       numberTone: "success",
@@ -1095,7 +1113,7 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
   it("(d): no malicious, normal findings -> unchanged, with and without ignores", async () => {
     // No ignores: the seeded scan's 7 findings.
     let data = await runLoader();
-    expect(data.findingsTile).toEqual({ total: 7, tone: "warning" });
+    expect(data.findingsTile).toMatchObject({ total: 7, tone: "warning" });
     expect(tileOf(renderDashboard(data))).toMatchObject({
       tileTone: "warning",
       numberTone: "warning",
@@ -1105,7 +1123,7 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
     // With ignores: the ignore-filtered total.
     scans({ "scan-1": { found: { GHOST_SCRIPT: 3, GHOST_PIXEL: 2 }, kept: { GHOST_SCRIPT: 2 } } });
     data = await runLoader();
-    expect(data.findingsTile).toEqual({ total: 2, tone: "warning" });
+    expect(data.findingsTile).toMatchObject({ total: 2, tone: "warning" });
     expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "warning", total: 2 });
   });
 
@@ -1120,7 +1138,7 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
         "scan-0": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} },
       });
       const data = await runLoader();
-      expect(data.findingsTile).toEqual({ total: 2, tone: "critical" });
+      expect(data.findingsTile).toMatchObject({ total: 2, tone: "critical" });
       expect(data.findingTrend).toEqual({ direction: "stable", previousTotal: 2 });
       expect(tileOf(renderDashboard(data)).delta).toBe("No change from last scan");
     });
@@ -1180,7 +1198,7 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
         "scan-0": { found: { MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 3 } },
       });
       const data = await runLoader();
-      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
+      expect(data.findingsTile).toMatchObject({ total: 3, tone: "warning" });
       expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 4 });
       expect(tileOf(renderDashboard(data)).delta).toBe("▼ 1 fewer than last scan");
     });
@@ -1191,7 +1209,11 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
 // a normal finding: it never turns the findings tile critical, never raises the
 // critical "Known malicious code" line, honours ignores (nothing is added
 // back), and counts in its lane like any other finding.
-describe("Home: an affected-app advisory is a normal finding, not malicious code (gc-14x5)", () => {
+// gc-q5z8 (Nathan, 2026-10-19): an advisory is now shown as a SECURITY RISK on
+// Home (red tile, banner, red theme health verdict and failed chip). It is
+// still not malicious code: no "Known malicious code" line, and it honours
+// ignores. The round 2/3 tests below are updated to the new decision.
+describe("Home: an affected-app advisory is a security risk, not malicious code (gc-14x5, gc-q5z8)", () => {
   type Counts = Record<string, number>;
   const sum = (c: Counts) => Object.values(c).reduce((a, b) => a + b, 0);
   const ADVISORY_FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
@@ -1238,21 +1260,21 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
   }
 
   it.each(["free", "Standard", "Professional"])(
-    "%s: an advisory alone is a warning tile counting 1, never critical",
+    "%s: an advisory alone is a CRITICAL tile counting 1, labelled with its security risk",
     async (plan) => {
       setPlan(plan);
       scan({ APP_INCIDENT_ADVISORY: 1 });
 
       const data = await runLoader();
 
-      expect(data.findingsTile).toEqual({ total: 1, tone: "warning" });
+      expect(data.findingsTile).toEqual({ total: 1, tone: "critical", securityRisks: 1 });
       const html = renderDashboard(data);
-      expect(tileOf(html)).toEqual({ tileTone: "warning", numberTone: "warning", total: 1 });
-      expect(html).not.toMatch(/class="[^"]*health-score-(tile|number)--critical/);
+      expect(tileOf(html)).toEqual({ tileTone: "critical", numberTone: "critical", total: 1 });
+      expect(html).toContain('class="health-score-subtitle">finding, 1 security risk<');
     },
   );
 
-  it("never raises the critical 'Known malicious code' line", async () => {
+  it("never raises the critical 'Known malicious code' line; theme health turns red for the advisory", async () => {
     scan({ APP_INCIDENT_ADVISORY: 1 });
 
     const data = await runLoader();
@@ -1260,12 +1282,27 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     expect(data.maliciousHealth).toBeNull();
     const rows = data.themeHealth as HealthRow[];
     expect(rowOf(rows, "malicious")).toMatchObject({ status: "clean", count: 0 });
-    // Round 3: the advisory is in no theme health row at all.
+    // Still in no category row (scripts stay clean); its own check failed.
     expect(rowOf(rows, "scripts-styles")).toMatchObject({ status: "clean", count: 0 });
-    expect(rows.every((r) => r.count === 0)).toBe(true);
+    expect(rowOf(rows, "app-advisories")).toMatchObject({ status: "issues", count: 1 });
     const section = sectionOf(renderDashboard(data));
     expect(section).not.toContain('<s-badge tone="critical">');
-    expect(section).toContain("No known malicious code found.");
+    // Never the green verdict while an advisory is open.
+    expect(section).not.toContain("No known malicious code found.");
+    expect(verdictOf(section)).toEqual({
+      tone: "critical",
+      text: "An app named in a security incident is in your theme.",
+    });
+    expect(chipsOf(section)[0]).toEqual({
+      tone: "critical",
+      glyph: "\u26a0",
+      prefix: "Found: ",
+      label: "App security advisories",
+    });
+    // Malicious code is still a clean check beside it.
+    expect(chipsOf(section)).toContainEqual(
+      expect.objectContaining({ tone: "ok", label: "Known malicious code" }),
+    );
   });
 
   it("an ignored advisory leaves a green zero: nothing is added back, unlike ignored malicious code", async () => {
@@ -1273,7 +1310,7 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
 
     const data = await runLoader();
 
-    expect(data.findingsTile).toEqual({ total: 0, tone: "success" });
+    expect(data.findingsTile).toMatchObject({ total: 0, tone: "success" });
     expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "success", total: 0 });
     expect(data.maliciousHealth).toBeNull();
   });
@@ -1284,7 +1321,7 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     const data = await runLoader();
 
     // Only the malicious finding is added back: 1, not 2.
-    expect(data.findingsTile).toEqual({ total: 1, tone: "critical" });
+    expect(data.findingsTile).toMatchObject({ total: 1, tone: "critical" });
     expect(data.maliciousHealth).toMatchObject({ count: 1 });
   });
 
@@ -1304,7 +1341,7 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
       expect(data.laneSummary).toEqual([]);
       expect(data.dominant).toBeNull();
       expect(data.startHere).toBeNull();
-      expect(data.findingsTile).toEqual({ total: 1, tone: "warning" });
+      expect(data.findingsTile).toMatchObject({ total: 1, tone: "critical" });
     });
 
     it("an advisory alone renders no lanes card, no 'all clear', and none of the lane copy", async () => {
@@ -1330,13 +1367,13 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
         expect.objectContaining({ lane: "speed", label: "Speed", count: 2 }),
       ]);
       expect(data.dominant).toBe("speed");
-      // The tile counts all three.
-      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
+      // The tile counts all three, and is red (gc-q5z8).
+      expect(data.findingsTile).toMatchObject({ total: 3, tone: "critical", securityRisks: 1 });
 
       const html = renderDashboard(data);
       expect(html).toContain("What it&#x27;s costing you");
       // "leftover items" counts the laned findings only: 2, not 3.
-      expect(html).toMatch(/2 leftover items from apps you&#x27;ve uninstalled are/);
+      expect(html).toContain("1 app security advisory, 2 leftover items.");
       expect(html).not.toMatch(/3 leftover items/);
       expect(html).toContain("(2 findings)");
       expect(html).not.toContain("Still tracking you");
@@ -1348,7 +1385,7 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
       const data = (await runLoader()) as unknown as LaneData;
 
       expect(data.laneSummary).toEqual([expect.objectContaining({ lane: "privacy", count: 1 })]);
-      expect(renderDashboard(data)).toMatch(/1 leftover item from apps you&#x27;ve uninstalled is/);
+      expect(renderDashboard(data)).toContain("1 app security advisory, 1 leftover item.");
     });
 
     const ADVISORY_ROW = {
@@ -1378,7 +1415,8 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
           lane: null,
           typeLabel: "App Security Advisories",
           location: "layout/theme.liquid, line 42",
-          cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+          // gc-q5z8: neutral for a description no entry produces.
+          cost: "A security incident report names this app.",
           href: "/app/scans/scan-1#finding-adv",
         }),
       ]);
@@ -1396,16 +1434,15 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
       const block = html.slice(start, html.indexOf("</section>", start));
 
       expect(data.startHere).toBeNull();
-      // Round 3: the card's headline, not the type label.
-      expect(block).toContain(">An app in your theme was named in a checkout phishing report</h3>");
+      // Round 3: the card's headline, not the type label (gc-q5z8: neutral
+      // for a description no list entry produces).
+      expect(block).toContain(">An app in your theme was named in a security incident report</h3>");
       expect(block).not.toContain("App Security Advisories");
       expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
       expect(block).toContain("layout/theme.liquid, line 42");
-      expect(block).toContain(
-        "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
-      );
+      expect(block).toContain("A security incident report names this app.");
       expect(block).toMatch(
-        /<a aria-label="See what to check: An app in your theme was named in a checkout phishing report, layout\/theme\.liquid, line 42"[^>]*href="\/app\/scans\/scan-1#finding-adv"[^>]*>See what to check<\/a>/,
+        /<a aria-label="See what to check: An app in your theme was named in a security incident report, layout\/theme\.liquid, line 42"[^>]*href="\/app\/scans\/scan-1#finding-adv"[^>]*>See what to check<\/a>/,
       );
       expect(block).not.toContain("See how to fix");
       expect(block).not.toMatch(/Still tracking you|removed app|leftover|malicious/i);
@@ -1429,10 +1466,12 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     });
   });
 
-  it("FLIPPING THE FLAG changes nothing in theme health for a scan taken before the flip", async () => {
+  it("FLIPPING THE FLAG changes no category row for a scan taken before the flip; only the advisory check appears, Not checked", async () => {
     // The scan recorded its live set BEFORE the flip: the advisory type is not
-    // in it. Off, then on: the checklist must be identical, and the scripts
-    // row must not turn into "None found ... Run a new scan".
+    // in it. Off, then on: the category rows must be identical, and the
+    // scripts row must not turn into "None found ... Run a new scan". The one
+    // difference (gc-q5z8) is the App security advisories check: absent while
+    // the check is dark, "Not checked" once it is live (a new scan runs it).
     const liveBefore = Object.values(FindingType).filter((t) => t !== "APP_INCIDENT_ADVISORY");
     mockScans.mockResolvedValue({
       items: [{ ...SCAN, liveFindingTypes: liveBefore }],
@@ -1447,32 +1486,159 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
 
     // Non-vacuous: the flag really is read differently in the two loads.
     expect(isSoftLaunchLive(FindingType.APP_INCIDENT_ADVISORY)).toBe(true);
-    expect(on.themeHealth).toEqual(off.themeHealth);
+    const categories = (rows: unknown) =>
+      (rows as HealthRow[]).filter((r) => r.key !== "app-advisories");
+    expect(categories(on.themeHealth)).toEqual(categories(off.themeHealth));
+    expect(rowOf(off.themeHealth as HealthRow[], "app-advisories")).toBeUndefined();
+    expect(rowOf(on.themeHealth as HealthRow[], "app-advisories")).toMatchObject({
+      status: "not_checked",
+      detail: "Not checked on your last scan. Run a new scan to try again.",
+    });
     expect(rowOf(on.themeHealth as HealthRow[], "scripts-styles")).toMatchObject({
       status: "clean",
       statusLabel: "Clean",
       detail: null,
     });
-    expect(sectionOf(renderDashboard(on))).toBe(sectionOf(renderDashboard(off)));
-    expect(sectionOf(renderDashboard(on))).not.toContain("Not checked on your last scan");
+    expect(sectionOf(renderDashboard(off))).not.toContain("Not checked on your last scan");
+    expect(sectionOf(renderDashboard(off))).not.toContain("App security advisories");
   });
 
-  describe("top card: one line for advisories (round 3, B7)", () => {
+  it("gc-q5z8: a scan that ran the live advisory check and found nothing shows a green advisory chip", async () => {
+    scan({ GHOST_PIXEL: 1 });
+
+    const data = await runLoader();
+
+    expect(rowOf(data.themeHealth as HealthRow[], "app-advisories")).toMatchObject({
+      status: "clean",
+    });
+    expect(chipsOf(sectionOf(renderDashboard(data)))).toContainEqual(
+      expect.objectContaining({ tone: "ok", label: "App security advisories" }),
+    );
+  });
+
+  describe("Security risk banner at the top of Home (gc-q5z8)", () => {
+    const SELLEASY = APP_INCIDENT_ADVISORIES.find((a) => a.appName === "Selleasy")!;
+    const SELLEASY_ROW = {
+      id: "adv-sell",
+      scanId: "scan-1",
+      findingType: "APP_INCIDENT_ADVISORY",
+      severity: "HIGH",
+      filename: "config/settings_data.json",
+      lineNumber: 1,
+      appName: null,
+      codeSnippet: '"x": {"type": "shopify://apps/selleasy/blocks/app-embed/1", "disabled": false}',
+      description: advisoryDescription({
+        advisory: SELLEASY,
+        embedHandle: "shopify://apps/selleasy/blocks/app-embed",
+      }),
+      createdAt: new Date("2026-10-11T10:00:00Z"),
+    };
+    const serve = (rows: Array<typeof SELLEASY_ROW>) =>
+      (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_id: string, f?: { findingType?: string }) =>
+          rows.filter((r) => !f?.findingType || r.findingType === f.findingType),
+      );
+    const bannerOf = (html: string) => {
+      const start = html.indexOf('<section aria-labelledby="finding-');
+      return start === -1 ? "" : html.slice(start, html.indexOf("</section>", start));
+    };
+
+    it.each(["free", "Standard", "Professional"])(
+      "%s: the banner is first on the ground, names the app and links to the scan page's banner",
+      async (plan) => {
+        setPlan(plan);
+        scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+        serve([SELLEASY_ROW]);
+
+        const data = await runLoader();
+        const html = renderDashboard(data);
+        const banner = bannerOf(html);
+
+        expect(
+          (data as unknown as { securityRisks: Array<{ appName: string }> }).securityRisks,
+        ).toEqual([expect.objectContaining({ kind: "advisory", appName: "Selleasy" })]);
+        expect(banner).toContain(
+          "Selleasy is in your theme, and its developer reported a security incident",
+        );
+        expect(banner).toContain("sent shoppers to a phishing page");
+        expect(banner).not.toContain("fake checkout");
+        expect(banner).toMatch(
+          /<a href="\/app\/scans\/scan-1#finding-adv-sell"[^>]*><s-button variant="primary">See what to check<\/s-button><\/a>/,
+        );
+        expect(banner).toContain("shown on every plan");
+        // At the very top: before the findings tile and everything else.
+        expect(html.indexOf(banner)).toBeLessThan(html.indexOf('health-score-tile--critical"'));
+        expect(html.indexOf(banner)).toBeLessThan(html.indexOf("Start here"));
+      },
+    );
+
+    it("an ignored advisory: no banner, no read", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 }, { GHOST_SCRIPT: 2 });
+      serve([SELLEASY_ROW]);
+
+      const data = await runLoader();
+
+      expect((data as unknown as { securityRisks: unknown[] }).securityRisks).toEqual([]);
+      expect(renderDashboard(data)).not.toContain(">Security risk<");
+      expect(getFindingsForScan).not.toHaveBeenCalled();
+    });
+
+    it("no security risk: no banner and no read", async () => {
+      scan({ GHOST_SCRIPT: 2 });
+
+      const data = await runLoader();
+
+      expect((data as unknown as { securityRisks: unknown[] }).securityRisks).toEqual([]);
+      expect(getFindingsForScan).not.toHaveBeenCalled();
+    });
+
+    it("a failed read never takes Home down: no banner, the tile and theme health still say it", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+      (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+      const data = await runLoader();
+
+      expect((data as unknown as { securityRisks: unknown[] }).securityRisks).toEqual([]);
+      expect(data.findingsTile).toMatchObject({ tone: "critical", securityRisks: 1 });
+      expect(rowOf(data.themeHealth as HealthRow[], "app-advisories")?.status).toBe("issues");
+    });
+
+    it("Free: the Start here row names the app with its own wording (the preview is untouched)", async () => {
+      setPlan("free");
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+      serve([SELLEASY_ROW]);
+      (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([SELLEASY_ROW]);
+
+      const data = (await runLoader()) as unknown as {
+        topFindings: Array<{ title?: string; cost: string; location: string }>;
+      };
+
+      expect(data.topFindings[0]).toMatchObject({
+        title: "Selleasy is in your theme and was named in a security incident",
+        location: "config/settings_data.json · app embed turned on",
+      });
+      expect(data.topFindings[0].cost).toContain("phishing page");
+    });
+  });
+
+  // gc-q5z8: the summary line replaces round 3's "N app security advisories
+  // to review" link (and the leftover-items lead while a risk is present).
+  describe("top card: one summary line for security risks (gc-q5z8)", () => {
     const topCard = (html: string) => {
       const start = html.indexOf('<div class="health-read">');
       return start === -1 ? "" : html.slice(start, html.indexOf("</div></div></div>", start));
     };
-    const LINK = (text: string) =>
-      new RegExp(`<a[^>]*href="/app/scans/scan-1#app-security-advisories"[^>]*>${text}</a>`);
+    const SEE_ALL = /<a[^>]*href="\/app\/scans\/scan-1"[^>]*>See all<\/a>/;
 
-    it("an advisory alone: the card holds the one line, linked to the scan page's advisory section", async () => {
+    it("an advisory alone: the card holds the one line and See all", async () => {
       scan({ APP_INCIDENT_ADVISORY: 1 });
 
       const data = await runLoader();
       const card = topCard(renderDashboard(data));
 
       expect((data as unknown as { advisoryCount: number }).advisoryCount).toBe(1);
-      expect(card).toMatch(LINK("1 app security advisory to review"));
+      expect(card).toContain("1 app security advisory.");
+      expect(card).toMatch(SEE_ALL);
       // Nothing else in the read: no damage line, no leftover sentence.
       expect(card).not.toContain("Most of the damage is in");
       expect(card).not.toMatch(/leftover item/);
@@ -1481,21 +1647,34 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     it("two advisories pluralise", async () => {
       scan({ APP_INCIDENT_ADVISORY: 2 });
 
-      expect(topCard(renderDashboard(await runLoader()))).toMatch(
-        LINK("2 app security advisories to review"),
-      );
+      expect(topCard(renderDashboard(await runLoader()))).toContain("2 app security advisories.");
     });
 
-    it("beside other findings: after the leftover sentence, and the two account for the tile", async () => {
+    it("beside other findings: one line, and its parts account for the tile", async () => {
       scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
 
       const data = await runLoader();
       const card = topCard(renderDashboard(data));
 
-      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
-      expect(card).toMatch(/2 leftover items from apps you&#x27;ve uninstalled are/);
-      expect(card).toMatch(LINK("1 app security advisory to review"));
-      expect(card.indexOf("leftover items")).toBeLessThan(card.indexOf("app security advisory"));
+      expect(data.findingsTile).toMatchObject({ total: 3, tone: "critical" });
+      expect(card).toContain("1 app security advisory, 2 leftover items.");
+      expect(card).toMatch(SEE_ALL);
+      expect(card).not.toMatch(/leftover items from apps you/);
+    });
+
+    it("kept and ignored malicious code beside an advisory are named once each", async () => {
+      scan(
+        { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 2, GHOST_SCRIPT: 1 },
+        { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 1 },
+      );
+
+      const data = await runLoader();
+
+      // Tile: 3 kept + 1 ignored malicious added back = 4 = 2 + 1 + 1.
+      expect(data.findingsTile).toMatchObject({ total: 4, securityRisks: 3 });
+      expect(topCard(renderDashboard(data))).toContain(
+        "2 pieces of known malicious code, 1 app security advisory, 1 leftover item.",
+      );
     });
 
     it("an ignored advisory: no line", async () => {
