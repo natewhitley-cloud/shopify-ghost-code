@@ -408,6 +408,12 @@ const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
     truncateSnippet: false,
     startHereLinkLabel: "See what to check",
   },
+  // Known malicious code: the default card, but never the removal-safety
+  // badge. Its level is "safe-to-remove" (nothing legitimate depends on it),
+  // whose badge reads "Likely safe, confirm app removed": wrong on attacker
+  // code, which is not from an app and must never be called "safe". The card
+  // already carries the critical severity badge, so no badge replaces it.
+  MALICIOUS_SCRIPT: { ...DEFAULT_CARD_COPY, showSafetyBadge: false },
 };
 
 /**

@@ -847,12 +847,17 @@ describe("getFindingCardCopy", () => {
     });
   });
 
-  it.each([...ALL_TYPES.filter((t) => t !== ADVISORY), "SOME_FUTURE_TYPE", ""])(
-    "%s keeps the default card presentation",
-    (type) => {
-      expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
-    },
-  );
+  it.each([
+    ...ALL_TYPES.filter((t) => t !== ADVISORY && t !== "MALICIOUS_SCRIPT"),
+    "SOME_FUTURE_TYPE",
+    "",
+  ])("%s keeps the default card presentation", (type) => {
+    expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
+  });
+
+  it("MALICIOUS_SCRIPT: the default card without the removal-safety badge (never 'likely safe')", () => {
+    expect(getFindingCardCopy("MALICIOUS_SCRIPT")).toEqual({ ...DEFAULTS, showSafetyBadge: false });
+  });
 
   it("the advisory wording has no dashes and none of the words the card must not say", () => {
     const { steps, ...rest } = getFindingCardCopy(ADVISORY);

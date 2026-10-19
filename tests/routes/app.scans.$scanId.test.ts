@@ -3659,6 +3659,29 @@ describe("FindingRow — list item that cannot overflow", () => {
     );
   });
 
+  it("known malicious code never says 'likely safe': no removal-safety badge, severity kept", () => {
+    const malicious = renderFindingItem(
+      {
+        ...FINDING_ONE,
+        findingType: "MALICIOUS_SCRIPT",
+        appName: null,
+        codeSnippet: '<script src="https://cdn.jsdelivr.at/x.js"></script>',
+      },
+      PAID,
+    );
+    expect(malicious).not.toMatch(/likely safe/i);
+    for (const label of Object.values(REMOVAL_SAFETY_LABELS)) {
+      expect(malicious).not.toContain(label);
+    }
+    // Only the severity badge is left.
+    expect(malicious.match(/<s-badge/g)).toHaveLength(1);
+    expect(malicious).toContain('<s-badge tone="critical">HIGH</s-badge>');
+    // Control: leftover app code keeps its badge.
+    expect(renderFindingItem(FINDING_ONE, PAID)).toContain(
+      '<s-badge tone="success">Likely safe, confirm app removed</s-badge>',
+    );
+  });
+
   it("the safety label and the item have no em dash", () => {
     for (const label of Object.values(REMOVAL_SAFETY_LABELS)) expect(label).not.toContain("—");
     // No ignore controls here: this is the markup every plan sees.
