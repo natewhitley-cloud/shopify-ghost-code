@@ -62,6 +62,22 @@ export type AppIncidentAdvisory = {
    */
   summary: string;
   /**
+   * Merchant-facing: what the incident was, in the source's own words (gc-q5z8).
+   * Completes "On {incidentDate}, ..." and is shown as the facts of the
+   * Security risk banner, the "Start here" line and the card's "Why it
+   * matters". It states what the source says, never anything about this
+   * store. Each entry carries its own wording: the vendors' statements differ
+   * (Selleasy's says "phishing page", Swym's "fake checkout page"), so a
+   * shared sentence would misquote one of them. No dashes, no trailing period.
+   */
+  report: string;
+  /**
+   * True when `sourceUrl` is the developer's own statement (the banner then
+   * says "its developer reported a security incident" and links "Read
+   * {appName}'s statement"); false for a third-party report.
+   */
+  reportedByDeveloper: boolean;
+  /**
    * Last day (`YYYY-MM-DD`, UTC, inclusive) this entry fires without a fresh
    * look at the incident. See isAdvisoryActive.
    */
@@ -83,20 +99,29 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     //     merchant statement relayed on r/shopify (2026-10-17) says the
     //     checkout redirect came ONLY from the Hulk Product Options theme app
     //     extension. So current, embed-based installs are the main case.
-    //   - TODO(gc-14x5.1): the app's theme app embed handle is NOT verified
-    //     (not in this repo's data or tests, not yet seen in a public
-    //     settings_data.json). Add it to `embedHandles` only once a dev-store
-    //     install or a public settings_data.json shows the real
-    //     `shopify://apps/<handle>/blocks/<block>` string. Never guess it.
+    //   - Embed handle (gc-q5z8): `shopify://apps/hulk-product-options/blocks/
+    //     app-embed` (extension uuid 380168ef-9475-4244-a291-f66b189208b5) seen
+    //     in 6 unrelated public settings_data.json files on GitHub (code search,
+    //     2026-10-19: va1ia/omjuice, Litework-Workspace/sunniland_patio,
+    //     Akaundal2265/dyna, jacintoandlirio/jandlshopify, Itzikziv/
+    //     OfficeMasterChairs-Hyper, Cyberdad247/Camelot-Ecosystem); three of
+    //     those themes also carry Hulk Product Options code (hulk_po.js,
+    //     snippets/hulkapps_pdp_options.liquid, hulkapps cart backups). Other
+    //     HulkApps apps have their own app handles (hulk-form-builder,
+    //     hulk-discounts, hulk-product-reviews, hulk-advanced-wishlist) and do
+    //     not match. Fixtures: tests/fixtures/advisory-embeds/hulk--*.json.
     // Do NOT add `hulkapps.com` as a base domain: other HulkApps apps use
     // other subdomains (e.g. `master-motivator.hulkapps.com`) and are not named
     // in the report.
     appName: "Hulk Product Options",
     scriptHosts: ["productoption.hulkapps.com"],
-    embedHandles: [],
+    embedHandles: ["shopify://apps/hulk-product-options/blocks/app-embed"],
     incidentDate: "2026-10-10",
     sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
     summary: "named in a public report of shoppers being sent to a fake checkout page",
+    report:
+      "a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store",
+    reportedByDeveloper: false,
     reviewBy: "2027-01-08",
   },
   {
@@ -119,6 +144,9 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     sourceUrl: "https://www.getswym.com/resources/security-response",
     summary:
       "whose developer reported that an unauthorized change to its configuration made a script load on some storefronts that could send shoppers to a fake checkout page",
+    report:
+      "Swym (Swym Wishlist Plus's developer) reported that an unauthorized change to its configuration made a script load on some storefronts that could send shoppers to a fake checkout page",
+    reportedByDeveloper: true,
     reviewBy: "2027-01-12",
   },
   {
@@ -143,6 +171,9 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     sourceUrl: "https://www.logbase.io/selleasy/updates/incident-20261013",
     summary:
       "whose developer reported that an unauthorized script on some stores sent shoppers to a phishing page",
+    report:
+      "Logbase (Selleasy's developer) reported that an unauthorized script on some stores sent shoppers to a phishing page",
+    reportedByDeveloper: true,
     reviewBy: "2027-01-11",
   },
 ];

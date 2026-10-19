@@ -59,6 +59,8 @@ const OTHER: AppIncidentAdvisory = {
   incidentDate: "2026-09-01",
   sourceUrl: "https://example.test/report",
   summary: "named in a public report of a redirect on product pages",
+  report: "a public report described a redirect on product pages",
+  reportedByDeveloper: false,
   reviewBy: "2026-11-30",
 };
 
@@ -72,10 +74,13 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
       {
         appName: "Hulk Product Options",
         scriptHosts: ["productoption.hulkapps.com"],
-        embedHandles: [],
+        embedHandles: ["shopify://apps/hulk-product-options/blocks/app-embed"],
         incidentDate: "2026-10-10",
         sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
         summary: "named in a public report of shoppers being sent to a fake checkout page",
+        report:
+          "a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store",
+        reportedByDeveloper: false,
         reviewBy: "2027-01-08",
       },
       {
@@ -86,6 +91,9 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
         sourceUrl: "https://www.getswym.com/resources/security-response",
         summary:
           "whose developer reported that an unauthorized change to its configuration made a script load on some storefronts that could send shoppers to a fake checkout page",
+        report:
+          "Swym (Swym Wishlist Plus's developer) reported that an unauthorized change to its configuration made a script load on some storefronts that could send shoppers to a fake checkout page",
+        reportedByDeveloper: true,
         reviewBy: "2027-01-12",
       },
       {
@@ -96,6 +104,9 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
         sourceUrl: "https://www.logbase.io/selleasy/updates/incident-20261013",
         summary:
           "whose developer reported that an unauthorized script on some stores sent shoppers to a phishing page",
+        report:
+          "Logbase (Selleasy's developer) reported that an unauthorized script on some stores sent shoppers to a phishing page",
+        reportedByDeveloper: true,
         reviewBy: "2027-01-11",
       },
     ]);

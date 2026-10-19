@@ -92,8 +92,22 @@ describe("the Swym Wishlist Plus and Selleasy entries", () => {
     }
   });
 
-  it("Hulk has no embed handle yet (not verified; see the TODO on its entry)", () => {
-    expect(HULK.embedHandles).toEqual([]);
+  it("Hulk's embed handle is the Hulk Product Options app's (gc-q5z8, seen in 6 public themes)", () => {
+    expect(HULK.embedHandles).toEqual(["shopify://apps/hulk-product-options/blocks/app-embed"]);
+    // Other HulkApps apps have their own app handles and never match.
+    for (const sibling of [
+      "shopify://apps/hulk-form-builder/blocks/app-embed/b6b8dd14-356b-4725-a4ed-77232212b3c3",
+      "shopify://apps/hulk-discounts/blocks/app-embed/25745434-52e7-4378-88f1-890df18a0110",
+      "shopify://apps/hulk-product-reviews/blocks/app/1",
+      "shopify://apps/hulk-advanced-wishlist/blocks/app/1",
+    ]) {
+      expect(matchAdvisoryEmbedType(sibling), sibling).toBeNull();
+    }
+    expect(
+      matchAdvisoryEmbedType(
+        "shopify://apps/hulk-product-options/blocks/app-embed/380168ef-9475-4244-a291-f66b189208b5",
+      )?.advisory.appName,
+    ).toBe("Hulk Product Options");
   });
 
   it.each(APP_INCIDENT_ADVISORIES)(
