@@ -20,12 +20,10 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
-import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
+import { buildPricingPlansUrl } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
 import {
   appCostHeadline,
-  buildFreeSpeedTestView,
-  buildSpeedReportView,
   costliestAppLine,
   formatBytes,
   formatSeconds,
@@ -49,7 +47,6 @@ import {
   SPEED_INTRO,
   SPEED_METRIC_LABELS,
   SPEED_PAGE_LABELS,
-  SPEED_REPORT_ORIGIN,
   SPEED_REPORT_STATUS,
   SPEED_RUNNING_MESSAGE,
   SPEED_RUNNING_TIMED_OUT_MESSAGE,
@@ -71,14 +68,9 @@ import { upgradeCtaLabel } from "../lib/trial-cta";
 import { recordUpgradeClick } from "../lib/upgrade-preview";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
-import {
-  countFreeSpeedTestAttempts,
-  getFreeSpeedTestUsedAt,
-  getRecentSpeedReports,
-  getSpeedReportRequestedAt,
-} from "../models/speed-report.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
+import { readSpeedPageReport } from "../services/speed-page-data.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { requestFreeSpeedTest, requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -121,49 +113,37 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   const shop = await getShopMetadata(session.shop);
   if (!shop) throw new Response("Shop not found", { status: 404 });
 
-  const features = getPlanFeatures(shop.plan);
-  if (!features.speedReport) {
-    // gc-iirv: the page's upgrade ask (the locked teaser, or the free test's
-    // ask) joins the nudge funnel. `shown` once per merchant: the stored stamp
-    // skips the claim query on later loads; the atomic claim dedupes
-    // concurrent first loads. Never throws.
-    if (shop.speedTeaserShownAt === null) {
-      await recordNudgeStageOnce(NUDGE_KEYS.SPEED_TEASER, "shown", session.shop);
-    }
-    const ask: UpgradeAsk = {
-      pricingPlansUrl: buildPricingPlansUrl(session.shop),
-      trialEligible: await getTrialEligibility(shop),
-    };
-    // Teaser only: no report data is read for a plan with neither.
-    if (!features.freeSpeedTest) return { access: "locked", ...ask };
-
-    // Free test: ONLY FREE_TEST reports are read (a downgraded shop's
-    // Professional history stays hidden), and only the stripped view leaves
-    // the server.
-    const now = new Date();
-    const [rows, usedAt, requestedAt, attempts] = await Promise.all([
-      getRecentSpeedReports(shop.id, { origin: SPEED_REPORT_ORIGIN.FREE_TEST }),
-      getFreeSpeedTestUsedAt(shop.id),
-      getSpeedReportRequestedAt(shop.id),
-      countFreeSpeedTestAttempts(shop.id),
-    ]);
+  // The plan-gated read is shared with the Sidekick speed tool (gc-5nok):
+  // Professional gets the full view, Free / Standard only the stripped free
+  // test view (ONLY FREE_TEST reports), a plan with neither reads no report
+  // data at all.
+  const now = new Date();
+  const report = await readSpeedPageReport(shop, now);
+  if (report.access === "pro") {
     return {
-      access: "free",
-      freeTest: buildFreeSpeedTestView(rows, usedAt, now, attempts),
-      runAvailableAt: runNowAvailableAt(requestedAt, now)?.toISOString() ?? null,
-      ...ask,
+      access: "pro",
+      ...report.view,
+      runNowAvailableAt: runNowAvailableAt(report.requestedAt, now)?.toISOString() ?? null,
     };
   }
 
-  const now = new Date();
-  const [rows, requestedAt] = await Promise.all([
-    getRecentSpeedReports(shop.id),
-    getSpeedReportRequestedAt(shop.id),
-  ]);
+  // gc-iirv: the page's upgrade ask (the locked teaser, or the free test's
+  // ask) joins the nudge funnel. `shown` once per merchant: the stored stamp
+  // skips the claim query on later loads; the atomic claim dedupes
+  // concurrent first loads. Never throws.
+  if (shop.speedTeaserShownAt === null) {
+    await recordNudgeStageOnce(NUDGE_KEYS.SPEED_TEASER, "shown", session.shop);
+  }
+  const ask: UpgradeAsk = {
+    pricingPlansUrl: buildPricingPlansUrl(session.shop),
+    trialEligible: await getTrialEligibility(shop),
+  };
+  if (report.access === "locked") return { access: "locked", ...ask };
   return {
-    access: "pro",
-    ...buildSpeedReportView(rows, now),
-    runNowAvailableAt: runNowAvailableAt(requestedAt, now)?.toISOString() ?? null,
+    access: "free",
+    freeTest: report.freeTest,
+    runAvailableAt: runNowAvailableAt(report.requestedAt, now)?.toISOString() ?? null,
+    ...ask,
   };
 };
 
