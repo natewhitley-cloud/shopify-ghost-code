@@ -36,6 +36,15 @@ The finding records which signal matched:
 
 When both match, the host signal wins (one finding per entry).
 
+The two signals give the same app different fingerprints (the host finding
+hashes its Liquid line, the embed finding the listed block type in
+`settings_data.json`). So when the same app is matched by host on one scan and
+by embed on a later one (say the script line was removed but the embed is
+still on), or the other way round, an ignore of the first does NOT carry over
+and the differ treats them as two findings (one fixed, one new). By design:
+an advisory has no appName to key on, and the merchant should look again at
+what the theme now does.
+
 ## Turn it on
 
 1. Deploy the build. With `APP_INCIDENT_ADVISORY_LIVE_ENABLED` unset the
@@ -151,9 +160,14 @@ different kind of incident needs its own steps first.
    (`withoutHiddenAdvisories` in `app/services/finding-aggregation.server.ts`,
    reading the flag through `areStoredAdvisoriesShown`). Turning the flag back
    on shows them again.
-2. Optional while the flag stays off, REQUIRED before a rollback (below): to
-   remove the stored rows, an operator runs, with the owner's explicit
-   go-ahead each time:
+2. REQUIRED whenever the flag is turned off after having been on (and before
+   a rollback, below), as soon as the flag is off: the hidden rows still sit
+   in counts that do not read findings, so the FIRST scan after the switch
+   always shows mismatches until they are removed: Home's "1 fewer than last
+   scan" line (the previous scan's stored total still holds the advisory), the
+   trend chart's previous point, and scan history's stored "findingCount" for
+   that scan. To remove the stored rows, an operator runs, with the owner's
+   explicit go-ahead each time:
 
    ```sql
    BEGIN;
@@ -192,6 +206,13 @@ different kind of incident needs its own steps first.
    shop with no ignores) and, on Home, older scans in the trend chart and the
    previous scan's total behind the "than last scan" line when the latest
    scan holds no advisory. The DELETE (with its UPDATE) ends that.
+
+   One loss the DELETE cannot undo: a scan stored while the flag was on did
+   not list a host-signal advisory's host under "Unrecognized Scripts"
+   (`dropAdvisoryUnknownScripts` in `inngest/functions/scan-theme.ts`: no
+   double report). After the DELETE that script appears nowhere on that scan;
+   it is back under "Unrecognized Scripts" from the shop's next scan.
+   Embed-signal advisories have no host and drop nothing.
 
 ## Rollback
 
