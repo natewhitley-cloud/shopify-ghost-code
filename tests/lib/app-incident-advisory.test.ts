@@ -355,6 +355,7 @@ describe("Start here presentation", () => {
         id: "f1",
         severity: "HIGH",
         lane: null,
+        securityRisk: true,
         typeLabel: "App Security Advisories",
         location: "layout/theme.liquid, line 42",
         cost: "A security incident report names this app.",

@@ -254,6 +254,7 @@ describe("presentation helpers", () => {
       id: "f1",
       severity: "HIGH",
       lane: "speed",
+      securityRisk: false,
       typeLabel: "Scripts",
       location: "layout/theme.liquid, line 42",
       cost: "This is loading extra code that slows your storefront down.",
@@ -261,5 +262,16 @@ describe("presentation helpers", () => {
       // gc-frda: the "New · {App}" badge reads it.
       appName: "Klaviyo",
     });
+  });
+
+  it("marks only the security types as a security risk (gc-g034), keeping malicious code's lane", () => {
+    const rows = (
+      ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY", "GHOST_SCRIPT", "GHOST_PIXEL"] as FindingType[]
+    ).map((t, i) => ({ ...theme, ...c(`r${i}`, t, "HIGH") }));
+    const views = toTopFindingViews("scan-1", rows, true);
+    expect(views.map((v) => v.securityRisk)).toEqual([true, true, false, false]);
+    // Home's lanes "Start here" chip still reads malicious code's primary lane.
+    expect(views[0].lane).toBe("privacy");
+    expect(views[1].lane).toBeNull();
   });
 });

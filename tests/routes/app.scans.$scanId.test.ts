@@ -6030,7 +6030,12 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       const html = await renderPage();
 
       expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
-      expect(html.match(/>Security risk<\/span>/g)).toHaveLength(1);
+      // One banner; the Start here card's "Security risk" chip (gc-g034) is
+      // the only other one.
+      const start = html.indexOf('<section aria-labelledby="top-findings-heading"');
+      const startHere = html.slice(start, html.indexOf("</section>", start));
+      expect(startHere.match(/>Security risk<\/span>/g)).toHaveLength(1);
+      expect(html.replace(startHere, "").match(/>Security risk<\/span>/g)).toHaveLength(1);
       expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
         html.indexOf("Total Findings"),
       );

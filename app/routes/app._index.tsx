@@ -118,6 +118,7 @@ import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { loadThemeHealth } from "../services/theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { authenticate } from "../shopify.server";
+import { LANE_COLOR } from "../styles/lane-colors";
 import {
   ACCENT_BORDER,
   ACCENT_FILL,
@@ -137,22 +138,6 @@ import {
   groundStyle,
   hairline,
   INFO_FOCUS_RING,
-  LANE_BLUE_BD,
-  LANE_BLUE_FILL,
-  LANE_BLUE_INK,
-  LANE_BLUE_TINT,
-  LANE_GREY_BD,
-  LANE_GREY_FILL,
-  LANE_GREY_INK,
-  LANE_GREY_TINT,
-  LANE_PURPLE_BD,
-  LANE_PURPLE_FILL,
-  LANE_PURPLE_INK,
-  LANE_PURPLE_TINT,
-  LANE_TEAL_BD,
-  LANE_TEAL_FILL,
-  LANE_TEAL_INK,
-  LANE_TEAL_TINT,
   sectionCard,
   TEXT_DISABLED,
   TEXT_PRIMARY,
@@ -1123,30 +1108,6 @@ const URGENCY_CHIP: Record<
   "act-now": { label: "Act now", bg: CRIT_BD, text: COLOR_CRITICAL },
   compounding: { label: "Compounding", bg: WARN_BD, text: WARN_TEXT },
   whenever: { label: "Whenever", bg: BG_SURFACE, text: TEXT_SUBDUED, border: BORDER_DEFAULT },
-};
-
-/** Per-lane brand identity: left stripe (fill), count/link ink, card tint, border. */
-const LANE_COLOR: Record<LaneKey, { fill: string; ink: string; tint: string; bd: string }> = {
-  "customers-see-it": {
-    fill: LANE_BLUE_FILL,
-    ink: LANE_BLUE_INK,
-    tint: LANE_BLUE_TINT,
-    bd: LANE_BLUE_BD,
-  },
-  discoverability: {
-    fill: LANE_PURPLE_FILL,
-    ink: LANE_PURPLE_INK,
-    tint: LANE_PURPLE_TINT,
-    bd: LANE_PURPLE_BD,
-  },
-  speed: { fill: LANE_TEAL_FILL, ink: LANE_TEAL_INK, tint: LANE_TEAL_TINT, bd: LANE_TEAL_BD },
-  privacy: { fill: ACCENT_FILL, ink: ACCENT_INK, tint: ACCENT_TINT, bd: ACCENT_BORDER },
-  housekeeping: {
-    fill: LANE_GREY_FILL,
-    ink: LANE_GREY_INK,
-    tint: LANE_GREY_TINT,
-    bd: LANE_GREY_BD,
-  },
 };
 
 // ---------------------------------------------------------------------------

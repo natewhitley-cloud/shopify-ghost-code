@@ -156,6 +156,12 @@ export type TopFindingView = {
    * row), or null for a finding that is in no lane (an affected-app advisory).
    */
   lane: LaneKey | null;
+  /**
+   * True for the security types (malicious code, an affected-app advisory):
+   * the block shows them as a "Security risk" in the critical red tokens, not
+   * in their lane's colours (gc-g034).
+   */
+  securityRisk: boolean;
   typeLabel: string;
   /** Where it lives: a theme file (and line), an admin resource, or the storefront. */
   location: string;
@@ -287,6 +293,7 @@ export function toTopFindingViews(
       id: f.id,
       severity: f.severity,
       lane: CONSEQUENCE_MAP[f.findingType].primary,
+      securityRisk: isSecurityType(f.findingType),
       typeLabel: findingTypeLabel(f.findingType),
       location: findingLocation(f),
       cost: advisory ? advisory.report : findingCostLine(f.findingType),

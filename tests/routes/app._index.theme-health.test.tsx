@@ -1451,11 +1451,15 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
       // for a description no list entry produces).
       expect(block).toContain(">An app in your theme was named in a security incident report</h3>");
       expect(block).not.toContain("App Security Advisories");
-      expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
+      // gc-g034: one finding, so its severity is said once in the intro, and
+      // the card is a red "Security risk" card (it has no lane).
+      expect(block).toContain("Fix this first. It&#x27;s high severity.");
+      expect(block).not.toContain("<s-badge");
+      expect(block).toContain(">Security risk</span>");
       expect(block).toContain("layout/theme.liquid, line 42");
       expect(block).toContain("A security incident report names this app.");
-      expect(block).toMatch(
-        /<a aria-label="See what to check: An app in your theme was named in a security incident report, layout\/theme\.liquid, line 42"[^>]*href="\/app\/scans\/scan-1#finding-adv"[^>]*>See what to check<\/a>/,
+      expect(block).toContain(
+        '<s-button variant="secondary" href="/app/scans/scan-1#finding-adv" accessibilityLabel="See what to check: An app in your theme was named in a security incident report, layout/theme.liquid, line 42">See what to check</s-button>',
       );
       expect(block).not.toContain("See how to fix");
       expect(block).not.toMatch(/Still tracking you|removed app|leftover|malicious/i);

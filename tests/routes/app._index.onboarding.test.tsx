@@ -128,6 +128,7 @@ import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
+import { LANE_COLOR } from "../../app/styles/lane-colors";
 
 const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetOrCreate = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
@@ -511,6 +512,34 @@ describe("Home Start here (gc-bn0x)", () => {
       );
     },
   );
+
+  // gc-g034: the real loader feeds the lane-coloured cards.
+  it("renders one lane-coloured card per finding, in a grid of that many columns", async () => {
+    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...TOP_ROW, appName: "Privy" },
+      { ...TOP_ROW, id: "px", findingType: "GHOST_PIXEL", severity: "MEDIUM", appName: null },
+    ]);
+
+    const html = renderDashboard(await load(COMPLETED));
+    const start = html.indexOf('<section aria-labelledby="top-findings-heading"');
+    const block = html.slice(start, html.indexOf("</section>", start));
+
+    expect(block).toContain('<ol class="top-findings__grid top-findings__grid--2"');
+    // Mixed severities: a plain intro and a badge per card.
+    expect(block).toMatch(/>Fix these 2 first\.<\/p>/);
+    expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
+    expect(block).toContain('<s-badge tone="warning">MEDIUM</s-badge>');
+    // Each card in its own lane's colour and chip (shared with the lane cards).
+    expect(block).toContain(`border-top:4px solid ${LANE_COLOR.speed.fill.toLowerCase()}`);
+    expect(block).toContain(`border-top:4px solid ${LANE_COLOR.privacy.fill.toLowerCase()}`);
+    expect(block).toMatch(/aria-hidden="true"><\/span>Speed<\/span>/);
+    expect(block).toMatch(/aria-hidden="true"><\/span>Still tracking you<\/span>/);
+    expect(block).toContain('<span class="top-findings__app"> from Privy</span>');
+    expect(block.match(/ from /g)).toHaveLength(1);
+    expect(block).toContain(
+      '<s-button variant="secondary" href="/app/scans/scan-1#finding-f-1" accessibilityLabel="See how to fix: Scripts, layout/theme.liquid, line 12">See how to fix</s-button>',
+    );
+  });
 
   // Audit fix: both say "Start here", so the lane chip follows the block.
   it("the lanes' Start here chip follows the block's first finding, not the lane ranking", async () => {
