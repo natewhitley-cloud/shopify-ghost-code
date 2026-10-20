@@ -52,6 +52,7 @@ import { detectAppIncidentAdvisories } from "../../app/services/scan-engine.serv
 import {
   FIRST_SCAN_RUNNING_MESSAGE,
   getSidekickScanSummary,
+  MALICIOUS_HOMEPAGE_VERDICT,
   MALICIOUS_VERDICT,
   MAX_MALICIOUS_LISTED,
   NO_COMPLETED_SCAN_MESSAGE,
@@ -446,6 +447,15 @@ describe("getSidekickScanSummary: Free plan", () => {
     });
     expect(r.topFindings.map((t) => t.location)).toContain("snippets/a3.liquid, line 3");
     expect(r.themeHealth?.verdict).toBe(MALICIOUS_VERDICT);
+  });
+
+  it("homepage malicious code (gc-0htk): the verdict does not say it is in the theme", async () => {
+    serveScan([
+      f("a3", "MALICIOUS_SCRIPT", "HIGH", { filename: "storefront/homepage", lineNumber: 0 }),
+    ]);
+    const r = await okSummary();
+    expect(r.themeHealth?.verdict).toBe(MALICIOUS_HOMEPAGE_VERDICT);
+    expect(r.themeHealth?.verdict).not.toBe(MALICIOUS_VERDICT);
   });
 
   it("lists an IGNORED malicious finding in maliciousCode (as the scan page's alert does), not in top findings", async () => {

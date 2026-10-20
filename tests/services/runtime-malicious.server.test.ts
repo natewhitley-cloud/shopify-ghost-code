@@ -28,7 +28,7 @@ import {
   RUNTIME_MALICIOUS_STEPS,
 } from "../../app/lib/finding-remediation";
 import { pickFreePreviewFindings } from "../../app/lib/free-preview";
-import { findingLocation } from "../../app/lib/top-findings";
+import { findingLocation, toTopFindingViews } from "../../app/lib/top-findings";
 import { getTopFindingsOfTypes } from "../../app/models/finding.server";
 import { getFreePreviewFindings } from "../../app/services/free-preview.server";
 import {
@@ -189,6 +189,39 @@ describe("findMaliciousInHomepage: precision", () => {
   });
 });
 
+describe("findMaliciousInHomepage: audit fixes (gc-0htk)", () => {
+  it("skips tags written inside inert or text-only elements", () => {
+    for (const wrapper of ["textarea", "title", "template", "noscript", "style", "xmp"]) {
+      const html = page(
+        `<${wrapper}><script src="https://biliing.top/x.js"></script><link href="https://biliing.top/a.css"></${wrapper}>`,
+      );
+      expect(findMaliciousInHomepage(html, []), wrapper).toEqual([]);
+    }
+    // A live tag after the inert element is still read.
+    const after = page(
+      '<noscript><img src="x"></noscript><script src="https://biliing.top/x.js"></script>',
+    );
+    expect(findMaliciousInHomepage(after, []).map((h) => h.domain)).toEqual(["biliing.top"]);
+  });
+
+  it("reads inline scripts whose type carries MIME parameters or a legacy JS type", () => {
+    for (const type of ["text/javascript; charset=utf-8", "text/x-javascript", "TEXT/JSCRIPT"]) {
+      const html = page(`<script type="${type}">load("https://biliing.top/x");</script>`);
+      expect(
+        findMaliciousInHomepage(html, []).map((h) => h.domain),
+        type,
+      ).toEqual(["biliing.top"]);
+    }
+  });
+
+  it("never matches or stores a host longer than a DNS name", () => {
+    const long = `${"a".repeat(250)}.biliing.top`;
+    expect(
+      findMaliciousInHomepage(page(`<script src="https://${long}/x.js"></script>`), []),
+    ).toEqual([]);
+  });
+});
+
 describe("maliciousDomainsInUrls (speed test requests)", () => {
   it("returns the listed domains, de-duplicated and sorted, subdomains included", () => {
     expect(
@@ -309,6 +342,28 @@ describe("homepage finding copy (never sends the merchant to theme files)", () =
     expect(copied).toContain("Loaded by a script tag in the page: www.biliing.top");
     expect(copied).not.toContain("File:");
     expect(findingLocation(finding)).toBe("Your live homepage (not in your theme files)");
+    // Start here links it as "See what to check", keeping the type title.
+    const [view] = toTopFindingViews(
+      "scan-1",
+      [{ ...finding, id: "hp", appName: null, createdAt: new Date(0) }] as never,
+      false,
+    );
+    expect(view.linkLabel).toBe("See what to check");
+    expect(view.title).toBeUndefined();
+    const [themeView] = toTopFindingViews(
+      "scan-1",
+      [
+        {
+          ...finding,
+          filename: "layout/theme.liquid",
+          id: "t",
+          appName: null,
+          createdAt: new Date(0),
+        },
+      ] as never,
+      false,
+    );
+    expect(themeView.linkLabel).toBeUndefined();
   });
 
   it("a theme-file malicious finding keeps its theme copy", () => {

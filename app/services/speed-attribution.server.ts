@@ -312,7 +312,8 @@ export function summarizeLighthouse(
       mainThreadMs: Math.round(firstParty.mainThreadMs),
       transferBytes: Math.round(firstParty.transferBytes),
     },
-    ...(opts.matchMalicious
+    // Only when the run has a request list: no list is "not checked", not "none".
+    ...(opts.matchMalicious && networkItems.length > 0
       ? { maliciousDomains: maliciousDomainsInUrls(networkItems.map((i) => i.url)) }
       : {}),
   };

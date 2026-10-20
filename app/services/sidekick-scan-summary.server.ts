@@ -35,6 +35,7 @@ import { getCachedAllThemes, getCachedMainTheme } from "./theme-cache.server";
 import { loadThemeHealth } from "./theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.server";
 import { getPlanFeatures } from "../lib/billing.server";
+import { isHomepageMaliciousFinding } from "../lib/finding-classification";
 import { computeLaneSummary, laneLabelForLane, soWhatForLane } from "../lib/finding-consequence";
 import { buildFindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
@@ -129,6 +130,9 @@ const PLAN_NAME = /\b(?:Standard|Professional)\b/;
 
 /** The verdict when Home's critical malicious line shows (that line IS the verdict). */
 export const MALICIOUS_VERDICT = "Known malicious code was found in this theme.";
+/** gc-0htk: the same, when some of it was seen on the live homepage, not in a theme file. */
+export const MALICIOUS_HOMEPAGE_VERDICT =
+  "Known malicious code was found in this theme or on the store's live homepage.";
 
 async function readScan(shopId: string) {
   const [latest, completed] = await Promise.all([
@@ -194,10 +198,15 @@ export async function getSidekickScanSummary(
   // own wording. A stored advisory has no appName, so the entry supplies it.
   const advisoryCopy = advisoryStartHereCopy(topFindingRows);
 
-  const themeHealth = await readThemeHealth(admin, shopDomain, shop, scan, {
-    ...summary.byType,
-    MALICIOUS_SCRIPT: maliciousFound,
-  });
+  const themeHealth = await readThemeHealth(
+    admin,
+    shopDomain,
+    shop,
+    scan,
+    { ...summary.byType, MALICIOUS_SCRIPT: maliciousFound },
+    // gc-0htk: code seen on the live homepage is not "in this theme".
+    maliciousRows.some(isHomepageMaliciousFinding),
+  );
 
   return {
     status: "ok",
@@ -249,6 +258,7 @@ async function readThemeHealth(
   shop: { id: string; plan: string },
   scan: ScanRow,
   typeCounts: Partial<Record<FindingType, number>>,
+  maliciousOnHomepage = false,
 ): Promise<SidekickThemeHealth | null> {
   const [mainTheme, themes] = await Promise.all([
     getCachedMainTheme(admin, shopDomain).catch(() => null),
@@ -262,13 +272,18 @@ async function readThemeHealth(
     themes,
     now: new Date(),
   });
-  const malicious = maliciousHealthRow(scan.id, typeCounts.MALICIOUS_SCRIPT ?? 0);
+  const malicious = maliciousHealthRow(
+    scan.id,
+    typeCounts.MALICIOUS_SCRIPT ?? 0,
+    maliciousOnHomepage,
+  );
   if (rows.length === 0 && !malicious) return null;
 
   const groups = groupHealthRows(rows, malicious);
   const verdict = themeHealthVerdict(groups);
   return {
-    verdict: verdict?.text ?? MALICIOUS_VERDICT,
+    verdict:
+      verdict?.text ?? (maliciousOnHomepage ? MALICIOUS_HOMEPAGE_VERDICT : MALICIOUS_VERDICT),
     cleanChecks: groups.clean.map((row) => row.label),
     checksNotFullyRun: groupGapsByReason(groups.gaps).map(({ labels, reason }) => ({
       checks: labels,

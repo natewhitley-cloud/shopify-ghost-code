@@ -419,6 +419,14 @@ describe("summarizeLighthouse: known-malicious requests (gc-0htk)", () => {
     expect(s.maliciousDomains).toEqual(["biliing.top", "checkout-guard.top"]);
   });
 
+  it("asked, but the run has no request list: not checked (no field)", () => {
+    const lhr = buildLighthouseResult();
+    delete (lhr.audits as Record<string, unknown>)["network-requests"];
+    expect(summarizeLighthouse(lhr, STORE_HOSTS, { matchMalicious: true })).not.toHaveProperty(
+      "maliciousDomains",
+    );
+  });
+
   it("asked, clean run: [] (checked, none)", () => {
     expect(
       summarizeLighthouse(buildLighthouseResult(), STORE_HOSTS, { matchMalicious: true })!

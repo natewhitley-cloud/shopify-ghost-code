@@ -367,13 +367,23 @@ function sentence(parts: string[]): string {
 export function healthCostLine(
   category: HealthCategoryKey,
   counts: TypeCounts,
-  opts: { scriptTagsStopped: boolean },
+  opts: {
+    scriptTagsStopped: boolean;
+    /**
+     * gc-0htk: some of the malicious code was seen on the served homepage,
+     * not in a theme file, so the line must not say it is all in the theme.
+     */
+    maliciousOnHomepage?: boolean;
+  },
 ): string {
   const n = (...types: FindingType[]) => types.reduce((sum, t) => sum + (counts[t] ?? 0), 0);
   const parts: string[] = [];
   switch (category) {
     case "malicious": {
       const k = n("MALICIOUS_SCRIPT");
+      if (opts.maliciousOnHomepage) {
+        return `${plural(k, "piece", "pieces")} of code from a known malicious source ${k === 1 ? "was" : "were"} found in your theme or on your live homepage. It can steal shopper data or send your customers to other sites.`;
+      }
       return `${plural(k, "piece", "pieces")} of code from a known malicious source ${k === 1 ? "is" : "are"} in your theme. It can steal shopper data or send your customers to other sites.`;
     }
     case "liquid-errors": {
@@ -564,7 +574,12 @@ function unpublishedThemesRow(themes: readonly ThemeInventoryItem[] | null): Hea
  * count alone, so Home can show it even when the checklist rows are missing.
  * The same row buildThemeHealthChecklist emits for that count, on every plan.
  */
-export function maliciousHealthRow(scanId: string, count: number): HealthRow | null {
+export function maliciousHealthRow(
+  scanId: string,
+  count: number,
+  /** gc-0htk: some of it was seen on the served homepage (see healthCostLine). */
+  onHomepage = false,
+): HealthRow | null {
   if (count <= 0) return null;
   const category = HEALTH_CATEGORIES.find((c) => c.key === "malicious")!;
   const counts: TypeCounts = { MALICIOUS_SCRIPT: count };
@@ -575,7 +590,10 @@ export function maliciousHealthRow(scanId: string, count: number): HealthRow | n
     status: "issues",
     statusLabel: issuesLabel(count),
     count,
-    detail: healthCostLine(category.key, counts, { scriptTagsStopped: false }),
+    detail: healthCostLine(category.key, counts, {
+      scriptTagsStopped: false,
+      maliciousOnHomepage: onHomepage,
+    }),
     href: findingsHref(scanId, category.key, counts, false),
   };
 }

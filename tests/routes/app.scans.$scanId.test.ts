@@ -3721,6 +3721,10 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html).toContain("What to check");
     expect(html).toContain("Seen on your live homepage, not in your theme files.");
     expect(html).not.toContain(", line ");
+    expect(html).toContain("Your live homepage (not in your theme files)");
+    expect(html).not.toContain(">storefront/homepage</code>");
+    expect(html).toContain("Copy steps");
+    expect(html).not.toContain("Copy removal steps");
     // A theme-file malicious finding keeps its editor link.
     const theme = renderFindingItem(
       { ...homepage, filename: "layout/theme.liquid", lineNumber: 4 },

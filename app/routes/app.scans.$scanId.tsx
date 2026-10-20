@@ -757,11 +757,12 @@ export function CopyButton({ text }: { text: string }) {
 export function copyRemovalStepsLabels(
   copied: boolean,
   findingType = "",
+  filename = "",
 ): {
   text: string;
   accessibilityLabel: string;
 } {
-  const copy = getFindingCardCopy(findingType);
+  const copy = getFindingCardCopy(findingType, filename);
   return copied
     ? { text: "Copied", accessibilityLabel: "Copied" }
     : { text: copy.copyStepsLabel, accessibilityLabel: copy.copyStepsAccessibilityLabel };
@@ -772,9 +773,18 @@ export function copyRemovalStepsLabels(
  * button with the same copy behaviour as CopyButton. Not a form control, so an
  * `s-button` is safe here (unlike the ignore submit buttons).
  */
-function CopyRemovalStepsButton({ text, findingType }: { text: string; findingType: string }) {
+function CopyRemovalStepsButton({
+  text,
+  findingType,
+  filename = "",
+}: {
+  text: string;
+  findingType: string;
+  /** gc-0htk: the homepage malicious variant has its own label. */
+  filename?: string;
+}) {
   const { copied, handleCopy } = useCopy(text);
-  const labels = copyRemovalStepsLabels(copied, findingType);
+  const labels = copyRemovalStepsLabels(copied, findingType, filename);
 
   return (
     <s-button
@@ -883,6 +893,9 @@ export function FindingRow({
           // Admin-resource findings carry a synthetic locator with an embedded GID
           // (developer plumbing), so show a human label instead of the raw path.
           <span>{adminResourceLocatorLabel(finding.findingType, finding.filename)}</span>
+        ) : isHomepageMaliciousFinding(finding) ? (
+          // gc-0htk: seen on the served homepage; the filename is a locator, not a file.
+          <span>Your live homepage (not in your theme files)</span>
         ) : (
           // Theme-file findings: the filename is a real, editable theme path — show it verbatim.
           <code style={findingWrap}>{finding.filename}</code>
@@ -971,6 +984,7 @@ export function FindingRow({
         <CopyRemovalStepsButton
           text={buildRemovalInstructions(finding, typeLabel)}
           findingType={finding.findingType}
+          filename={finding.filename}
         />
         {/* Suppression control — only in the paid findings list (scanId set)
             and only when the finding has a stable id to fingerprint from. */}

@@ -22,7 +22,11 @@
  *     JavaScript (a `<script>` with no src and a JavaScript type). A URL in
  *     page text, a link (`<a href>`), an image, or a JSON data block is not
  *     read: it does not load code, and merchant or shopper text (a blog post,
- *     a review) can mention any domain.
+ *     a review) can mention any domain. Bodies of inert or text-only elements
+ *     (`<textarea>`, `<title>`, `<template>`, `<noscript>`, ...) are skipped.
+ *     Known limits: a URL in a JavaScript STRING counts (merchant text a theme
+ *     serializes into a script can match), and a tag written inside another
+ *     tag's attribute value is read as a tag.
  *   - HTML comments and JS comments are blanked first (blankInertComments,
  *     the theme detector's helper) for EVERY entry, not only `ignoreInComments`
  *     ones: a commented-out tag on the served page does not load, and the
@@ -85,15 +89,36 @@ const JS_SCRIPT_TYPES: ReadonlySet<string> = new Set([
   "application/x-javascript",
   "text/ecmascript",
   "application/ecmascript",
+  "application/x-ecmascript",
+  "text/x-ecmascript",
+  "text/x-javascript",
+  "text/jscript",
+  "text/livescript",
+  "text/javascript1.0",
+  "text/javascript1.1",
+  "text/javascript1.2",
+  "text/javascript1.3",
+  "text/javascript1.4",
+  "text/javascript1.5",
   "module",
 ]);
 
-/** The next `<script` or `<link` tag start (followed by whitespace, `>` or `/`). */
-const TAG_START_RE = /<(script|link)(?=[\s>/])/gi;
+/**
+ * The next `<script` or `<link` tag start, or the start of an element whose
+ * body the browser never loads from (its body is skipped: a tag written
+ * inside a `<textarea>`, `<title>`, `<template>`, `<noscript>` and the like is
+ * text or inert). Followed by whitespace, `>` or `/`.
+ */
+const TAG_START_RE =
+  /<(script|link|textarea|title|template|noscript|xmp|noembed|noframes|style)(?=[\s>/])/gi;
 
+/** Whether a `type` attribute is run as JavaScript (MIME parameters such as `; charset=` ignored). */
 function isJavaScriptType(type: string | undefined): boolean {
-  return JS_SCRIPT_TYPES.has((type ?? "").trim().toLowerCase());
+  return JS_SCRIPT_TYPES.has((type ?? "").split(";")[0].trim().toLowerCase());
 }
+
+/** The longest valid DNS name; a longer "host" is never stored (or matched). */
+const MAX_HOST_LENGTH = 253;
 
 /** A matched host as stored: lower case, no trailing FQDN dot. */
 function normalizeHost(host: string): string {
@@ -115,7 +140,7 @@ export function findMaliciousInHomepage(
 ): HomepageMaliciousHit[] {
   const best = new Map<string, HomepageMaliciousHit>();
   const add = (host: string | null, source: HomepageSource): void => {
-    if (!host) return;
+    if (!host || host.length > MAX_HOST_LENGTH) return;
     const entry = matchMaliciousDomain(host);
     if (!entry) return;
     const prev = best.get(entry.domain);
@@ -131,7 +156,15 @@ export function findMaliciousInHomepage(
   let found: RegExpExecArray | null;
   while ((found = TAG_START_RE.exec(live)) !== null) {
     const at = found.index;
-    const isScript = found[1].toLowerCase() === "script";
+    const element = found[1].toLowerCase();
+    if (element !== "script" && element !== "link") {
+      // An inert or text-only element: skip to its closing tag.
+      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
+      if (close === -1) break;
+      TAG_START_RE.lastIndex = close;
+      continue;
+    }
+    const isScript = element === "script";
     const tag = parseOpenTagAttributes(
       live,
       at,
