@@ -645,8 +645,9 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
         expect.anything(),
         THEME_ID,
         SHOP_DOMAIN,
-        // gc-wr81: the scan also asks for the names of files returned without text.
-        { onFileWithoutText: expect.any(Function) },
+        // gc-wr81: the scan also asks for the names of files returned without text,
+        // gc-rrh.4: and for every file's metadata (the change-log manifest).
+        { onFileWithoutText: expect.any(Function), onFileMeta: expect.any(Function) },
       );
     });
 

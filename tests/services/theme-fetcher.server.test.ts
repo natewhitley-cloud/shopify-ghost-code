@@ -599,3 +599,128 @@ describe("fetchThemeFiles: onFileWithoutText (gc-wr81)", () => {
     ).resolves.toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-rrh.4: every file's metadata (checksum, size, updatedAt) is reported,
+// text or binary, for the change-log manifest. The returned files are exactly
+// as before.
+// ---------------------------------------------------------------------------
+
+describe("fetchThemeFiles: onFileMeta (gc-rrh.4)", () => {
+  type Node = {
+    filename: string;
+    checksumMd5?: string | null;
+    size?: string | number | null;
+    updatedAt?: string | null;
+    body?: { content?: string | null } | null;
+  };
+  const respond = (nodes: Node[], hasNextPage = false, endCursor: string | null = null) =>
+    makeThemeFilesResponse(nodes as Parameters<typeof makeThemeFilesResponse>[0], {
+      hasNextPage,
+      endCursor,
+    });
+  const MD5 = "0cc175b9c0f1b6a831c399e269772661";
+  const AT = "2026-10-12T08:30:00Z";
+
+  it("asks for checksumMd5, size and updatedAt in the same files query", async () => {
+    const graphql = vi.fn().mockResolvedValue(respond([]));
+    await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1");
+    const query = graphql.mock.calls[0][0] as string;
+    expect(graphql).toHaveBeenCalledTimes(1);
+    for (const field of ["checksumMd5", "size", "updatedAt", "filename", "content"]) {
+      expect(query).toContain(field);
+    }
+  });
+
+  it("reports text AND binary files, in order, and returns only the text files as before", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      respond([
+        {
+          filename: "layout/theme.liquid",
+          checksumMd5: MD5,
+          size: "4",
+          updatedAt: AT,
+          body: { content: "html" },
+        },
+        { filename: "assets/logo.png", checksumMd5: MD5, size: "2048", updatedAt: AT, body: {} },
+      ]),
+    );
+    const metas: unknown[] = [];
+
+    const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileMeta: (meta) => metas.push(meta),
+    });
+
+    expect(files).toEqual([{ filename: "layout/theme.liquid", content: "html" }]);
+    expect(metas).toEqual([
+      { filename: "layout/theme.liquid", checksumMd5: MD5, size: 4, updatedAt: AT },
+      { filename: "assets/logo.png", checksumMd5: MD5, size: 2048, updatedAt: AT },
+    ]);
+  });
+
+  it("missing or malformed values become null, never a made-up value", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      respond([
+        { filename: "a.liquid", body: { content: "" } },
+        { filename: "b.liquid", checksumMd5: "", size: "not-a-number", updatedAt: "", body: {} },
+        { filename: "c.liquid", checksumMd5: null, size: -1, updatedAt: null, body: {} },
+        { filename: "d.liquid", size: 12, body: {} },
+      ]),
+    );
+    const metas: unknown[] = [];
+
+    await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileMeta: (meta) => metas.push(meta),
+    });
+
+    expect(metas).toEqual([
+      { filename: "a.liquid", checksumMd5: null, size: null, updatedAt: null },
+      { filename: "b.liquid", checksumMd5: null, size: null, updatedAt: null },
+      { filename: "c.liquid", checksumMd5: null, size: null, updatedAt: null },
+      { filename: "d.liquid", checksumMd5: null, size: 12, updatedAt: null },
+    ]);
+  });
+
+  it("reports across pages", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(respond([{ filename: "snippets/a.liquid", body: {} }], true, "c1"))
+      .mockResolvedValueOnce(respond([{ filename: "snippets/b.liquid", body: { content: "b" } }]));
+    const names: string[] = [];
+
+    await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileMeta: (meta) => names.push(meta.filename),
+    });
+
+    expect(names).toEqual(["snippets/a.liquid", "snippets/b.liquid"]);
+  });
+
+  it("a file over the per-file size is still reported (metadata never reads content)", async () => {
+    const big = "x".repeat(2_000_000);
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        respond([{ filename: "assets/big.js", size: "2000000", body: { content: big } }]),
+      );
+    const metas: Array<{ filename: string; size: number | null }> = [];
+
+    await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileMeta: (meta) => metas.push(meta),
+    });
+
+    expect(metas).toEqual([
+      { filename: "assets/big.js", checksumMd5: null, size: 2_000_000, updatedAt: null },
+    ]);
+  });
+
+  it("is optional: without it, the result is unchanged", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        respond([{ filename: "layout/theme.liquid", checksumMd5: MD5, body: { content: "html" } }]),
+      );
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1")).resolves.toEqual([
+      { filename: "layout/theme.liquid", content: "html" },
+    ]);
+  });
+});

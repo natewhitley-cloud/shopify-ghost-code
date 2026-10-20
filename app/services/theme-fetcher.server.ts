@@ -19,6 +19,39 @@ export type ThemeFile = {
   content: string;
 };
 
+/**
+ * Metadata Shopify reports for EVERY theme file, text or binary (gc-rrh.4),
+ * read in the same files query (no extra request, no new scope). Each field
+ * is null when Shopify did not return a usable value, never a made-up one.
+ */
+export type ThemeFileMeta = {
+  filename: string;
+  checksumMd5: string | null;
+  /** Bytes. Shopify sends UnsignedInt64 as a string; parsed here. */
+  size: number | null;
+  /** ISO 8601 timestamp, as Shopify sent it. */
+  updatedAt: string | null;
+};
+
+type ThemeFileNode = {
+  filename: string;
+  checksumMd5?: string | null;
+  size?: string | number | null;
+  updatedAt?: string | null;
+  body?: { content?: string | null } | null;
+};
+
+function toFileMeta(node: ThemeFileNode): ThemeFileMeta {
+  const size = typeof node.size === "string" ? Number(node.size) : node.size;
+  return {
+    filename: node.filename,
+    checksumMd5:
+      typeof node.checksumMd5 === "string" && node.checksumMd5 !== "" ? node.checksumMd5 : null,
+    size: typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? size : null,
+    updatedAt: typeof node.updatedAt === "string" && node.updatedAt !== "" ? node.updatedAt : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GraphQL queries
 // ---------------------------------------------------------------------------
@@ -58,6 +91,9 @@ const THEME_FILES_QUERY = `
       files(first: $first, after: $after) {
         nodes {
           filename
+          checksumMd5
+          size
+          updatedAt
           body {
             ... on OnlineStoreThemeFileBodyText {
               content
@@ -204,6 +240,8 @@ export class ThemeTooLargeError extends Error {
  *   Shopify returns as base64 or by URL instead of as text). Their names are
  *   reported to `onFileWithoutText`, for a caller that needs to know the file
  *   EXISTS even though its text is not here.
+ * - Reports every file's metadata (checksum, size, updatedAt), text or
+ *   binary, to `onFileMeta` (gc-rrh.4), before any text handling.
  * - Backs off automatically when the rate-limit headroom falls below 100 pts.
  *
  * @param admin    Shopify admin API context (from authenticate.admin or offline token).
@@ -218,12 +256,15 @@ export async function fetchThemeFiles(
   {
     maxTotalBytes = MAX_THEME_TOTAL_TEXT_BYTES,
     onFileWithoutText,
-  }: { maxTotalBytes?: number; onFileWithoutText?: (filename: string) => void } = {},
+    onFileMeta,
+  }: {
+    maxTotalBytes?: number;
+    onFileWithoutText?: (filename: string) => void;
+    onFileMeta?: (meta: ThemeFileMeta) => void;
+  } = {},
 ): Promise<ThemeFile[]> {
   const PAGE_SIZE = 250;
   let totalBytes = 0;
-
-  type ThemeFileNode = { filename: string; body?: { content?: string | null } | null };
 
   return paginateConnection<ThemeFileNode, ThemeFile>({
     admin,
@@ -256,6 +297,7 @@ export async function fetchThemeFiles(
     },
     // body is a union type; only OnlineStoreThemeFileBodyText has content.
     mapNode: (node) => {
+      onFileMeta?.(toFileMeta(node));
       if (typeof node.body?.content !== "string") {
         onFileWithoutText?.(node.filename);
         return [];

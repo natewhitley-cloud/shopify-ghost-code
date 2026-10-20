@@ -84,6 +84,11 @@ import {
 import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
 import { readThemeInfo } from "../../app/lib/theme-info";
 import {
+  buildManifestEntries,
+  extractAppBlockRefs,
+  manifestBytes,
+} from "../../app/lib/theme-manifest";
+import {
   type ScanWalkCoverage,
   WALK_FINDING_TYPES,
   type WalkCoverage,
@@ -92,6 +97,7 @@ import {
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
+import { upsertScanManifest } from "../../app/models/scan-manifest.server";
 import {
   finalizeScan,
   getPreviousScanForTheme,
@@ -102,6 +108,11 @@ import {
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { dropAdvisoryUnknownScripts } from "../../app/services/app-incident-advisory.server";
+import {
+  findCorroboratedApps,
+  identifyAppFromFilename,
+  identifyAppFromSnippetName,
+} from "../../app/services/app-lookup.server";
 import {
   CHECKOUT_LIQUID_PATH,
   detectCheckoutSunset,
@@ -128,6 +139,7 @@ import type { StorefrontScriptTagResult } from "../../app/services/storefront-fe
 import {
   fetchMainTheme,
   fetchThemeFiles,
+  type ThemeFileMeta,
   ThemeTooLargeError,
 } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
@@ -889,39 +901,111 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
 }
 
 /**
- * Whether an affected-app advisory may be recorded for this scan (gc-14x5):
- * the check is live AND the scanned theme is the shop's published (MAIN)
- * theme. The theme read happens only while the check is live (one small
- * Admin query per scan, none while it is dark). If the read fails twice (it is
- * retried once) or the shop has no published theme, the answer is no: an
- * advisory is never shown on an unconfirmed theme, and the scan itself is
- * unaffected. The advisory is then absent for that one scan and the type is
- * not live for it, so nothing reads as fixed; it returns on the next scan.
+ * Whether the scanned theme is the shop's published (MAIN) theme: one small
+ * Admin query per scan, made once inside fetch-and-scan and shared by the
+ * affected-app advisory gate (gc-14x5) and the change-log manifest (gc-rrh.4,
+ * `isPublishedTheme`). Before gc-rrh.4 the read was made only while the
+ * advisory check was live; with it live (production) the count is unchanged.
+ *
+ * One retry: the error is swallowed (the scan must not fail over this), so the
+ * step's own Inngest retries never see it. A single throttle or network blip
+ * should not cost the merchant the advisory for this scan. Two failures =
+ * null (unknown).
  */
-async function advisoryAppliesToTheme(
+async function readIsPublishedTheme(
   admin: Parameters<typeof fetchMainTheme>[0],
   themeId: string,
   shopId: string,
-): Promise<boolean> {
-  if (!isAdvisoryCheckLive()) return false;
-  // One retry: the helper swallows the error (the scan must not fail over
-  // this), so the step's own Inngest retries never see it. A single throttle
-  // or network blip should not cost the merchant the advisory for this scan.
+): Promise<boolean | null> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       return (await fetchMainTheme(admin))?.id === themeId;
     } catch (err) {
       if (attempt === 1) continue;
       const { logger } = await import("../../app/lib/logger.server");
-      logger.warn("published theme read failed twice; advisory check recorded as not run", {
-        function: "scan-theme",
-        event: "advisory_published_theme_unknown",
-        shopId,
-        errorName: err instanceof Error ? err.name : typeof err,
-      });
+      logger.warn(
+        "published theme read failed twice; advisory check recorded as not run, change log theme unknown",
+        {
+          function: "scan-theme",
+          event: "advisory_published_theme_unknown",
+          shopId,
+          errorName: err instanceof Error ? err.name : typeof err,
+        },
+      );
     }
   }
-  return false;
+  return null;
+}
+
+/**
+ * Whether an affected-app advisory may be recorded for this scan (gc-14x5):
+ * the check is live AND the scanned theme is confirmed as the published
+ * theme. Unknown (the read failed twice) or no published theme = no: an
+ * advisory is never shown on an unconfirmed theme, and the scan itself is
+ * unaffected. The advisory is then absent for that one scan and the type is
+ * not live for it, so nothing reads as fixed; it returns on the next scan.
+ */
+function advisoryAppliesToTheme(isPublishedTheme: boolean | null): boolean {
+  return isAdvisoryCheckLive() && isPublishedTheme === true;
+}
+
+/**
+ * The app that owns a theme file, for the change-log manifest (gc-rrh.4, spec
+ * 1.3): the filename pattern first, then, for snippets/ and sections/ files,
+ * the exact snippet name (generic names only when the theme corroborates the
+ * app, gc-c4k). Never the file's content; `files` is read only for that
+ * theme-wide corroboration, computed once and only if a lookup needs it.
+ */
+export function createManifestOwnerResolver(
+  files: ReadonlyArray<{ filename: string; content: string }>,
+): (path: string) => string | null {
+  let corroborated: Set<string> | null = null;
+  return (path) => {
+    const byFile = identifyAppFromFilename(path);
+    if (byFile) return byFile.appName;
+    if (!path.startsWith("snippets/") && !path.startsWith("sections/")) return null;
+    const basename = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    if (basename === "") return null;
+    corroborated ??= findCorroboratedApps(files);
+    return identifyAppFromSnippetName(basename, corroborated);
+  };
+}
+
+/**
+ * Build and persist this scan's theme file manifest (gc-rrh.4). Hashes and
+ * metadata only. Never throws: the change log ships dark and must never fail
+ * or alter a scan, so any error is logged and the scan carries on without a
+ * manifest (its next check is then a baseline). Returns the step-output
+ * telemetry, or nulls when nothing was persisted.
+ */
+async function persistScanManifest(args: {
+  scanId: string;
+  shopId: string;
+  themeId: string;
+  fileMetas: readonly ThemeFileMeta[];
+  files: ReadonlyArray<{ filename: string; content: string }>;
+}): Promise<{ manifestFileCount: number | null; manifestBytes: number | null }> {
+  try {
+    const entries = buildManifestEntries(args.fileMetas, createManifestOwnerResolver(args.files));
+    await upsertScanManifest(args.scanId, {
+      shopId: args.shopId,
+      themeId: args.themeId,
+      entries,
+      appBlocks: extractAppBlockRefs(args.files),
+    });
+    return { manifestFileCount: entries.length, manifestBytes: manifestBytes(entries) };
+  } catch (err) {
+    logger.warn("scan manifest not persisted; scan continues", {
+      function: "scan-theme",
+      event: "manifest_persist_failed",
+      shopId: args.shopId,
+      scanId: args.scanId,
+      errorName: err instanceof Error ? err.name : typeof err,
+      // Capped: a Prisma error message can echo the (large) call arguments.
+      error: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+    });
+    return { manifestFileCount: null, manifestBytes: null };
+  }
 }
 
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
@@ -1035,9 +1119,13 @@ export const scanTheme = inngest.createFunction(
         // returned as text). Names only, and only for this step: the Liquid
         // error check must not take such a snippet for a missing one (gc-wr81).
         const filenamesWithoutText: string[] = [];
+        // Every file's checksum / size / updatedAt, text or binary, for the
+        // change-log manifest (gc-rrh.4). Small scalars, this step only.
+        const fileMetas: ThemeFileMeta[] = [];
         try {
           files = await fetchThemeFiles(admin, themeId, shop.domain, {
             onFileWithoutText: (filename) => filenamesWithoutText.push(filename),
+            onFileMeta: (meta) => fileMetas.push(meta),
           });
         } catch (err) {
           // gc-8s2: an over-ceiling theme is deterministic, so a retry would only
@@ -1121,14 +1209,14 @@ export const scanTheme = inngest.createFunction(
         // threaded to the scan_signal detectorHits (which otherwise histograms
         // persisted rows only) so precision review can read them before the
         // flag is turned on.
+        // One published-theme read per scan, shared by the advisory gate and
+        // the change log (gc-rrh.4). null = unknown (read failed twice).
+        const isPublishedTheme = await readIsPublishedTheme(admin, themeId, shopId);
         const {
           kept: themeFindings,
           suppressedDetectorHits,
           liveFindingTypes: scanLiveFindingTypes,
-        } = applySoftLaunchFlags(
-          allThemeFindings,
-          await advisoryAppliesToTheme(admin, themeId, shopId),
-        );
+        } = applySoftLaunchFlags(allThemeFindings, advisoryAppliesToTheme(isPublishedTheme));
         // No double report (gc-14x5): a host this scan reports as an advisory
         // is not also listed as an unrecognized script. Only for advisories
         // that are actually persisted, so with the check dark, on a draft
@@ -1216,6 +1304,20 @@ export const scanTheme = inngest.createFunction(
         // non-blocking like unknown scripts — a failure must not affect scan
         // correctness. Delete-then-insert idempotency lives inside the model.
         await createScanDomains(scanId, thirdPartyDomains ?? []);
+
+        // Change-log manifest (gc-rrh.4, dark): file hashes + metadata, the
+        // owner app per file and the app blocks referenced by editor data,
+        // built while the files are in memory and persisted here (upsert, so
+        // a step retry is idempotent). Never fails the scan: on error it logs
+        // and the scan carries on exactly as before. Only two counts cross
+        // the step boundary, never the manifest.
+        const manifest = await persistScanManifest({
+          scanId,
+          shopId,
+          themeId,
+          fileMetas,
+          files,
+        });
 
         // Extract DANGLING_REFERENCE candidates (pure, static) here while the
         // theme files are in scope. Only the handle/occurrence arrays (handles +
@@ -1335,6 +1437,12 @@ export const scanTheme = inngest.createFunction(
           // whether it is Online Store 2.0, from files already in memory. Four
           // short bounded values; recorded on the scan by finalize-scan.
           themeInfo: readThemeInfo(files),
+          // Change log (gc-rrh.4): whether this theme is the published one
+          // (null = unknown), and the persisted manifest's size (nulls = not
+          // persisted). Three scalars; read by the compute-changes step.
+          isPublishedTheme,
+          manifestFileCount: manifest.manifestFileCount,
+          manifestBytes: manifest.manifestBytes,
         };
 
         // Defensive step-output budget (gc-4ce). The caps keep the worst case

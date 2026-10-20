@@ -92,6 +92,12 @@ vi.mock("../../app/models/scan-domain.server", () => ({
   createScanDomains: vi.fn(),
 }));
 
+// Change-log manifest persistence (gc-rrh.4): mocked so the step test can
+// assert what is written and make the write fail.
+vi.mock("../../app/models/scan-manifest.server", () => ({
+  upsertScanManifest: vi.fn(),
+}));
+
 // scan_signal telemetry (Feature 2): mock the sink so the emitted metadata can be
 // asserted. OPS_EVENT_TYPES is re-declared minimally — only SCAN_SIGNAL is read.
 vi.mock("../../app/models/ops-event.server", () => ({
@@ -281,6 +287,7 @@ import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.serv
 import { getLatestMerchantAlert } from "../../app/models/merchant-alert.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
+import { upsertScanManifest } from "../../app/models/scan-manifest.server";
 import {
   finalizeScan,
   markScanStarted,
@@ -430,6 +437,17 @@ function publishTheme(themeId: string | null) {
       : // Every other Admin query behaves as with the bare, reset mock.
         undefined,
   );
+}
+
+/**
+ * The scan's Admin queries other than its one shared published-theme read
+ * (gc-rrh.4: made on every scan for the change log, and reused by the
+ * advisory gate). Tests that pin "no other Admin call" use this.
+ */
+function adminQueriesExceptPublishedRead(): string[] {
+  return MOCK_ADMIN.graphql.mock.calls
+    .map(([query]) => String(query))
+    .filter((query) => !query.includes("roles: MAIN"));
 }
 
 const MOCK_FILES = [
@@ -697,8 +715,9 @@ describe("scanTheme — happy path", () => {
       MOCK_ADMIN,
       THEME_ID,
       MOCK_SHOP.domain,
-      // gc-wr81: the scan also asks for the names of files returned without text.
-      { onFileWithoutText: expect.any(Function) },
+      // gc-wr81: the scan also asks for the names of files returned without text,
+      // gc-rrh.4: and for every file's metadata (the change-log manifest).
+      { onFileWithoutText: expect.any(Function), onFileMeta: expect.any(Function) },
     );
   });
 
@@ -3070,8 +3089,10 @@ describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
     });
   }
 
+  // Scope-checking queries only: the scan's one published-theme read
+  // (gc-rrh.4) is not a scope check.
   function graphqlQueries(): string[] {
-    return MOCK_ADMIN.graphql.mock.calls.map(([query]) => query as string);
+    return adminQueriesExceptPublishedRead();
   }
 
   function probedScopes(): string[] {
@@ -3554,13 +3575,19 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
       expect(reads).toHaveLength(2);
     });
 
-    it("flag off: the published-theme read is never made", async () => {
+    it("flag off: the advisory is not persisted, even on the confirmed published theme", async () => {
+      // gc-rrh.4: the published-theme read is now made on every scan (the
+      // change log needs it); with the check dark it must still never
+      // record an advisory.
+      publishTheme(THEME_ID);
       arrange();
 
       await runScanTheme();
 
       const queries = MOCK_ADMIN.graphql.mock.calls.map(([q]) => String(q));
-      expect(queries.some((q) => q.includes("roles: MAIN"))).toBe(false);
+      expect(queries.filter((q) => q.includes("roles: MAIN"))).toHaveLength(1);
+      expect(saved().some(isAdvisory)).toBe(false);
+      expect(live()).not.toContain(FindingType.APP_INCIDENT_ADVISORY);
     });
 
     it("flag on: exactly one published-theme read per scan", async () => {
@@ -4509,7 +4536,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     const { results, names } = await run();
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+    expect(adminQueriesExceptPublishedRead()).toEqual([]);
     expect(names).not.toContain("storefront-script-tags");
     // fetch-and-scan's output carries no new key while dark.
     expect(results["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
@@ -4674,7 +4701,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+    expect(adminQueriesExceptPublishedRead()).toEqual([]);
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
     // Nothing was checked, so the type is not recorded as live (M4).
     expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
@@ -5640,6 +5667,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         await run();
         expect(mockFetchThemeFiles).toHaveBeenCalledWith(MOCK_ADMIN, THEME_ID, MOCK_SHOP.domain, {
           onFileWithoutText: expect.any(Function),
+          onFileMeta: expect.any(Function),
         });
       });
 
@@ -5716,7 +5744,7 @@ describe("scanTheme - theme info recorded at finalize (gc-i6du)", () => {
     // The theme files are fetched once, and nothing else is asked of the
     // Admin API for it (the storefront audit is dark here).
     expect(mockFetchThemeFiles).toHaveBeenCalledTimes(1);
-    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+    expect(adminQueriesExceptPublishedRead()).toEqual([]);
   });
 
   it("an Online Store 2.0 theme", async () => {
@@ -6911,5 +6939,279 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     // All walk outputs together stay far under Inngest's 32 MiB run state.
     const total = walk.reduce((sum, o) => sum + bytes(o.out), 0);
     expect(total).toBeLessThan(16 * 1024 * 1024);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-rrh.4: the change-log manifest, recorded dark inside fetch-and-scan.
+// Hashes and metadata only, persisted with an idempotent upsert, and never
+// able to fail or alter a scan.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — change-log manifest in fetch-and-scan (gc-rrh.4)", () => {
+  const mockUpsertScanManifest = upsertScanManifest as ReturnType<typeof vi.fn>;
+  const MD5 = {
+    layout: "0cc175b9c0f1b6a831c399e269772661",
+    klaviyo: "92eb5ffee6ae2fec3ad71c777531578f",
+    header: "4a8a08f09d37b73795649038408b5f33",
+    png: "8277e0910d750195b448797616e091ad",
+    settings: "e1671797c52e15f763380b45e841ec32",
+  };
+  const AT = "2026-10-12T08:30:00Z";
+  const AT_SEC = Date.parse(AT) / 1000;
+  const SETTINGS = JSON.stringify({
+    current: {
+      blocks: { a: { type: "shopify://apps/judgeme/blocks/judgeme_core/61cc", disabled: false } },
+    },
+  });
+
+  type Node = { filename: string; md5: string; size: number; content?: string };
+  const THEME_NODES: Node[] = [
+    // Fetch order is not path order; the manifest sorts.
+    { filename: "sections/header.liquid", md5: MD5.header, size: 40, content: KLAVIYO_TAG() },
+    { filename: "layout/theme.liquid", md5: MD5.layout, size: 13, content: "<html></html>" },
+    { filename: "assets/logo.png", md5: MD5.png, size: 20_480 },
+    { filename: "snippets/klaviyo-onsite.liquid", md5: MD5.klaviyo, size: 9, content: "{% x %}" },
+    { filename: "config/settings_data.json", md5: MD5.settings, size: 99, content: SETTINGS },
+  ];
+
+  function KLAVIYO_TAG() {
+    return '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>';
+  }
+
+  /** Serve `nodes` through the real fetcher contract: metadata for all, text for some. */
+  function serveTheme(nodes: Node[] = THEME_NODES) {
+    mockFetchThemeFiles.mockImplementation(
+      async (
+        _admin: unknown,
+        _themeId: string,
+        _domain: string,
+        opts?: {
+          onFileWithoutText?: (f: string) => void;
+          onFileMeta?: (m: unknown) => void;
+        },
+      ) => {
+        for (const n of nodes) {
+          opts?.onFileMeta?.({
+            filename: n.filename,
+            checksumMd5: n.md5,
+            size: n.size,
+            updatedAt: AT,
+          });
+          if (n.content === undefined) opts?.onFileWithoutText?.(n.filename);
+        }
+        return nodes
+          .filter((n) => n.content !== undefined)
+          .map((n) => ({ filename: n.filename, content: n.content as string }));
+      },
+    );
+  }
+
+  async function runCapturing() {
+    const results: Record<string, unknown> = {};
+    const step = {
+      ...createMockInngestStep(),
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        const out = await fn();
+        results[name] = out;
+        return out;
+      }),
+    };
+    const result = await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+    return { results, result, step };
+  }
+
+  const fetchAndScan = (results: Record<string, unknown>) =>
+    results["fetch-and-scan"] as Record<string, unknown>;
+
+  beforeEach(() => {
+    serveTheme();
+    publishTheme(THEME_ID);
+    mockUpsertScanManifest.mockResolvedValue({ scanId: SCAN_ID });
+  });
+
+  it("persists the published theme's manifest: sorted entries, binary files included, owner apps, app blocks", async () => {
+    const { results } = await runCapturing();
+
+    expect(mockUpsertScanManifest).toHaveBeenCalledTimes(1);
+    const [scanId, input] = mockUpsertScanManifest.mock.calls[0];
+    expect(scanId).toBe(SCAN_ID);
+    expect(input).toEqual({
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      entries: [
+        ["assets/logo.png", MD5.png, 20_480, AT_SEC, null],
+        ["config/settings_data.json", MD5.settings, 99, AT_SEC, null],
+        ["layout/theme.liquid", MD5.layout, 13, AT_SEC, null],
+        // The Klaviyo script IN this file never makes Klaviyo its owner.
+        ["sections/header.liquid", MD5.header, 40, AT_SEC, null],
+        // Exact snippet name: owned by Klaviyo.
+        ["snippets/klaviyo-onsite.liquid", MD5.klaviyo, 9, AT_SEC, "Klaviyo"],
+      ],
+      appBlocks: [{ handle: "judgeme", block: "judgeme_core", file: "config/settings_data.json" }],
+    });
+
+    const out = fetchAndScan(results);
+    expect(out.isPublishedTheme).toBe(true);
+    expect(out.manifestFileCount).toBe(5);
+    expect(out.manifestBytes).toBe(Buffer.byteLength(JSON.stringify(input.entries), "utf8"));
+  });
+
+  it("owner by filename pattern wins (PageFly section), and unknown files have no owner", async () => {
+    serveTheme([
+      { filename: "sections/pagefly-hero.liquid", md5: MD5.header, size: 1, content: "x" },
+      { filename: "sections/custom-banner.liquid", md5: MD5.layout, size: 1, content: "x" },
+      { filename: "assets/ecom-main.js", md5: MD5.png, size: 1, content: "x" },
+    ]);
+
+    await runCapturing();
+
+    const owners = (mockUpsertScanManifest.mock.calls[0][1].entries as unknown[][]).map((e) => [
+      e[0],
+      e[4],
+    ]);
+    expect(owners).toEqual([
+      ["assets/ecom-main.js", "EComposer"],
+      ["sections/custom-banner.liquid", null],
+      ["sections/pagefly-hero.liquid", "PageFly"],
+    ]);
+  });
+
+  it("stores hashes and metadata only, never file content", async () => {
+    await runCapturing();
+
+    const written = JSON.stringify(mockUpsertScanManifest.mock.calls[0]);
+    for (const n of THEME_NODES) {
+      if (n.content && n.content.length > 8) expect(written).not.toContain(n.content);
+    }
+    expect(written).not.toContain("klaviyo.js");
+    expect(written).not.toContain("<html>");
+  });
+
+  it("only scalars cross the step boundary, never the manifest", async () => {
+    const { results } = await runCapturing();
+    const out = JSON.stringify(fetchAndScan(results));
+    expect(out).not.toContain(MD5.klaviyo);
+    expect(out).not.toContain("snippets/klaviyo-onsite.liquid");
+  });
+
+  it("an unpublished theme still gets a manifest, flagged not published", async () => {
+    publishTheme("gid://shopify/Theme/999");
+
+    const { results } = await runCapturing();
+
+    expect(mockUpsertScanManifest).toHaveBeenCalledTimes(1);
+    expect(fetchAndScan(results).isPublishedTheme).toBe(false);
+  });
+
+  it("no published theme at all: not published", async () => {
+    publishTheme(null);
+    const { results } = await runCapturing();
+    expect(fetchAndScan(results).isPublishedTheme).toBe(false);
+  });
+
+  it("the published-theme read fails twice: unknown (null), manifest still persisted, scan completes", async () => {
+    MOCK_ADMIN.graphql.mockRejectedValue(new Error("admin down"));
+
+    const { results, result } = await runCapturing();
+
+    expect(fetchAndScan(results).isPublishedTheme).toBeNull();
+    expect(mockUpsertScanManifest).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("exactly one published-theme read per scan (shared with the advisory gate)", async () => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    await runCapturing();
+    const reads = MOCK_ADMIN.graphql.mock.calls.filter(([q]) => String(q).includes("roles: MAIN"));
+    expect(reads).toHaveLength(1);
+  });
+
+  it("a step retry upserts the same scan's row again (idempotent), with the same content", async () => {
+    // Inngest re-runs fetch-and-scan wholesale when a later write in it fails.
+    mockCreateScanDomains.mockRejectedValueOnce(new Error("transient")).mockResolvedValue({});
+    const step = {
+      ...createMockInngestStep(),
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        if (name !== "fetch-and-scan") return fn();
+        try {
+          return await fn();
+        } catch {
+          return fn();
+        }
+      }),
+    };
+
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    // The first attempt failed before the manifest write; the retry wrote it.
+    expect(mockUpsertScanManifest).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+
+    mockUpsertScanManifest.mockClear();
+    const first = await runCapturing();
+    const second = await runCapturing();
+    expect(first.results["fetch-and-scan"]).toEqual(second.results["fetch-and-scan"]);
+    const [a, b] = mockUpsertScanManifest.mock.calls;
+    expect(a[0]).toBe(b[0]);
+    expect(a[1]).toEqual(b[1]);
+  });
+
+  it("a persist failure never fails the scan, and the scan's results are exactly as without the manifest", async () => {
+    const ok = await runCapturing();
+    const okFinalize = mockFinalizeScan.mock.calls[0];
+    const okSaved = mockSaveThemeFindings.mock.calls[0];
+    const okOutput = { ...fetchAndScan(ok.results) };
+
+    vi.clearAllMocks();
+    serveTheme();
+    publishTheme(THEME_ID);
+    mockUpsertScanManifest.mockRejectedValue(new Error("relation does not exist"));
+    const warn = vi.spyOn(logger, "warn");
+
+    const failed = await runCapturing();
+
+    expect(failed.result).toEqual(ok.result);
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeScan.mock.calls[0]).toEqual(okFinalize);
+    expect(mockSaveThemeFindings.mock.calls[0]).toEqual(okSaved);
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED", expect.anything());
+    const out = fetchAndScan(failed.results);
+    expect(out.manifestFileCount).toBeNull();
+    expect(out.manifestBytes).toBeNull();
+    // Every other key of the step output is unchanged.
+    expect({ ...out, manifestFileCount: 0, manifestBytes: 0 }).toEqual({
+      ...okOutput,
+      manifestFileCount: 0,
+      manifestBytes: 0,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "scan manifest not persisted; scan continues",
+      expect.objectContaining({
+        event: "manifest_persist_failed",
+        shopId: SHOP_ID,
+        scanId: SCAN_ID,
+        error: "relation does not exist",
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it("a manifest build failure (bad metadata) is contained the same way", async () => {
+    mockFetchThemeFiles.mockImplementation(
+      async (_a: unknown, _t: string, _d: string, opts?: { onFileMeta?: (m: unknown) => void }) => {
+        // A metadata object the builder cannot read.
+        opts?.onFileMeta?.(null);
+        return MOCK_FILES;
+      },
+    );
+
+    const { results, result } = await runCapturing();
+
+    expect(mockUpsertScanManifest).not.toHaveBeenCalled();
+    expect(fetchAndScan(results).manifestFileCount).toBeNull();
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
   });
 });
