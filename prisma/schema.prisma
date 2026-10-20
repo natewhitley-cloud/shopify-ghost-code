@@ -221,6 +221,13 @@ model Shop {
   // merchant can try again (still once per 24h via speedReportRequestedAt).
   // Null = never used. Timestamp only, no personal data; deleted with the Shop row.
   freeSpeedTestUsedAt          DateTime?
+  // "What changed" teaser's upgrade ask (gc-rrh.4): the locked change-log page
+  // shown to Free. Once per merchant via claimShopStamp, like speedTeaser*.
+  // Converted = any upgrade by a merchant who saw it. Timestamps only, no
+  // personal data; deleted with the Shop row on shop/redact.
+  changesTeaserShownAt         DateTime?
+  changesTeaserClickedAt       DateTime?
+  changesTeaserConvertedAt     DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
@@ -249,6 +256,9 @@ model MerchantAlert {
   cleanedAppCount  Int      @default(0)
   recipient      String
   sentAt         DateTime @default(now())
+  // gc-rrh.4 / gc-qafb: which email this row records, "summary" or
+  // "all_clear". Every row written before the column existed is a summary.
+  kind           String   @default("summary")
 
   @@index([shopId, sentAt])
   // One summary per scan (gc-ol95): an Inngest retry can never record twice.
@@ -474,10 +484,70 @@ model Scan {
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]
+  // "What changed" (gc-rrh.4). Optional 1:1 children, so no existing include
+  // loads them.
+  manifest          ScanManifest?
+  changeSet         ScanChangeSet?
 
   @@index([shopId, createdAt])
   @@index([status, startedAt])
   @@index([status, createdAt])
+}
+
+// Per-scan theme file manifest (gc-rrh.4). Hashes and metadata only, never
+// file content. Written inside fetch-and-scan (files are in memory only
+// there). Only the newest MANIFEST_KEEP_PER_THEME manifests per (shop, theme)
+// are kept: a manifest is needed only as the next scan's baseline; history
+// lives in ScanChangeSet. Holds no personal data; cascades Shop -> Scan -> here.
+model ScanManifest {
+  scanId    String   @id
+  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  // Denormalised for prune queries (plain id; the cascade is via Scan).
+  shopId    String
+  themeId   String
+  // Entry encoding version (MANIFEST_VERSION in app/lib/theme-manifest.ts).
+  version   Int      @default(1)
+  fileCount Int
+  // Sorted by path. Each entry is a tuple:
+  // [path, md5 | null, size | null, updatedAtEpochSec | null, ownerApp | null]
+  entries   Json
+  // Phase-2 input captured now: app blocks referenced by JSON templates,
+  // section groups and settings_data, [{ handle, block, file }].
+  appBlocks Json?
+  createdAt DateTime @default(now())
+
+  @@index([shopId, themeId, createdAt])
+}
+
+// What changed at one check, computed once at scan time (gc-rrh.4). Typed
+// rows, no copy: copy is rendered at read time so wording can change without
+// a data migration. Filenames, app names and hostnames only, never code. Kept
+// as long as the Scan (scans are not pruned); cascades Shop -> Scan -> here.
+model ScanChangeSet {
+  scanId           String   @id
+  scan             Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  shopId           String
+  themeId          String
+  // Plain id, no FK (baseline manifests are pruned).
+  baselineScanId   String?
+  // "baseline" (no comparable manifest) | "compared" | "theme_switch"
+  kind             String
+  // "weekly" | "monthly" | "publish" | "manual", from Scan.origin + plan
+  checkKind        String
+  onPublishedTheme Boolean
+  // Denormalised from themeInfo for the page and email.
+  themeName        String?
+  themeVersion     String?
+  changeCount      Int      @default(0)
+  worthALookCount  Int      @default(0)
+  checksRan        Int      @default(0)
+  counts           Json
+  rows             Json
+  footnotes        Json
+  version          Int      @default(1)
+  createdAt        DateTime @default(now())
+
+  @@index([shopId, onPublishedTheme, createdAt])
 }
 
 // ---------------------------------------------------------------------------

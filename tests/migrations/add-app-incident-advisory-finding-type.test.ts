@@ -39,11 +39,13 @@ describe("add_app_incident_advisory_finding_type migration (gc-14x5)", () => {
     expect(SCHEMA).toMatch(/enum FindingType \{[^}]*?\n\s+APP_INCIDENT_ADVISORY\n\}/);
   });
 
-  it("is the latest migration (applied last on deploy), right after theme health", () => {
+  it("sorts right after theme health and before the change log", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations"))
       .filter((d) => /^\d{14}_/.test(d))
       .sort();
-    expect(dirs.at(-1)).toBe(NAME);
-    expect(dirs.at(-2)).toBe("20261018120000_add_theme_health");
+    const self = dirs.indexOf(NAME);
+    expect(self).toBeGreaterThan(0);
+    expect(dirs[self - 1]).toBe("20261018120000_add_theme_health");
+    expect(dirs[self + 1]).toBe("20261020120000_add_change_log");
   });
 });

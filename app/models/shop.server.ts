@@ -689,6 +689,8 @@ export async function updateThemePublishTimestamp(
  * Cascade map (all have onDelete: Cascade on their Shop or Scan FK):
  *   Shop → Scans → Findings
  *   Shop → Scans → UnknownScripts → SignatureSubmissions
+ *   Shop → Scans → ScanManifest, ScanChangeSet (gc-rrh.4: file hashes, paths,
+ *                  app names and hostnames; no personal data, no own clause)
  *   Shop → BillingEvents
  *   Shop → IgnoredFinding
  *   Shop → MerchantFeedback (also deleted explicitly below: personal data)
