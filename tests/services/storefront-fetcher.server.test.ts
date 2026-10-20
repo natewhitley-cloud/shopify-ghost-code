@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { logger } from "../../app/lib/logger.server";
 import { extractRenderedLiquidErrors } from "../../app/services/liquid-error-detector.server";
+import { findMaliciousInHomepage } from "../../app/services/runtime-malicious.server";
 import {
   createGuardedLookup,
   fetchStorefrontScriptTags,
@@ -44,6 +45,13 @@ vi.mock("../../app/services/liquid-error-detector.server", async (importOriginal
 });
 
 const mockExtract = extractRenderedLiquidErrors as ReturnType<typeof vi.fn>;
+
+vi.mock("../../app/services/runtime-malicious.server", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../app/services/runtime-malicious.server")>();
+  return { ...real, findMaliciousInHomepage: vi.fn(real.findMaliciousInHomepage) };
+});
+
+const mockFindMalicious = findMaliciousInHomepage as ReturnType<typeof vi.fn>;
 
 const SHOP_ID = "shop-1";
 const PRIMARY = "pawnaturals.com";
@@ -964,5 +972,105 @@ describe("createGuardedLookup", () => {
     ).toBe("ERR_BLOCKED_ADDRESS");
     const dnsErr = Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
     expect((await call(createGuardedLookup(resolver(dnsErr)), false)).err).toBe(dnsErr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime malicious check on the same page (gc-0htk)
+// ---------------------------------------------------------------------------
+
+describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0htk)", () => {
+  let fetchImpl: ReturnType<typeof vi.fn>;
+  const run = () =>
+    fetchStorefrontScriptTags(makeAdmin(), {
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      fetchImpl: fetchImpl as unknown as StorefrontFetch,
+    });
+  const BAD_PAGE = page(
+    `${asyncLoadWith('["https:\\/\\/cdn.checkout-guard.top\\/s.js"]')}<script src="https://www.biliing.top/x.js"></script>`,
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    fetchImpl = vi.fn().mockImplementation(async () => html(BAD_PAGE));
+  });
+
+  afterEach(() => {
+    delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  it.each([[undefined], ["false"], ["1"]])(
+    "RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED=%j: no matching, no maliciousHits key, log unchanged",
+    async (value) => {
+      if (value !== undefined) process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = value;
+      const result = await run();
+      expect(result).toEqual({
+        status: "ok",
+        host: PRIMARY,
+        urls: ["https://cdn.checkout-guard.top/s.js"],
+        liquidErrors: [],
+      });
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        "storefront script tags read",
+        expect.not.objectContaining({ maliciousDomainHits: expect.anything() }),
+      );
+    },
+  );
+
+  it("flag on: hits from the SAME single request (script tag and script src)", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    const result = await run();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "ok",
+      maliciousHits: [
+        { domain: "biliing.top", host: "www.biliing.top", source: "script" },
+        { domain: "checkout-guard.top", host: "cdn.checkout-guard.top", source: "script_tag" },
+      ],
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      "storefront script tags read",
+      expect.objectContaining({ maliciousDomainHits: 2 }),
+    );
+  });
+
+  it("flag on + a clean page: checked, none ([])", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    fetchImpl.mockImplementation(async () => html(page(REAL_BLOCK)));
+    expect(await run()).toMatchObject({ status: "ok", maliciousHits: [] });
+  });
+
+  it("flag on + the matcher throws: null (not checked), the rest of the read unaffected", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockFindMalicious.mockImplementationOnce(() => {
+      throw new TypeError("boom");
+    });
+    const result = await run();
+    expect(result).toEqual({
+      status: "ok",
+      host: PRIMARY,
+      urls: ["https://cdn.checkout-guard.top/s.js"],
+      liquidErrors: [],
+      maliciousHits: null,
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "storefront malicious domain read failed",
+      expect.objectContaining({ event: "storefront_malicious_failed", errorName: "TypeError" }),
+    );
+  });
+
+  it("flag on + a password page: unreachable, nothing matched", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    fetchImpl.mockImplementation(async () =>
+      html(
+        `<body class="template-password"><script src="https://biliing.top/x.js"></script></body>`,
+      ),
+    );
+    expect(await run()).toEqual({ status: "unreachable", reason: "password" });
+    expect(mockFindMalicious).not.toHaveBeenCalled();
   });
 });

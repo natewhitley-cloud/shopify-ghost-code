@@ -20,10 +20,12 @@ import {
   type AppIncidentAdvisory,
 } from "../data/app-incident-advisories.server";
 import {
+  homepageMaliciousDescription,
   KNOWN_MALICIOUS_DOMAINS,
   maliciousDescription,
   type MaliciousDomain,
 } from "../data/malicious-domains.server";
+import { isHomepageMaliciousFinding } from "../lib/finding-classification";
 import { isAdvisoryEmbedFinding } from "../lib/finding-remediation";
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
@@ -92,12 +94,20 @@ function advisoryRisk(
   };
 }
 
-/** The list entry whose description a stored malicious finding carries, or null. */
+/**
+ * The list entry whose description a stored malicious finding carries, or
+ * null: the theme wording, or the homepage wording (gc-0htk).
+ */
 function maliciousEntryForFinding(
   description: string,
   domains: ReadonlyArray<MaliciousDomain>,
 ): MaliciousDomain | null {
-  return domains.find((d) => maliciousDescription(d) === description) ?? null;
+  return (
+    domains.find(
+      (d) =>
+        maliciousDescription(d) === description || homepageMaliciousDescription(d) === description,
+    ) ?? null
+  );
 }
 
 function maliciousRisks(
@@ -110,8 +120,11 @@ function maliciousRisks(
   const byKey = new Map<string, MaliciousRisk>();
   for (const f of sorted) {
     const entry = maliciousEntryForFinding(f.description, domains);
+    // gc-0htk: one banner per domain AND source, so a homepage hit never
+    // reads as a theme reference (or the other way round).
+    const seenIn = isHomepageMaliciousFinding(f) ? "homepage" : "theme";
     // An unknown description (entry removed or reworded) groups by itself.
-    const key = entry ? `domain:${entry.domain}` : `description:${f.description}`;
+    const key = `${seenIn}:${entry ? `domain:${entry.domain}` : `description:${f.description}`}`;
     const location = { id: f.id, filename: f.filename, lineNumber: f.lineNumber };
     const existing = byKey.get(key);
     if (existing) {
@@ -120,9 +133,11 @@ function maliciousRisks(
     }
     byKey.set(key, {
       kind: "malicious",
+      seenIn,
       domain: entry?.domain ?? null,
       note: entry?.note ?? null,
-      advice: entry?.advice ?? null,
+      // An entry's advice assumes a theme reference to remove.
+      advice: seenIn === "theme" ? (entry?.advice ?? null) : null,
       findings: [location],
       description: f.description,
     });

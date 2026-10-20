@@ -35,6 +35,7 @@ import type { FindingType, Severity } from "@prisma/client";
 import { adminResourceLocatorLabel } from "./admin-resource-url";
 import {
   isAdminResourceFinding,
+  isHomepageMaliciousFinding,
   isOwnSectionFindingType,
   isStorefrontFinding,
 } from "./finding-classification";
@@ -213,6 +214,7 @@ export function findingLocation(
     return adminResourceLocatorLabel(finding.findingType, finding.filename);
   }
   if (finding.findingType === "LIQUID_ERROR_RENDERED") return "Your storefront homepage";
+  if (isHomepageMaliciousFinding(finding)) return "Your live homepage (not in your theme files)";
   if (isStorefrontFinding(finding.findingType)) {
     return "Your storefront's script tags";
   }
@@ -256,9 +258,14 @@ export function topFindingHref(
 }
 
 /** The row's title and link text, only for a type whose card copy overrides them. */
-function startHereOverrides(findingType: FindingType): Pick<TopFindingView, "title" | "linkLabel"> {
-  const copy = getFindingCardCopy(findingType);
-  return copy.title === null ? {} : { title: copy.title, linkLabel: copy.startHereLinkLabel };
+function startHereOverrides(
+  finding: Pick<TopFindingSource, "findingType" | "filename">,
+): Pick<TopFindingView, "title" | "linkLabel"> {
+  const copy = getFindingCardCopy(finding.findingType, finding.filename);
+  if (copy.title !== null) return { title: copy.title, linkLabel: copy.startHereLinkLabel };
+  // gc-0htk: homepage malicious code keeps the type title, but its link says
+  // "See what to check" (its card has no removal steps).
+  return isHomepageMaliciousFinding(finding) ? { linkLabel: copy.startHereLinkLabel } : {};
 }
 
 /**
@@ -286,7 +293,7 @@ export function toTopFindingViews(
 ): TopFindingView[] {
   return findings.map((f) => {
     const advisory = f.findingType === "APP_INCIDENT_ADVISORY" ? advisoryCopy[f.id] : undefined;
-    const overrides = startHereOverrides(f.findingType);
+    const overrides = startHereOverrides(f);
     return {
       ...overrides,
       ...(advisory ? { title: advisoryStartHereTitle(advisory.appName) } : {}),

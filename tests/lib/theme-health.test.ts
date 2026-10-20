@@ -1611,3 +1611,14 @@ describe("theme health groups and verdict with the advisory check (gc-q5z8)", ()
     expect(built).toEqual(buildThemeHealthChecklist(input()));
   });
 });
+
+describe("malicious row wording when code was seen on the live homepage (gc-0htk)", () => {
+  it("does not say it is in the theme; the theme-only wording is unchanged", () => {
+    expect(maliciousHealthRow("scan-1", 1, true)?.detail).toBe(
+      "1 piece of code from a known malicious source was found in your theme or on your live homepage. It can steal shopper data or send your customers to other sites.",
+    );
+    expect(maliciousHealthRow("scan-1", 2)?.detail).toBe(
+      "2 pieces of code from a known malicious source are in your theme. It can steal shopper data or send your customers to other sites.",
+    );
+  });
+});

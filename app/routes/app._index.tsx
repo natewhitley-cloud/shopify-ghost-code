@@ -681,7 +681,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // is built from that count alone, outside loadThemeHealth, so it shows even
   // when the checklist fails or has no rows. Same on every plan.
   const maliciousHealth: HealthRow | null =
-    hasResults && latestSuccessful ? maliciousHealthRow(latestSuccessful.id, maliciousCount) : null;
+    hasResults && latestSuccessful
+      ? maliciousHealthRow(
+          latestSuccessful.id,
+          maliciousCount,
+          // gc-0htk: code seen on the live homepage is not "in your theme".
+          securityRisks.some((r) => r.kind === "malicious" && r.seenIn === "homepage"),
+        )
+      : null;
   let themeHealth: HealthRow[] = [];
   if (hasResults && latestSuccessful && latestTypeCounts) {
     const themesForHealth: ThemeSummary[] | null = shouldFetchThemes

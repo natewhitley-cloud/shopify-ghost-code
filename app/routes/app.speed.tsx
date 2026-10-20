@@ -23,8 +23,11 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
+import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
 import { buildPricingPlansUrl } from "../lib/billing.server";
+import { RUNTIME_MALICIOUS_STEPS } from "../lib/finding-remediation";
 import { PLANS } from "../lib/plans";
+import { securityRiskAnchorId, type MaliciousRisk } from "../lib/security-risk";
 import {
   appCostHeadline,
   costliestAppLine,
@@ -77,7 +80,7 @@ import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
-import { readSpeedPageReport } from "../services/speed-page-data.server";
+import { readSpeedPageReport, readSpeedSecurityRisks } from "../services/speed-page-data.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { requestFreeSpeedTest, requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -103,23 +106,33 @@ import {
 
 type UpgradeAsk = { pricingPlansUrl: string; trialEligible: boolean };
 
-export type SpeedLoaderData =
-  | ({ access: "locked" } & UpgradeAsk)
-  | ({
-      access: "free";
-      freeTest: FreeSpeedTestView;
-      /** When the free test can next be tried (24h slot); null = now. */
-      runAvailableAt: string | null;
-    } & UpgradeAsk)
-  | ({
-      access: "report";
-      cadence: "weekly" | "monthly";
-      /** Run speed test now is on the plan (Professional only, gc-d0ui). */
-      runNow: boolean;
-      runNowAvailableAt: string | null;
-      /** Monthly cadence only: when the next monthly test runs. */
-      nextMonthlyAt: string | null;
-    } & SpeedReportView);
+/**
+ * gc-0htk: known malicious domains the latest speed test requested, on EVERY
+ * plan (never paywalled, see readSpeedSecurityRisks), with that test's date.
+ * Present only when there is one, so the loader's data is unchanged while the
+ * runtime check is off or finds nothing.
+ */
+type SpeedSecurityRisks = { securityRisks?: MaliciousRisk[]; securityRisksTestedAt?: string };
+
+export type SpeedLoaderData = SpeedSecurityRisks &
+  (
+    | ({ access: "locked" } & UpgradeAsk)
+    | ({
+        access: "free";
+        freeTest: FreeSpeedTestView;
+        /** When the free test can next be tried (24h slot); null = now. */
+        runAvailableAt: string | null;
+      } & UpgradeAsk)
+    | ({
+        access: "report";
+        cadence: "weekly" | "monthly";
+        /** Run speed test now is on the plan (Professional only, gc-d0ui). */
+        runNow: boolean;
+        runNowAvailableAt: string | null;
+        /** Monthly cadence only: when the next monthly test runs. */
+        nextMonthlyAt: string | null;
+      } & SpeedReportView)
+  );
 
 export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoaderData> => {
   const { session } = await authenticate.admin(request);
@@ -133,9 +146,17 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   // test view (ONLY FREE_TEST reports), a plan with neither reads no report
   // data at all. No upgrade ask on the full view.
   const now = new Date();
-  const report = await readSpeedPageReport(shop, now);
+  const [report, speedRisks] = await Promise.all([
+    readSpeedPageReport(shop, now),
+    readSpeedSecurityRisks(shop.id, now),
+  ]);
+  const security: SpeedSecurityRisks =
+    speedRisks.testedAt && speedRisks.risks.length > 0
+      ? { securityRisks: speedRisks.risks, securityRisksTestedAt: speedRisks.testedAt }
+      : {};
   if (report.access === "report") {
     return {
+      ...security,
       access: "report",
       ...report.view,
       cadence: report.cadence,
@@ -159,8 +180,9 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
     trialEligible: await getTrialEligibility(shop),
   };
-  if (report.access === "locked") return { access: "locked", ...ask };
+  if (report.access === "locked") return { ...security, access: "locked", ...ask };
   return {
+    ...security,
     access: "free",
     freeTest: report.freeTest,
     runAvailableAt: runNowAvailableAt(report.requestedAt, now)?.toISOString() ?? null,
@@ -680,6 +702,26 @@ export default function StoreSpeed() {
             gap: 16px;
           }
         `}</style>
+        {/* Security risk (gc-0htk): known malicious code the latest speed
+            test requested, at the top on EVERY plan, with what to check. */}
+        {data.securityRisksTestedAt &&
+          data.securityRisks?.map((risk) => (
+            <SecurityRiskBanner
+              key={securityRiskAnchorId(risk)}
+              risk={risk}
+              scanDate={data.securityRisksTestedAt!}
+              anchor
+            >
+              <div style={{ fontSize: "14px", lineHeight: "21px" }}>
+                <strong>What to check</strong>
+                <ol style={{ margin: "4px 0 0", paddingLeft: "20px" }}>
+                  {RUNTIME_MALICIOUS_STEPS.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            </SecurityRiskBanner>
+          ))}
         {data.access === "locked" ? (
           <LockedTeaser pricingPlansUrl={data.pricingPlansUrl} trialEligible={data.trialEligible} />
         ) : data.access === "free" ? (

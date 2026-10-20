@@ -12,6 +12,10 @@ import { FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
 import {
+  HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+  HOMEPAGE_MALICIOUS_FILENAME,
+} from "../../app/lib/finding-classification";
+import {
   fingerprintFinding,
   normalizeForFingerprint,
   diffScans,
@@ -1275,7 +1279,9 @@ describe("diffScans — capped walk windows (gc-747u)", () => {
         scan({ products: truncatedAt(500, 500), redirects: fullWalk(1000) }),
         scan(null),
       );
-      expect(opts.notNewCategories).toEqual([]);
+      // No walk type: only the homepage malicious source, which a scan that
+      // never matched its homepage did not cover (gc-0htk).
+      expect(opts.notNewCategories).toEqual([HOMEPAGE_MALICIOUS_COVERAGE_KEY]);
       const diff = diffScans([tagFor(10), tagFor(20)], [tagFor(10)], opts);
       expect(diff.newFindings).toHaveLength(1);
     });
@@ -1299,7 +1305,100 @@ describe("diffScans — capped walk windows (gc-747u)", () => {
       const opts = scanDiffOptions(scan(null), scan(null));
       expect(opts.currentWalks).toBeNull();
       expect(opts.baselineWalks).toBeNull();
-      expect(opts.notNewCategories).toEqual([]);
+      expect(opts.notNewCategories).toEqual([HOMEPAGE_MALICIOUS_COVERAGE_KEY]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Known malicious code seen on the served homepage (gc-0htk): coverage by source
+// ---------------------------------------------------------------------------
+
+describe("homepage malicious findings: coverage by source (gc-0htk)", () => {
+  const ALL = Object.values(FindingType) as string[];
+  const coverage = (homepageChecked: boolean, over: Record<string, unknown> = {}) => ({
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    skippedFiles: [] as string[],
+    liveFindingTypes: (homepageChecked
+      ? [...ALL, HOMEPAGE_MALICIOUS_COVERAGE_KEY]
+      : ALL) as unknown,
+    ...over,
+  });
+  // Unreachable storefront: the storefront types are unreachable and the
+  // homepage check recorded no coverage (exactly what the worker writes).
+  const unreachable = () =>
+    coverage(false, { unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"] });
+  const homepage = (domain = "biliing.top") =>
+    makeFinding(
+      HOMEPAGE_MALICIOUS_FILENAME,
+      "MALICIOUS_SCRIPT",
+      `${domain}\nLoaded by a script tag an app added: www.${domain}`,
+      { lineNumber: 0 },
+    );
+  const theme = (domain = "biliing.top") =>
+    makeFinding("layout/theme.liquid", "MALICIOUS_SCRIPT", `<script src="https://${domain}/x.js">`);
+
+  it("checked on both scans: a homepage hit diffs normally (new, then fixed)", () => {
+    expect(
+      diffScans([homepage()], [], scanDiffOptions(coverage(true), coverage(true))).newFindings,
+    ).toHaveLength(1);
+    expect(
+      diffScans([], [homepage()], scanDiffOptions(coverage(true), coverage(true))).resolvedFindings,
+    ).toHaveLength(1);
+  });
+
+  it("the source line is not the identity: a hit seen another way is unchanged", () => {
+    const other = {
+      ...homepage(),
+      codeSnippet: "biliing.top\nNamed in JavaScript in the page: biliing.top",
+    };
+    const diff = diffScans([other], [homepage()], scanDiffOptions(coverage(true), coverage(true)));
+    expect(diff).toMatchObject({ newFindings: [], resolvedFindings: [], unchangedCount: 1 });
+  });
+
+  it("storefront unreachable NOW: the prior homepage hit is never 'fixed'", () => {
+    const diff = diffScans([], [homepage()], scanDiffOptions(unreachable(), coverage(true)));
+    expect(diff.resolvedFindings).toEqual([]);
+  });
+
+  it("storefront unreachable in the BASELINE: a homepage hit is never 'new'", () => {
+    const diff = diffScans([homepage()], [], scanDiffOptions(coverage(true), unreachable()));
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("A checked -> B unreachable -> C checked: nothing new or fixed at any step", () => {
+    const bVsA = diffScans([], [homepage()], scanDiffOptions(unreachable(), coverage(true)));
+    const cVsB = diffScans([homepage()], [], scanDiffOptions(coverage(true), unreachable()));
+    expect([bVsA, cVsB].flatMap((d) => [...d.newFindings, ...d.resolvedFindings])).toEqual([]);
+  });
+
+  it("check turned off (flag) or a legacy baseline: never new, never fixed", () => {
+    const legacy = { ...coverage(false), liveFindingTypes: null };
+    expect(
+      diffScans([homepage()], [], scanDiffOptions(coverage(true), legacy)).newFindings,
+    ).toEqual([]);
+    expect(
+      diffScans([], [homepage()], scanDiffOptions(coverage(false), coverage(true)))
+        .resolvedFindings,
+    ).toEqual([]);
+  });
+
+  it("theme-file MALICIOUS_SCRIPT is unaffected by the homepage coverage", () => {
+    // Homepage unchecked on both sides; the theme finding still diffs.
+    expect(
+      diffScans([theme()], [], scanDiffOptions(unreachable(), unreachable())).newFindings,
+    ).toHaveLength(1);
+    expect(
+      diffScans([], [theme()], scanDiffOptions(unreachable(), unreachable())).resolvedFindings,
+    ).toHaveLength(1);
+  });
+
+  it("the homepage key never touches other storefront types (LIQUID_ERROR_RENDERED at the same filename)", () => {
+    const liquid = makeFinding(HOMEPAGE_MALICIOUS_FILENAME, "LIQUID_ERROR_RENDERED", "liquid:x");
+    expect(
+      diffScans([liquid], [], scanDiffOptions(coverage(false), coverage(false))).newFindings,
+    ).toHaveLength(1);
   });
 });

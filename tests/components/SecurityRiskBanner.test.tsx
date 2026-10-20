@@ -16,6 +16,7 @@ import {
   type AppIncidentAdvisory,
 } from "../../app/data/app-incident-advisories.server";
 import {
+  homepageMaliciousDescription,
   KNOWN_MALICIOUS_DOMAINS,
   maliciousDescription,
 } from "../../app/data/malicious-domains.server";
@@ -430,5 +431,76 @@ describe("counts copy", () => {
 
   it("homeRiskSummaryLine is null without a security risk", () => {
     expect(homeRiskSummaryLine({ advisories: 0, malicious: 0, leftover: 9 })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Known malicious code seen at runtime (gc-0htk): homepage and speed test
+// ---------------------------------------------------------------------------
+
+describe("SecurityRiskBanner: known malicious code on the served homepage (gc-0htk)", () => {
+  const homepage = (id: string, d = BILIING): Stored => ({
+    id,
+    findingType: "MALICIOUS_SCRIPT",
+    filename: "storefront/homepage",
+    lineNumber: 0,
+    description: homepageMaliciousDescription(d),
+  });
+
+  it("says where it was seen and never points at theme files; separate from a theme hit", () => {
+    const risks = risksOf([], [malFinding("m1", "layout/theme.liquid", 31), homepage("h1")]);
+    expect(risks.map((r) => r.kind === "malicious" && r.seenIn)).toEqual(["theme", "homepage"]);
+    const hp = risks[1];
+    expect(securityRiskTitle(hp)).toBe(
+      "Your live homepage uses biliing.top, a domain linked to malicious code",
+    );
+    const body = securityRiskBody(hp);
+    expect(body).toContain("GhostCode lists biliing.top as a source of malicious code");
+    expect(body).toContain(
+      "GhostCode saw biliing.top on your live homepage, but not in your theme files, so it is most likely added by an app.",
+    );
+    expect(body).toContain("Find what adds it as soon as possible.");
+    expect(body).not.toMatch(/line|theme\.liquid|[–—]/);
+    expect(securityRiskAnchorId(hp)).toBe("security-risk-h1");
+    const html = text(render(hp, { anchor: true }));
+    expect(html).toContain("Found in your");
+    expect(html).toContain("scan · shown on every plan");
+    // The theme banner keeps its wording.
+    expect(securityRiskTitle(risks[0])).toBe(
+      "Your theme references biliing.top, a domain linked to malicious code",
+    );
+  });
+
+  it("a good-faith entry's advice is dropped for a homepage hit (nothing in the theme to remove)", () => {
+    const [risk] = risksOf([], [homepage("h1", POLYFILL)]);
+    expect(risk.kind === "malicious" && risk.advice).toBeNull();
+    expect(securityRiskBody(risk)).not.toContain("Remove this reference");
+  });
+});
+
+describe("SecurityRiskBanner: known malicious code in the speed test (gc-0htk)", () => {
+  const risk: SecurityRisk = {
+    kind: "malicious",
+    seenIn: "speed_test",
+    speedPages: ["product"],
+    domain: "checkout-guard.top",
+    note: "fake checkout page that collects card details",
+    advice: null,
+    findings: [],
+    description: "checkout-guard.top (fake checkout page that collects card details)",
+  };
+
+  it("names the speed test and the page, and dates it as a speed test", () => {
+    expect(securityRiskTitle(risk)).toBe(
+      "Your store's speed test loaded checkout-guard.top, a domain linked to malicious code",
+    );
+    expect(securityRiskBody(risk)).toContain(
+      "In your latest store speed test, Google's test browser requested checkout-guard.top while loading your product page.",
+    );
+    expect(securityRiskAnchorId(risk)).toBe("security-risk-speed-checkout-guard.top");
+    const html = text(render(risk, { anchor: true }));
+    expect(html).toContain("Seen in your");
+    expect(html).toContain("speed test · shown on every plan");
+    expect(html).not.toContain("scan ·");
   });
 });

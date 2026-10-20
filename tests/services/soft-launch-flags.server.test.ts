@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   isAdvisoryCheckLive,
+  isRuntimeMaliciousCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
   SOFT_LAUNCH_FLAGS,
@@ -131,5 +132,26 @@ describe("soft-launch flags", () => {
     process.env[FLAG] = "true";
     expect(isSoftLaunchLive(FindingType.SCRIPT_TAG_SUNSET)).toBe(true);
     expect(isScriptTagSunsetLive()).toBe(true);
+  });
+});
+
+describe("isRuntimeMaliciousCheckLive (gc-0htk)", () => {
+  afterEach(() => {
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  it("is live only when RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is exactly 'true'", () => {
+    expect(isRuntimeMaliciousCheckLive()).toBe(false);
+    for (const v of ["false", "1", "TRUE", " true", ""]) {
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = v;
+      expect(isRuntimeMaliciousCheckLive(), v).toBe(false);
+    }
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    expect(isRuntimeMaliciousCheckLive()).toBe(true);
+  });
+
+  it("never soft-launches MALICIOUS_SCRIPT itself: the theme detector stays live with the flag off", () => {
+    expect(SOFT_LAUNCH_FLAGS).not.toHaveProperty(FindingType.MALICIOUS_SCRIPT);
+    expect(isSoftLaunchLive(FindingType.MALICIOUS_SCRIPT)).toBe(true);
   });
 });

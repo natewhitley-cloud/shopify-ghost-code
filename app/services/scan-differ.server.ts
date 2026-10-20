@@ -13,6 +13,8 @@ import { FindingType } from "@prisma/client";
 
 import {
   CROSS_FILE_FINDING_TYPES,
+  HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+  isHomepageMaliciousFinding,
   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES,
 } from "../lib/finding-classification";
 import {
@@ -333,6 +335,12 @@ function legacyBaselineWalkGaps(
  *     for a record past the current walk's window is never "resolved", and a
  *     current finding for a record past the baseline's window is never "new"
  *     (a cap raised or lowered by a plan change). See diffScans.
+ *   - known malicious code seen on the served homepage (gc-0htk) by SOURCE:
+ *     MALICIOUS_SCRIPT is always live for theme files, so the homepage check
+ *     has its own coverage key (HOMEPAGE_MALICIOUS_COVERAGE_KEY), listed as
+ *     un-audited for a scan that did not match the homepage (flag off,
+ *     unreadable storefront, unpublished theme, legacy scan). Only homepage
+ *     findings are keyed by it (coverageKeyOf); theme-file ones never are.
  */
 export function scanDiffOptions(
   current: ScanCoverage & { skippedFiles: readonly string[] },
@@ -341,17 +349,38 @@ export function scanDiffOptions(
   const currentWalks = parseWalkCoverage(current.walkCoverage);
   const baselineWalks = parseWalkCoverage(baseline.walkCoverage);
   return {
-    skippedCategories: unauditedCategories(current),
+    skippedCategories: [...unauditedCategories(current), ...homepageMaliciousGap(current)],
     skippedFiles: current.skippedFiles,
     notNewCategories: [
       ...new Set([
         ...unauditedCategories(baseline),
         ...legacyBaselineWalkGaps(currentWalks, baselineWalks),
+        ...homepageMaliciousGap(baseline),
       ]),
     ],
     currentWalks,
     baselineWalks,
   };
+}
+
+/**
+ * `[HOMEPAGE_MALICIOUS_COVERAGE_KEY]` when the scan did not match its served
+ * homepage against the malicious list (gc-0htk), else `[]`. A legacy scan
+ * with no recorded live set never did.
+ */
+function homepageMaliciousGap(scan: ScanCoverage): string[] {
+  return parseLiveFindingTypes(scan.liveFindingTypes)?.has(HOMEPAGE_MALICIOUS_COVERAGE_KEY)
+    ? []
+    : [HOMEPAGE_MALICIOUS_COVERAGE_KEY];
+}
+
+/**
+ * The coverage category a finding belongs to: its type, except known
+ * malicious code seen on the served homepage (gc-0htk), which is covered by
+ * the homepage check's own key (see scanDiffOptions).
+ */
+function coverageKeyOf(f: { filename: string; findingType: string }): string {
+  return isHomepageMaliciousFinding(f) ? HOMEPAGE_MALICIOUS_COVERAGE_KEY : f.findingType;
 }
 
 /**
@@ -459,7 +488,10 @@ export function diffScans(
     hasCatFilter || hasFileFilter || currentWalks !== null
       ? previousFindings.filter(
           (f) =>
-            !(hasCatFilter && skippedCats!.has(f.findingType)) &&
+            !(
+              hasCatFilter &&
+              (skippedCats!.has(f.findingType) || skippedCats!.has(coverageKeyOf(f)))
+            ) &&
             !(
               hasFileFilter &&
               skippedFiles!.has(f.filename) &&
@@ -495,7 +527,11 @@ export function diffScans(
       // Decrement so that duplicate current findings beyond the previous count
       // are treated as new.
       remainingPrevious.set(fp, prevCount - 1);
-    } else if (!notNewCats.has(f.findingType) && walkChecked(f, baselineWalks, currentWalks)) {
+    } else if (
+      !notNewCats.has(f.findingType) &&
+      !notNewCats.has(coverageKeyOf(f)) &&
+      walkChecked(f, baselineWalks, currentWalks)
+    ) {
       // No matching previous finding — this is new.
       newFindings.push({
         filename: f.filename,

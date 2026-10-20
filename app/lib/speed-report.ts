@@ -127,6 +127,12 @@ export type SpeedPageResult = {
   apps?: SpeedCostRow[];
   otherThirdParty?: SpeedCostRow[];
   firstParty?: { mainThreadMs: number; transferBytes: number };
+  /**
+   * Known-malicious list domains the test's browser requested on this page
+   * (gc-0htk), from any OK run. Absent = not checked (the runtime check was
+   * off); [] = checked, none.
+   */
+  maliciousDomains?: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -283,6 +289,11 @@ const PAGE_STATUSES: ReadonlySet<string> = new Set([
   "NEEDS_PRODUCT_ACCESS",
 ]);
 
+/** A stored list domain: a bare lower-case hostname (gc-0htk). */
+function isStoredDomain(v: unknown): v is string {
+  return typeof v === "string" && /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(v);
+}
+
 /** Parse a SpeedReport.pages Json value; malformed entries are dropped. */
 export function readSpeedPages(value: unknown): SpeedPageResult[] {
   if (!Array.isArray(value)) return [];
@@ -326,6 +337,9 @@ export function readSpeedPages(value: unknown): SpeedPageResult[] {
               transferBytes: isNum(fp.transferBytes) ? fp.transferBytes : 0,
             },
           }
+        : {}),
+      ...(Array.isArray(o.maliciousDomains)
+        ? { maliciousDomains: o.maliciousDomains.filter(isStoredDomain) }
         : {}),
     });
   }

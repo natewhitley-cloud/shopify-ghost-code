@@ -121,15 +121,19 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     // (author reported it to URLhaus and Google Safe Browsing). Spelling is the
     // attacker's (b-i-l-i-i-n-g); `billing.top` is a different domain and must
     // not match. In that incident the payload was fetched at runtime by the
-    // app, not written to the theme, so this entry only catches the domain
-    // when it is pasted into theme code.
+    // app, not written to the theme, so the theme scan only catches the
+    // domain when it is pasted into theme code (the runtime check, gc-0htk,
+    // also matches the served homepage and the speed test's requests, but
+    // that payload only contacts it on a checkout click). The write-up's
+    // 2026-10-19 update: Spamhaus lists biliing.top, checkout-confirm.top and
+    // account-confirm.top.
     domain: "biliing.top",
     note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
   },
   {
     // Listed next to biliing.top in the same attacker payload's redirect
     // config (same source). Named in the config only: the write-up did not
-    // observe a page served from it.
+    // observe a page served from it. Spamhaus-listed as of 2026-10-19.
     domain: "checkout-confirm.top",
     note: "domain set up for a 2026 card-phishing attack on Shopify stores",
   },
@@ -137,6 +141,30 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     // Same payload config as checkout-confirm.top (same source, same limit).
     domain: "order-confirm.top",
     note: "domain set up for a 2026 card-phishing attack on Shopify stores",
+  },
+  {
+    // Added 2026-10-19 (gc-0htk) from the write-up's 2026-10-19 update
+    // (romanzipp.com/blog/shopify-hit-with-phishing-attack): another phishing
+    // host of the same 2026-10 checkout-hijack campaign. Spamhaus-listed as of
+    // 2026-10-19. Not observed serving a page in the write-up.
+    domain: "account-confirm.top",
+    note: "domain set up for a 2026 card-phishing attack on Shopify stores",
+  },
+  {
+    // Added 2026-10-19 (gc-0htk), same source and update as
+    // account-confirm.top: a phishing host of the same campaign. Not
+    // Spamhaus-listed as of 2026-10-19. `billing.top` (correct spelling, no
+    // hyphen) is a different domain and must not match.
+    domain: "billing-confirm.top",
+    note: "domain set up for a 2026 card-phishing attack on Shopify stores",
+  },
+  {
+    // Added 2026-10-19 (gc-0htk): a fake checkout page reported by a merchant
+    // in community.shopify.com/t/700903 (2026-10-19), and named in the same
+    // romanzipp.com write-up as part of the campaign. Merchant report plus
+    // the write-up; no vendor analysis.
+    domain: "checkout-guard.top",
+    note: "fake checkout page that collects card details",
   },
 ];
 
@@ -161,4 +189,15 @@ export function maliciousDescription({ domain, note, advice }: MaliciousDomain):
   return advice
     ? `References ${domain} (${note}). ${advice}`
     : `References known-malicious domain ${domain} (${note}), likely injected code. Your theme may be compromised`;
+}
+
+/**
+ * The description of a MALICIOUS_SCRIPT finding seen on the served homepage
+ * but not in the theme's files (the runtime check, gc-0htk). One wording for
+ * every entry: an entry's `advice` ("Remove this reference") assumes a theme
+ * reference the merchant can delete, which this finding does not have. No
+ * trailing period, like every other finding description.
+ */
+export function homepageMaliciousDescription({ domain, note }: MaliciousDomain): string {
+  return `Your live homepage contains code that uses known-malicious domain ${domain} (${note}). It is not in your theme files, so it is most likely added by an app`;
 }

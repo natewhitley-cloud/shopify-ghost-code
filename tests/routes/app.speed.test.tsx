@@ -1214,3 +1214,120 @@ describe("rendering: free speed test", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Known malicious code seen in the speed test (gc-0htk)
+// ---------------------------------------------------------------------------
+
+describe("Security risk from the speed test (gc-0htk)", () => {
+  const BAD_HOME: SpeedPageResult = { ...HOME_PAGE, maliciousDomains: ["biliing.top"] };
+  const BAD_PRODUCT: SpeedPageResult = {
+    ...HOME_PAGE,
+    page: "product",
+    maliciousDomains: ["biliing.top", "checkout-guard.top"],
+  };
+
+  afterEach(() => {
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  it("flag off: nothing read for it, no key in the loader data, no banner", async () => {
+    mockReports.mockResolvedValue([row("SCHEDULED", "COMPLETED", [BAD_HOME], { id: "r1" })]);
+    const data = await loader(loaderArgs());
+    expect(data).not.toHaveProperty("securityRisks");
+    expect(data).not.toHaveProperty("securityRisksTestedAt");
+    // Only the plan's own read (Professional: all origins), exactly once.
+    expect(mockReports).toHaveBeenCalledTimes(1);
+    expect(render(data)).not.toContain("Security risk");
+  });
+
+  it("Professional: one banner per domain, naming the pages, with what to check", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockReports.mockResolvedValue([
+      row("SCHEDULED", "COMPLETED", [BAD_HOME, BAD_PRODUCT], { id: "r1" }),
+    ]);
+    const data = await loader(loaderArgs());
+    expect(data.securityRisks?.map((r) => [r.domain, r.speedPages])).toEqual([
+      ["biliing.top", ["home", "product"]],
+      ["checkout-guard.top", ["product"]],
+    ]);
+    expect(data.securityRisksTestedAt).toBe("2026-10-11T08:12:00.000Z");
+    const html = render(data);
+    expect(html).toContain(
+      "Your store&#x27;s speed test loaded biliing.top, a domain linked to malicious code",
+    );
+    expect(html).toContain(
+      "Google&#x27;s test browser requested biliing.top while loading your homepage and product page.",
+    );
+    expect(html).toContain("Find what adds it as soon as possible.");
+    expect(html).toContain("Seen in your");
+    expect(html).toContain("speed test");
+    expect(html).toContain("shown on every plan");
+    expect(html).toContain("What to check");
+    expect(html).toContain("review your installed apps");
+    expect(html).toContain('id="security-risk-speed-biliing.top"');
+    // Never sends the merchant to edit theme files for it.
+    expect(html).not.toContain("Open in code editor");
+  });
+
+  it("Free (never paywalled): a downgraded shop's last paid report hit still shows, and nothing else of it", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    const all = [row("SCHEDULED", "COMPLETED", [BAD_HOME], { id: "pro-2" })];
+    mockReports.mockImplementation(async (_id: string, opts?: { origin?: string }) =>
+      opts?.origin ? all.filter((r) => r.origin === opts.origin) : all,
+    );
+    const data = await loader(loaderArgs());
+    expect(data).toMatchObject({ access: "free", freeTest: { state: "available", result: null } });
+    expect(data.securityRisks?.map((r) => r.domain)).toEqual(["biliing.top"]);
+    const json = JSON.stringify(data);
+    expect(json).not.toContain("pro-2");
+    expect(json).not.toContain("Klaviyo");
+    expect(render(data)).toContain("Your store&#x27;s speed test loaded biliing.top");
+  });
+
+  it("a plan with neither report nor free test still gets the banner", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    const actual = await vi.importActual<typeof import("../../app/lib/billing.server")>(
+      "../../app/lib/billing.server",
+    );
+    mockFeatures.mockImplementation((p: string) =>
+      p === "free"
+        ? { ...actual.getPlanFeatures(p), freeSpeedTest: false }
+        : actual.getPlanFeatures(p),
+    );
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockReports.mockResolvedValue([row("FREE_TEST", "COMPLETED", [BAD_HOME])]);
+    const data = await loader(loaderArgs());
+    expect(data.access).toBe("locked");
+    expect(data.securityRisks?.map((r) => r.domain)).toEqual(["biliing.top"]);
+    expect(render(data)).toContain("Security risk");
+  });
+
+  it("the latest report with results is clean: no banner (an older hit is gone)", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockReports.mockResolvedValue([
+      row("SCHEDULED", "COMPLETED", [{ ...HOME_PAGE, maliciousDomains: [] }], {
+        id: "new",
+        createdAt: new Date("2026-10-18T08:00:00.000Z"),
+      }),
+      row("SCHEDULED", "COMPLETED", [BAD_HOME], { id: "old" }),
+    ]);
+    const data = await loader(loaderArgs());
+    expect(data).not.toHaveProperty("securityRisks");
+  });
+
+  it("a failed read shows nothing and never breaks the page", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    let calls = 0;
+    mockReports.mockImplementation(async () => {
+      calls += 1;
+      // The plan's own read succeeds; the security read fails.
+      if (calls === 2) throw new Error("db down");
+      return [];
+    });
+    const data = await loader(loaderArgs());
+    expect(data.access).toBe("report");
+    expect(data).not.toHaveProperty("securityRisks");
+  });
+});
