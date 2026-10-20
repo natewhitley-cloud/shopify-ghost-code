@@ -182,6 +182,25 @@ describe("recordChangeSetForScan", () => {
     expect(saved.rows[0].type).toBe("theme_published");
   });
 
+  it("a theme switch reads no AppRemoval rows: removal detection is per theme and adds nothing (M4)", async () => {
+    m.getLatestPublishedChangeSetBefore.mockResolvedValue({
+      scanId: AFTER_SCAN_ID,
+      themeId: THEME_ID,
+    });
+    m.getLatestManifestForTheme.mockImplementation(async (_s: string, themeId: string) =>
+      themeId === THEME_ID ? stored(SCANS[AFTER_SCAN_ID]) : null,
+    );
+    // Rows that would exist for this theme must not reach a switch.
+    m.getRemovalNoticeRows.mockResolvedValue([PUSHOWL_REMOVED]);
+
+    await run({ scanId: SWITCH_SCAN_ID, themeId: OTHER_THEME_ID });
+
+    expect(m.getRemovalNoticeRows).not.toHaveBeenCalled();
+    const saved = m.upsertScanChangeSet.mock.calls[0][1];
+    expect(saved.kind).toBe("theme_switch");
+    expect(saved.rows.some((r: { type: string }) => r.type === "app_inactive")).toBe(false);
+  });
+
   it("theme switch with no surviving manifest for the old theme: falls back to this theme's own baseline", async () => {
     m.getLatestPublishedChangeSetBefore.mockResolvedValue({
       scanId: "x",

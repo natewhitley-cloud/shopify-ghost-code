@@ -265,6 +265,27 @@ describe("computeChangeSet: theme switch and theme update", () => {
     const set = compute(afterScan({ themeInfo: null }));
     expect(set.rows.some((r) => r.type === "theme_update")).toBe(false);
   });
+
+  it.each([
+    ["the baseline", { current: "15.3.0", before: null }],
+    ["the current scan", { current: null, before: "15.2.0" }],
+  ])(
+    "theme info read but no version on %s: not a theme update, the code edits keep their rows (L2)",
+    (_side, v) => {
+      const info = (version: string | null) => ({
+        name: "Dawn",
+        version,
+        author: "Shopify",
+        architecture: "os2",
+      });
+      const set = compute(
+        afterScan({ themeInfo: info(v.current) }),
+        beforeScan({ themeInfo: info(v.before) }),
+      );
+      expect(set.rows.some((r) => r.type === "theme_update")).toBe(false);
+      expect(keys(set.rows)).toContain("file_edit:sections/header.liquid");
+    },
+  );
 });
 
 describe("computeChangeSet: false-positive guards (A/B)", () => {
@@ -581,7 +602,14 @@ describe("computeChangeSet: security, findings and fixes", () => {
     ]);
     expect(row(set.rows, "file_edit:sections/footer.liquid")).toBeUndefined();
     // The detector-only GHOST_STYLE in the now-changed file attaches to it.
-    expect(row(set.rows, "security:sections/footer.liquid")?.findingCount).toBe(2);
+    expect(row(set.rows, "security:sections/footer.liquid")).toMatchObject({
+      findingCount: 2,
+      securityCount: 1,
+    });
+    // Counted by finding type, not by row (L1): the attached GHOST_STYLE is a
+    // new finding, not a second security issue.
+    expect(set.counts.security).toBe(1);
+    expect(set.counts.findingsNew).toBe(1);
   });
 
   it("a new affected-app advisory is a security row while advisories are shown", () => {

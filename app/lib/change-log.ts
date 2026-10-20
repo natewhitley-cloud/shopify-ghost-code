@@ -69,6 +69,12 @@ export type ChangeRow = {
   leftoverCount?: number;
   /** New findings on this row (attached or its own). */
   findingCount?: number;
+  /**
+   * Of `findingCount`, the new malicious-script and app-incident findings
+   * (security rows). Counted as `security`; the rest of findingCount (a
+   * non-security finding attached to the same file) as `findingsNew`.
+   */
+  securityCount?: number;
   /** Fixed findings on this row (attached or its own). */
   fixedCount?: number;
   findingTypes?: string[];
@@ -150,8 +156,10 @@ export function countRows(rows: readonly ChangeRow[]): ChangeCounts {
     if (row.type === "theme_update" || row.type === "theme_published") counts.themeUpdates += 1;
     if (row.host !== undefined) counts.unknownScripts += 1;
     if (FILE_COUNTING_TYPES.has(row.type)) counts.filesChanged += row.files.length + row.moreFiles;
-    if (row.type === "security") counts.security += row.findingCount ?? 0;
-    else counts.findingsNew += row.findingCount ?? 0;
+    // By finding type, not by row: a security row can also carry a
+    // non-security finding attached to its file.
+    counts.security += row.securityCount ?? 0;
+    counts.findingsNew += (row.findingCount ?? 0) - (row.securityCount ?? 0);
     counts.findingsFixed += row.fixedCount ?? 0;
   }
   return counts;

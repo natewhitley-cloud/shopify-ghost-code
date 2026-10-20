@@ -55,7 +55,13 @@ const files = (prefix: string, n: number, changedAt = 1) =>
 describe("countRows", () => {
   it("adds up each count from its row type", () => {
     const counts = countRows([
-      row({ key: "security:a", type: "security", findingCount: 2, files: [file("a")] }),
+      row({
+        key: "security:a",
+        type: "security",
+        findingCount: 2,
+        securityCount: 2,
+        files: [file("a")],
+      }),
       row({ key: "app_inactive:X", type: "app_inactive", leftoverCount: 3 }),
       row({ key: "app_cleaned:Y", type: "app_cleaned", fixedCount: 1 }),
       row({ key: "app_added:Z", type: "app_added", files: [file("b"), file("c")] }),
@@ -83,6 +89,14 @@ describe("countRows", () => {
       findingsFixed: 6,
       security: 2,
     });
+  });
+
+  it("counts security by finding type: a non-security finding on a security row is a new finding (L1)", () => {
+    const counts = countRows([
+      row({ key: "security:a", type: "security", findingCount: 3, securityCount: 1 }),
+    ]);
+    expect(counts.security).toBe(1);
+    expect(counts.findingsNew).toBe(2);
   });
 
   it("no rows: all zero", () => {

@@ -405,6 +405,7 @@ export function computeChangeSet(input: {
         worthALook: true,
         ...rowFiles(claimed),
         findingCount: found.length,
+        securityCount: found.length,
         findingTypes: [...new Set(found.map((f) => f.findingType))].sort(cmp),
       },
       claimed,
@@ -544,10 +545,15 @@ export function computeChangeSet(input: {
       claimed,
     );
   };
+  // Both versions known and different: a version missing on one side (theme
+  // info not read) is not an update, and must not swallow the code edits
+  // into a theme row.
+  const versionNow = currentInfo?.version ?? null;
+  const versionBefore = baselineInfo?.version ?? null;
   if (kind === "theme_switch") {
     themeRow("theme_published", `theme_published:${current.themeId}`);
-  } else if (currentInfo && baselineInfo && currentInfo.version !== baselineInfo.version) {
-    themeRow("theme_update", `theme_update:${currentInfo.version ?? "unknown"}`);
+  } else if (versionNow !== null && versionBefore !== null && versionNow !== versionBefore) {
+    themeRow("theme_update", `theme_update:${versionNow}`);
   }
 
   // --- 9. file_edit / 10. files_edit_group (not from a known app) -----------
@@ -766,7 +772,9 @@ export async function recordChangeSetForScan(input: {
   if (!baselineRow) kind = "baseline";
 
   const [removals, ignores] = await Promise.all([
-    kind === "baseline" ? [] : getRemovalNoticeRows(shopId, themeId, scanId),
+    // AppRemoval detection is per theme: on a theme switch it adds nothing
+    // (spec 2.2), so removal rows are read only for a same-theme comparison.
+    kind === "compared" ? getRemovalNoticeRows(shopId, themeId, scanId) : [],
     getIgnoredFindingsForShop(shopId),
   ]);
   const computed = computeChangeSet({
