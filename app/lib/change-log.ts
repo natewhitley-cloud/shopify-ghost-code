@@ -174,12 +174,90 @@ function addFootnotes(a: ChangeFootnotes, b: ChangeFootnotes): ChangeFootnotes {
 
 const TYPE_ORDER = new Map<string, number>(CHANGE_ROW_TYPES.map((t, i) => [t, i]));
 
+/**
+ * Row types that stand for a GROUP of things in one check (several
+ * unattributed files, several new findings in a lane, several fixes) under
+ * one fixed key. Merging two checks adds them up; every other key names one
+ * thing (an app, a file, a host), whose latest state wins.
+ */
+const AGGREGATE_TYPES: ReadonlySet<ChangeRowType> = new Set([
+  "files_edit_group",
+  "findings_new",
+  "findings_fixed",
+]);
+
+const sumOptional = (a: number | undefined, b: number | undefined) =>
+  a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+
+/**
+ * Two checks' rows under one aggregate key: files unioned by path (the newer
+ * check's entry wins, so its status and changedAt), listed up to
+ * MAX_FILES_PER_ROW with every unlisted file still counted; finding and fix
+ * counts summed; finding types unioned; worth a look if either was (a new
+ * HIGH finding stays worth a look); "no issues in the new version" only if
+ * neither side had an issue. The newer check's scan link.
+ */
+function mergeAggregateRow(older: ChangeRow, newer: ChangeRow): ChangeRow {
+  const byPath = new Map<string, ChangeFile>();
+  for (const f of [...older.files, ...newer.files]) byPath.set(f.path, f);
+  const files = [...byPath.values()].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+  );
+  const types = [...new Set([...(older.findingTypes ?? []), ...(newer.findingTypes ?? [])])].sort();
+  const noIssues =
+    older.noIssuesInNewVersion === false || newer.noIssuesInNewVersion === false
+      ? false
+      : (newer.noIssuesInNewVersion ?? older.noIssuesInNewVersion);
+  const merged: ChangeRow = {
+    ...older,
+    ...newer,
+    worthALook: older.worthALook || newer.worthALook,
+    files: files.slice(0, MAX_FILES_PER_ROW),
+    moreFiles: Math.max(0, files.length - MAX_FILES_PER_ROW) + older.moreFiles + newer.moreFiles,
+    host: newer.host ?? older.host,
+    scriptFile: newer.host !== undefined ? newer.scriptFile : older.scriptFile,
+    line: newer.host !== undefined ? newer.line : older.line,
+    findingCount: sumOptional(older.findingCount, newer.findingCount),
+    fixedCount: sumOptional(older.fixedCount, newer.fixedCount),
+    findingTypes: types.length > 0 ? types : undefined,
+    noIssuesInNewVersion: noIssues,
+  };
+  // Keep the stored shape: no keys holding undefined.
+  for (const k of Object.keys(merged) as Array<keyof ChangeRow>) {
+    if (merged[k] === undefined) delete merged[k];
+  }
+  return merged;
+}
+
+/** a - b per count, never below 0. */
+function countsOverflow(stored: ChangeCounts, listed: ChangeCounts): ChangeCounts {
+  const out = emptyCounts();
+  for (const k of Object.keys(out) as Array<keyof ChangeCounts>) {
+    out[k] = Math.max(0, (stored[k] ?? 0) - listed[k]);
+  }
+  return out;
+}
+
+function addCounts(a: ChangeCounts, b: ChangeCounts): ChangeCounts {
+  const out = emptyCounts();
+  for (const k of Object.keys(out) as Array<keyof ChangeCounts>) out[k] = a[k] + b[k];
+  return out;
+}
+
 /** One check's stored change set, as `mergeChangeSets` reads it. */
 export type MergeableChangeSet = {
   kind: ChangeSetKind;
   createdAt: Date | string;
   rows: readonly ChangeRow[];
   footnotes: ChangeFootnotes;
+  /**
+   * The stored totals over EVERY row of the check, including rows beyond the
+   * MAX_CHANGE_ROWS cap that were not stored; the merge adds what the stored
+   * rows do not show, so a capped check still adds up.
+   */
+  counts: ChangeCounts;
+  changeCount: number;
+  worthALookCount: number;
 };
 
 export type MergedChangeSets = {
@@ -194,10 +272,14 @@ export type MergedChangeSets = {
 
 /**
  * Merge several checks into one view (Standard's month groups, the email's
- * period). Rows dedupe by `key`; the latest check's row wins (its state, its
- * worth-a-look flag, its scan link). Order: claim order by type, then first
- * appearance. Footnotes add up. Counts are recomputed from the merged rows,
- * so a file edited in two checks is one change. Input order does not matter:
+ * period). Rows dedupe by `key`: a key that names one thing (an app, a file,
+ * a host) takes the latest check's row (its state, its worth-a-look flag, its
+ * scan link); an aggregate key (files_edit_group, findings_new:<lane>,
+ * findings_fixed) adds both checks up (mergeAggregateRow). Order: claim order
+ * by type, then first appearance. Footnotes add up. Counts come from the
+ * merged rows, so a file edited in two checks is one change, plus each
+ * check's rows beyond the stored cap (from its stored totals), so a single
+ * check reports exactly its stored numbers. Input order does not matter:
  * checks are applied oldest first by `createdAt`.
  */
 export function mergeChangeSets(sets: readonly MergeableChangeSet[]): MergedChangeSets {
@@ -206,10 +288,22 @@ export function mergeChangeSets(sets: readonly MergeableChangeSet[]): MergedChan
     .sort((a, b) => a.at - b.at || a.index - b.index);
   const byKey = new Map<string, ChangeRow>();
   let footnotes = emptyFootnotes();
+  let overflow = emptyCounts();
+  let changeOverflow = 0;
+  let worthOverflow = 0;
   for (const { set } of ordered) {
     footnotes = addFootnotes(footnotes, set.footnotes);
     if (set.kind === "baseline") continue;
-    for (const row of set.rows) byKey.set(row.key, row);
+    for (const row of set.rows) {
+      const seen = byKey.get(row.key);
+      byKey.set(
+        row.key,
+        seen && AGGREGATE_TYPES.has(row.type) ? mergeAggregateRow(seen, row) : row,
+      );
+    }
+    overflow = addCounts(overflow, countsOverflow(set.counts, countRows(set.rows)));
+    changeOverflow += Math.max(0, set.changeCount - set.rows.length);
+    worthOverflow += Math.max(0, set.worthALookCount - set.rows.filter((r) => r.worthALook).length);
   }
   const firstSeen = [...byKey.keys()];
   const rows = [...byKey.values()].sort(
@@ -219,10 +313,10 @@ export function mergeChangeSets(sets: readonly MergeableChangeSet[]): MergedChan
   );
   return {
     rows,
-    counts: countRows(rows),
+    counts: addCounts(countRows(rows), overflow),
     footnotes,
-    changeCount: rows.length,
-    worthALookCount: rows.filter((r) => r.worthALook).length,
+    changeCount: rows.length + changeOverflow,
+    worthALookCount: rows.filter((r) => r.worthALook).length + worthOverflow,
     checks: sets.length,
   };
 }

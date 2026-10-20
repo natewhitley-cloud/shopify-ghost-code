@@ -32,8 +32,25 @@ function set(
   rows: ChangeRow[],
   over: Partial<MergeableChangeSet> = {},
 ): MergeableChangeSet {
-  return { kind: "compared", createdAt, rows, footnotes: emptyFootnotes(), ...over };
+  // Stored totals default to what the rows add up to (an uncapped check).
+  return {
+    kind: "compared",
+    createdAt,
+    rows,
+    footnotes: emptyFootnotes(),
+    counts: countRows(rows),
+    changeCount: rows.length,
+    worthALookCount: rows.filter((r) => r.worthALook).length,
+    ...over,
+  };
 }
+
+const files = (prefix: string, n: number, changedAt = 1) =>
+  Array.from({ length: n }, (_, i) => ({
+    path: `${prefix}${String(i).padStart(2, "0")}.liquid`,
+    status: "changed" as const,
+    changedAt,
+  }));
 
 describe("countRows", () => {
   it("adds up each count from its row type", () => {
@@ -181,6 +198,221 @@ describe("mergeChangeSets", () => {
       ]),
     ]);
     expect(merged.rows.map((r) => r.type)).toEqual(["security", "findings_fixed"]);
+  });
+
+  describe("aggregate rows add up across checks (M3)", () => {
+    it("files_edit_group unions files and findings_new sums counts (5 files + 7 new, then 4 + 1)", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("sections/a", 5),
+            scanId: "w1",
+          }),
+          row({
+            key: "findings_new:speed",
+            type: "findings_new",
+            lane: "speed",
+            findingCount: 7,
+            findingTypes: ["RENDER_BLOCKING_SCRIPT"],
+          }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("snippets/b", 4, 2),
+            scanId: "w2",
+          }),
+          row({
+            key: "findings_new:speed",
+            type: "findings_new",
+            lane: "speed",
+            findingCount: 1,
+            findingTypes: ["UNUSED_APP_CODE"],
+          }),
+        ]),
+      ]);
+      const group = merged.rows.find((r) => r.key === "files_edit_group")!;
+      expect(group.files.length + group.moreFiles).toBe(9);
+      expect(group.files).toHaveLength(9);
+      expect(group.scanId).toBe("w2");
+      const fresh = merged.rows.find((r) => r.key === "findings_new:speed")!;
+      expect(fresh.findingCount).toBe(8);
+      expect(fresh.findingTypes).toEqual(["RENDER_BLOCKING_SCRIPT", "UNUSED_APP_CODE"]);
+      expect(merged.counts.filesChanged).toBe(9);
+      expect(merged.counts.findingsNew).toBe(8);
+      expect(merged.changeCount).toBe(2);
+    });
+
+    it("a file in both checks' groups is one file, with the newer check's status and changedAt", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: [
+              { path: "a.liquid", status: "added", changedAt: 1 },
+              { path: "b.liquid", status: "changed", changedAt: 1 },
+            ],
+          }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: [
+              { path: "b.liquid", status: "changed", changedAt: 9 },
+              { path: "c.liquid", status: "removed", changedAt: null },
+            ],
+          }),
+        ]),
+      ]);
+      expect(merged.rows[0].files).toEqual([
+        { path: "a.liquid", status: "added", changedAt: 1 },
+        { path: "b.liquid", status: "changed", changedAt: 9 },
+        { path: "c.liquid", status: "removed", changedAt: null },
+      ]);
+      expect(merged.counts.filesChanged).toBe(3);
+    });
+
+    it("the union is listed up to 10 files; the rest, and each check's unlisted files, are counted", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("a", 10),
+            moreFiles: 3,
+          }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("b", 4),
+            moreFiles: 0,
+          }),
+        ]),
+      ]);
+      const group = merged.rows[0];
+      expect(group.files).toHaveLength(10);
+      expect(group.moreFiles).toBe(4 + 3);
+      expect(merged.counts.filesChanged).toBe(17);
+    });
+
+    it("findings_fixed sums fixes across checks", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({ key: "findings_fixed", type: "findings_fixed", fixedCount: 3 }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({ key: "findings_fixed", type: "findings_fixed", fixedCount: 2 }),
+        ]),
+      ]);
+      expect(merged.rows[0].fixedCount).toBe(5);
+      expect(merged.counts.findingsFixed).toBe(5);
+    });
+
+    it("worth a look if either check's row was (a new HIGH finding is never dropped by a quiet later check)", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({
+            key: "findings_new:privacy",
+            type: "findings_new",
+            findingCount: 1,
+            worthALook: true,
+          }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({ key: "findings_new:privacy", type: "findings_new", findingCount: 1 }),
+        ]),
+      ]);
+      expect(merged.rows[0].worthALook).toBe(true);
+      expect(merged.worthALookCount).toBe(1);
+    });
+
+    it("no issues in the new version only if neither check's group had one", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("a", 4),
+            noIssuesInNewVersion: false,
+          }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({
+            key: "files_edit_group",
+            type: "files_edit_group",
+            files: files("b", 4),
+            noIssuesInNewVersion: true,
+          }),
+        ]),
+      ]);
+      expect(merged.rows[0].noIssuesInNewVersion).toBe(false);
+    });
+
+    it("a single-thing key still takes the latest row (not summed)", () => {
+      const merged = mergeChangeSets([
+        set("2026-10-05T00:00:00Z", [
+          row({ key: "file_edit:a", type: "file_edit", findingCount: 2, files: [file("a")] }),
+        ]),
+        set("2026-10-12T00:00:00Z", [
+          row({ key: "file_edit:a", type: "file_edit", findingCount: 1, files: [file("a")] }),
+        ]),
+      ]);
+      expect(merged.rows[0].findingCount).toBe(1);
+      expect(merged.counts.findingsNew).toBe(1);
+    });
+  });
+
+  describe("stored totals beyond the 50-row cap (L5)", () => {
+    const capped = (createdAt: string, scanId: string) =>
+      set(
+        createdAt,
+        [row({ key: `file_edit:${scanId}`, type: "file_edit", files: [file(scanId)] })],
+        {
+          // 60 rows computed, 1 stored: 59 more file edits and 1 more fix.
+          counts: { ...emptyCounts(), filesChanged: 60, findingsFixed: 1 },
+          changeCount: 61,
+          worthALookCount: 0,
+        },
+      );
+
+    it("a single check reports exactly its stored counts and changeCount", () => {
+      const merged = mergeChangeSets([capped("2026-10-05T00:00:00Z", "w1")]);
+      expect(merged.counts).toEqual({ ...emptyCounts(), filesChanged: 60, findingsFixed: 1 });
+      expect(merged.changeCount).toBe(61);
+      expect(merged.rows).toHaveLength(1);
+    });
+
+    it("merged checks add each check's unstored overflow to the merged rows' counts", () => {
+      const merged = mergeChangeSets([
+        capped("2026-10-05T00:00:00Z", "w1"),
+        capped("2026-10-12T00:00:00Z", "w2"),
+      ]);
+      expect(merged.counts.filesChanged).toBe(2 + 59 * 2);
+      expect(merged.counts.findingsFixed).toBe(2);
+      expect(merged.changeCount).toBe(2 + 60 * 2);
+    });
+
+    it("worth-a-look rows beyond the cap still count", () => {
+      const merged = mergeChangeSets([
+        set(
+          "2026-10-05T00:00:00Z",
+          [row({ key: "security:a", type: "security", worthALook: true })],
+          {
+            worthALookCount: 3,
+            changeCount: 3,
+          },
+        ),
+      ]);
+      expect(merged.worthALookCount).toBe(3);
+      expect(merged.changeCount).toBe(3);
+    });
   });
 
   it("no checks: an empty merge", () => {
