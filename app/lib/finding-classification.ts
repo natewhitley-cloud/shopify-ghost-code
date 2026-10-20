@@ -444,6 +444,40 @@ export const THEME_FILE_TYPE_SETS = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// Known malicious code seen on the served homepage (gc-0htk)
+// ---------------------------------------------------------------------------
+
+/**
+ * The synthetic filename of a MALICIOUS_SCRIPT finding read from the served
+ * public homepage rather than from a theme file (the runtime malicious check,
+ * gc-0htk). Same locator as LIQUID_ERROR_RENDERED: the homepage. The type is
+ * still MALICIOUS_SCRIPT, so every never-paywalled and "shown regardless of
+ * ignores" rule applies unchanged; the filename is what tells the copy, the
+ * links and the differ's coverage that it was not seen in a theme file.
+ */
+export const HOMEPAGE_MALICIOUS_FILENAME = "storefront/homepage";
+
+/**
+ * The coverage key of the homepage check in `Scan.liveFindingTypes` (gc-0htk).
+ * MALICIOUS_SCRIPT is always live (the theme-file detector), so the homepage
+ * source needs its own marker: present only when the scan actually matched
+ * the served homepage (flag on, published theme, storefront read). The differ
+ * treats homepage findings as un-audited on a scan without it, so an
+ * unreadable storefront or a dark flag never makes one "new" or "fixed".
+ */
+export const HOMEPAGE_MALICIOUS_COVERAGE_KEY = "MALICIOUS_SCRIPT:homepage";
+
+/** True for known malicious code seen on the served homepage (not in a theme file). */
+export function isHomepageMaliciousFinding(finding: {
+  findingType: string;
+  filename: string;
+}): boolean {
+  return (
+    finding.findingType === "MALICIOUS_SCRIPT" && finding.filename === HOMEPAGE_MALICIOUS_FILENAME
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Never-paywalled finding types (gc-14x5)
 // ---------------------------------------------------------------------------
 

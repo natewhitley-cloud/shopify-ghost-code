@@ -389,3 +389,40 @@ describe("summarizeLighthouse: Lighthouse 13 third-parties-insight", () => {
     expect(klaviyo.mainThreadMs).toBe(4010);
   });
 });
+
+describe("summarizeLighthouse: known-malicious requests (gc-0htk)", () => {
+  function withRequests(urls: string[]) {
+    const lhr = buildLighthouseResult();
+    const audits = lhr.audits as Record<string, { details: { items: unknown[] } }>;
+    audits["network-requests"].details.items.push(
+      ...urls.map((url) => ({ url, transferSize: 100, resourceType: "Script" })),
+    );
+    return lhr;
+  }
+
+  it("not asked (runtime check off): no maliciousDomains field at all", () => {
+    const s = summarizeLighthouse(withRequests(["https://www.biliing.top/x.js"]), STORE_HOSTS)!;
+    expect(s).not.toHaveProperty("maliciousDomains");
+  });
+
+  it("asked: every listed domain among network-requests, subdomains included, lookalikes not", () => {
+    const s = summarizeLighthouse(
+      withRequests([
+        "https://www.biliing.top/check-out/",
+        "https://cdn.checkout-guard.top/a.js",
+        "https://billing.top/x.js",
+        "https://checkout-guard.com/x.js",
+      ]),
+      STORE_HOSTS,
+      { matchMalicious: true },
+    )!;
+    expect(s.maliciousDomains).toEqual(["biliing.top", "checkout-guard.top"]);
+  });
+
+  it("asked, clean run: [] (checked, none)", () => {
+    expect(
+      summarizeLighthouse(buildLighthouseResult(), STORE_HOSTS, { matchMalicious: true })!
+        .maliciousDomains,
+    ).toEqual([]);
+  });
+});

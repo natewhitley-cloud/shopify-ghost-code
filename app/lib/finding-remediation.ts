@@ -26,7 +26,11 @@
  */
 
 import { adminResourceLocatorLabel } from "./admin-resource-url";
-import { isAdminResourceFinding, isStorefrontFinding } from "./finding-classification";
+import {
+  isAdminResourceFinding,
+  isHomepageMaliciousFinding,
+  isStorefrontFinding,
+} from "./finding-classification";
 
 interface Remediation {
   /**
@@ -85,6 +89,29 @@ export function isAdvisoryEmbedFinding(finding: {
     finding.filename === "config/settings_data.json"
   );
 }
+
+/**
+ * What to check for known malicious code seen at RUNTIME, not in a theme file
+ * (gc-0htk): on the served homepage, or in the store speed test's requests.
+ * The ONE source, like the advisory steps: the homepage finding's card and the
+ * speed page's banner render it as a list, the copy action and exports as the
+ * numbered how-to. It never says to search or edit theme files: GhostCode did
+ * not find the code there (a speed-test hit can be in the theme too, which
+ * the theme scan reports on its own).
+ */
+export const RUNTIME_MALICIOUS_STEPS: readonly string[] = [
+  "In Settings, Apps and sales channels, review your installed apps. Uninstall any you do not recognize or no longer use.",
+  "In Online Store, Themes, Customize, open App embeds and turn off any embed from an app you do not recognize.",
+  "Run a new GhostCode scan to see whether the domain is gone. If it is still there, contact Shopify Support and the developers of your recently installed apps, and name the domain.",
+  "Check staff accounts and collaborator access, and change your admin passwords.",
+];
+
+/** Known malicious code seen on the served homepage (see isHomepageMaliciousFinding). */
+const HOMEPAGE_MALICIOUS_REMEDIATION: Remediation = {
+  impact:
+    "Your live homepage uses a domain known or credibly reported to serve malicious code, but GhostCode did not find it in your theme files. Code like this is usually added by an app (a script tag or an app embed) and can steal shopper data or send customers to fake checkout pages.",
+  howTo: numberedSteps(RUNTIME_MALICIOUS_STEPS),
+};
 
 /** The advisory remediation for the embed signal (see isAdvisoryEmbedFinding). */
 const ADVISORY_EMBED_REMEDIATION: Remediation = {
@@ -325,11 +352,15 @@ export function getFindingRemediation(findingType: string, filename = ""): strin
   return remediationFor(findingType, filename)?.howTo ?? DEFAULT_REMEDIATION;
 }
 
-/** The type's remediation, or the advisory's embed variant (see isAdvisoryEmbedFinding). */
+/**
+ * The type's remediation, or a source variant: the advisory's embed match
+ * (isAdvisoryEmbedFinding) or malicious code seen on the served homepage
+ * (isHomepageMaliciousFinding, gc-0htk).
+ */
 function remediationFor(findingType: string, filename: string): Remediation | undefined {
-  return isAdvisoryEmbedFinding({ findingType, filename })
-    ? ADVISORY_EMBED_REMEDIATION
-    : REMEDIATION[findingType];
+  if (isAdvisoryEmbedFinding({ findingType, filename })) return ADVISORY_EMBED_REMEDIATION;
+  if (isHomepageMaliciousFinding({ findingType, filename })) return HOMEPAGE_MALICIOUS_REMEDIATION;
+  return REMEDIATION[findingType];
 }
 
 /**
@@ -427,12 +458,31 @@ const ADVISORY_EMBED_CARD_COPY: FindingCardCopy = {
 };
 
 /**
+ * Known malicious code seen on the served homepage (gc-0htk): not in a theme
+ * file, so its steps are "what to check" (find the app that adds it), there is
+ * no code editor link to lead with, and the snippet is shown whole.
+ */
+const HOMEPAGE_MALICIOUS_CARD_COPY: FindingCardCopy = {
+  ...CARD_COPY_OVERRIDES.MALICIOUS_SCRIPT,
+  confidence: "Seen on your live homepage, not in your theme files.",
+  stepsHeading: "What to check",
+  steps: RUNTIME_MALICIOUS_STEPS,
+  copyStepsLabel: "Copy steps",
+  copyStepsAccessibilityLabel: "Copy steps for this finding",
+  primaryEditorButton: false,
+  truncateSnippet: false,
+  startHereLinkLabel: "See what to check",
+};
+
+/**
  * The finding card's presentation for a type: the defaults for every type but
  * the overrides above. Pass the finding's filename so an advisory matched by
- * its app embed gets its own variant (see isAdvisoryEmbedFinding).
+ * its app embed, and malicious code seen on the served homepage, get their
+ * own variants (see isAdvisoryEmbedFinding, isHomepageMaliciousFinding).
  */
 export function getFindingCardCopy(findingType: string, filename = ""): FindingCardCopy {
   if (isAdvisoryEmbedFinding({ findingType, filename })) return ADVISORY_EMBED_CARD_COPY;
+  if (isHomepageMaliciousFinding({ findingType, filename })) return HOMEPAGE_MALICIOUS_CARD_COPY;
   return CARD_COPY_OVERRIDES[findingType] ?? DEFAULT_CARD_COPY;
 }
 
@@ -615,6 +665,13 @@ export function buildRemovalInstructions(
     // Admin resources are edited in the Shopify Admin, not deleted as theme code:
     // show a human location label and lean on howTo (no line/snippet block).
     lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
+  } else if (isHomepageMaliciousFinding(finding)) {
+    // Seen on the served homepage, not in a theme file (gc-0htk): no file to
+    // open. The snippet's first line is the listed domain, the second how the
+    // page used it.
+    lines.push("Location: your live storefront homepage (not in your theme files)");
+    const snippet = finding.codeSnippet.trim();
+    if (snippet.length > 0) lines.push("Seen as:", snippet);
   } else if (finding.findingType === "LIQUID_ERROR_RENDERED") {
     // Read from the public homepage (gc-i6du). The stored snippet's first line
     // is an internal identity; the error as Liquid prints it follows, and

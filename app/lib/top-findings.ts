@@ -35,6 +35,7 @@ import type { FindingType, Severity } from "@prisma/client";
 import { adminResourceLocatorLabel } from "./admin-resource-url";
 import {
   isAdminResourceFinding,
+  isHomepageMaliciousFinding,
   isOwnSectionFindingType,
   isStorefrontFinding,
 } from "./finding-classification";
@@ -213,6 +214,7 @@ export function findingLocation(
     return adminResourceLocatorLabel(finding.findingType, finding.filename);
   }
   if (finding.findingType === "LIQUID_ERROR_RENDERED") return "Your storefront homepage";
+  if (isHomepageMaliciousFinding(finding)) return "Your live homepage (not in your theme files)";
   if (isStorefrontFinding(finding.findingType)) {
     return "Your storefront's script tags";
   }

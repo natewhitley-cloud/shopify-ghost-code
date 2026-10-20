@@ -3706,6 +3706,29 @@ describe("FindingRow — list item that cannot overflow", () => {
     ).not.toContain('id="finding-');
   });
 
+  it("known malicious code seen on the served homepage has no code editor link and shows what to check (gc-0htk)", () => {
+    const homepage = {
+      ...FINDING_ONE,
+      findingType: "MALICIOUS_SCRIPT",
+      filename: "storefront/homepage",
+      lineNumber: 0,
+      severity: "HIGH",
+      codeSnippet: "biliing.top\nLoaded by a script tag an app added: www.biliing.top",
+    };
+    const html = renderFindingItem(homepage, PAID);
+    expect(html).not.toContain("Open in code editor");
+    expect(html).not.toContain("themes/123456789");
+    expect(html).toContain("What to check");
+    expect(html).toContain("Seen on your live homepage, not in your theme files.");
+    expect(html).not.toContain(", line ");
+    // A theme-file malicious finding keeps its editor link.
+    const theme = renderFindingItem(
+      { ...homepage, filename: "layout/theme.liquid", lineNumber: 4 },
+      PAID,
+    );
+    expect(theme).toContain("Open in code editor");
+  });
+
   it("links a theme-file finding to the theme code editor, top-level, and only with a shop domain", () => {
     const html = renderFindingItem(FINDING_ONE, PAID);
     // A real primary Polaris button; `href` (not `url`) is the link attribute.

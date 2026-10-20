@@ -190,3 +190,14 @@ export function maliciousDescription({ domain, note, advice }: MaliciousDomain):
     ? `References ${domain} (${note}). ${advice}`
     : `References known-malicious domain ${domain} (${note}), likely injected code. Your theme may be compromised`;
 }
+
+/**
+ * The description of a MALICIOUS_SCRIPT finding seen on the served homepage
+ * but not in the theme's files (the runtime check, gc-0htk). One wording for
+ * every entry: an entry's `advice` ("Remove this reference") assumes a theme
+ * reference the merchant can delete, which this finding does not have. No
+ * trailing period, like every other finding description.
+ */
+export function homepageMaliciousDescription({ domain, note }: MaliciousDomain): string {
+  return `Your live homepage contains code that uses known-malicious domain ${domain} (${note}). It is not in your theme files, so it is most likely added by an app`;
+}

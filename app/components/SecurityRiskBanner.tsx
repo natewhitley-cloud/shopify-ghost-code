@@ -8,6 +8,7 @@ import {
   SEE_WHAT_TO_CHECK,
   securityRiskAnchorId,
   securityRiskBody,
+  securityRiskDateWords,
   securityRiskSourceLabel,
   securityRiskTitle,
   type SecurityRisk,
@@ -106,7 +107,7 @@ export function SecurityRiskBanner({
   footer,
 }: {
   risk: SecurityRisk;
-  /** When the scan that found it ran. */
+  /** When the scan (or, for a speed-test hit, the speed test) that found it ran. */
   scanDate: Date | string;
   /** Home: where "See what to check" goes. Omitted on the scan page. */
   checkHref?: string;
@@ -120,6 +121,7 @@ export function SecurityRiskBanner({
   const headingId = `${id}-title`;
   const sourceLabel = securityRiskSourceLabel(risk);
   const sourceUrl = risk.kind === "advisory" ? risk.sourceUrl : null;
+  const dateWords = securityRiskDateWords(risk);
   return (
     <section id={anchor ? id : undefined} aria-labelledby={headingId} style={card}>
       <div style={bar}>
@@ -154,7 +156,8 @@ export function SecurityRiskBanner({
           </div>
         )}
         <div style={{ ...textSubduedSm, overflowWrap: "anywhere" }}>
-          Found in your <FormattedDate value={scanDate} /> scan · {SECURITY_RISK_PLAN_NOTE}
+          {dateWords.before} <FormattedDate value={scanDate} /> {dateWords.after} ·{" "}
+          {SECURITY_RISK_PLAN_NOTE}
         </div>
         {footer}
       </div>

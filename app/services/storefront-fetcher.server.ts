@@ -3,7 +3,9 @@
  * missing-snippet Liquid errors printed on that same page
  * (LIQUID_ERROR_RENDERED, gc-i6du): same single request, same flag, no extra
  * call. The homepage HTML never leaves this module: only the ScriptTag URLs
- * and the parsed error parts (template, line, snippet name) are returned.
+ * and the parsed error parts (template, line, snippet name) are returned, plus,
+ * while RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is on, the known-malicious
+ * domains the page uses (gc-0htk: listed domain, matched host and where).
  *
  * The ONLY place the scanner reads a shop's public storefront, and it is DARK:
  * while SCRIPT_TAG_SUNSET_LIVE_ENABLED is not "true" it returns `disabled`
@@ -57,7 +59,8 @@ import {
   extractRenderedLiquidErrors,
   type RenderedLiquidError,
 } from "./liquid-error-detector.server";
-import { isScriptTagSunsetLive } from "./soft-launch-flags.server";
+import { findMaliciousInHomepage, type HomepageMaliciousHit } from "./runtime-malicious.server";
+import { isRuntimeMaliciousCheckLive, isScriptTagSunsetLive } from "./soft-launch-flags.server";
 import { logger } from "../lib/logger.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -93,7 +96,18 @@ export type StorefrontScriptTagResult =
    * text). They are CANDIDATES until the theme confirms them
    * (detectLiquidErrors). null = that read failed and was not checked.
    */
-  | { status: "ok"; host: string; urls: string[]; liquidErrors: RenderedLiquidError[] | null }
+  | {
+      status: "ok";
+      host: string;
+      urls: string[];
+      liquidErrors: RenderedLiquidError[] | null;
+      /**
+       * Known-malicious domains the page uses (gc-0htk). Absent while
+       * RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is off (nothing was matched);
+       * null = the match failed and was not checked; [] = checked, none.
+       */
+      maliciousHits?: HomepageMaliciousHit[] | null;
+    }
   | { status: "unreachable"; reason: StorefrontUnreachableReason };
 
 // ---------------------------------------------------------------------------
@@ -762,6 +776,24 @@ export async function fetchStorefrontScriptTags(
     });
   }
 
+  // Same page again (gc-0htk), only while the runtime check is live, and
+  // isolated the same way: a failure here never affects the other checks.
+  let maliciousHits: HomepageMaliciousHit[] | null | undefined;
+  if (isRuntimeMaliciousCheckLive()) {
+    try {
+      maliciousHits = findMaliciousInHomepage(html, urls);
+    } catch (err) {
+      maliciousHits = null;
+      logger.warn("storefront malicious domain read failed", {
+        function: "storefront-fetcher",
+        event: "storefront_malicious_failed",
+        shopId,
+        host: domains.primaryHost,
+        errorName: err instanceof Error ? err.name : typeof err,
+      });
+    }
+  }
+
   logger.info("storefront script tags read", {
     function: "storefront-fetcher",
     event: "storefront_read",
@@ -770,6 +802,16 @@ export async function fetchStorefrontScriptTags(
     scriptTagCount: urls.length,
     // Candidates only (not yet confirmed against the theme); -1 = not checked.
     liquidErrorCandidates: liquidErrors === null ? -1 : liquidErrors.length,
+    // Only while the runtime check is live; -1 = not checked (failed).
+    ...(maliciousHits !== undefined
+      ? { maliciousDomainHits: maliciousHits === null ? -1 : maliciousHits.length }
+      : {}),
   });
-  return { status: "ok", host: domains.primaryHost, urls, liquidErrors };
+  return {
+    status: "ok",
+    host: domains.primaryHost,
+    urls,
+    liquidErrors,
+    ...(maliciousHits !== undefined ? { maliciousHits } : {}),
+  };
 }

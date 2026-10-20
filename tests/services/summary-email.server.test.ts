@@ -557,6 +557,44 @@ describe("computeFindingChanges", () => {
     expect(run()).toEqual({ ok: true, newCount: 1, fixedCount: 1, openCount: 2 });
   });
 
+  it("a homepage malicious hit across an unreadable storefront is neither new nor fixed (gc-0htk)", () => {
+    const hp = {
+      ...f("storefront/homepage", FindingType.MALICIOUS_SCRIPT, ""),
+      appName: null,
+      lineNumber: 0,
+      codeSnippet: "biliing.top\nLoaded by a script tag an app added: biliing.top",
+    } as unknown as ReturnType<typeof f>;
+    const checked = [...ALL, "MALICIOUS_SCRIPT:homepage"];
+    const unreadable = { ...NO_GAPS, unreachableCategories: ["SCRIPT_TAG_SUNSET"] };
+    // Baseline could not read the homepage: today's hit is not "new".
+    expect(
+      run({
+        currentFindings: [hp],
+        currentCoverage: { ...NO_GAPS, skippedFiles: [], liveFindingTypes: checked },
+        currentLiveFindingTypes: checked,
+        baseline: { ...unreadable, findings: [], liveFindingTypes: ALL },
+      }),
+    ).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 1 });
+    // Today could not read it: the baseline's hit is not "fixed".
+    expect(
+      run({
+        currentFindings: [],
+        currentCoverage: { ...unreadable, skippedFiles: [], liveFindingTypes: ALL },
+        currentLiveFindingTypes: ALL,
+        baseline: { ...NO_GAPS, findings: [hp], liveFindingTypes: checked },
+      }),
+    ).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 0 });
+    // Both read it: a new hit is new (security code is emailed like before).
+    expect(
+      run({
+        currentFindings: [hp],
+        currentCoverage: { ...NO_GAPS, skippedFiles: [], liveFindingTypes: checked },
+        currentLiveFindingTypes: checked,
+        baseline: { ...NO_GAPS, findings: [], liveFindingTypes: checked },
+      }),
+    ).toEqual({ ok: true, newCount: 1, fixedCount: 0, openCount: 1 });
+  });
+
   it("identical scans: zero new, zero fixed", () => {
     expect(
       run({

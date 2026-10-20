@@ -74,6 +74,7 @@ vi.mock("../../app/lib/finding-sort", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { HOMEPAGE_MALICIOUS_COVERAGE_KEY } from "../../app/lib/finding-classification";
 import { canUseScanDiffing } from "../../app/lib/plan-gating.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
@@ -202,6 +203,8 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
+// gc-0htk: these fixtures record no homepage malicious check, so its
+// coverage key is un-audited on both sides (homepage findings only).
 describe("app.scans.$scanId.diff loader", () => {
   // -------------------------------------------------------------------------
   // Happy path
@@ -214,9 +217,9 @@ describe("app.scans.$scanId.diff loader", () => {
 
     expect(result.scanDiff).toEqual(DIFF_RESULT);
     expect(mockDiffScans).toHaveBeenCalledWith([CURRENT_FINDING], PREVIOUS_SCAN.findings, {
-      skippedCategories: [],
+      skippedCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: [],
+      notNewCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -245,9 +248,9 @@ describe("app.scans.$scanId.diff loader", () => {
     await loader(makeLoaderArgs("scan-1"));
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
-      skippedCategories: ["GHOST_TAG"],
+      skippedCategories: ["GHOST_TAG", HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: [],
+      notNewCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -266,9 +269,9 @@ describe("app.scans.$scanId.diff loader", () => {
     await loader(makeLoaderArgs("scan-1"));
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
-      skippedCategories: ["GHOST_TAG", "DANGLING_REFERENCE"],
+      skippedCategories: ["GHOST_TAG", "DANGLING_REFERENCE", HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: [],
+      notNewCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -284,9 +287,9 @@ describe("app.scans.$scanId.diff loader", () => {
     await loader(makeLoaderArgs("scan-1"));
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
-      skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
+      skippedCategories: ["JSON_LD_PRICE_CONFLICT", HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: [],
+      notNewCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -302,9 +305,9 @@ describe("app.scans.$scanId.diff loader", () => {
     await loader(makeLoaderArgs("scan-1"));
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
-      skippedCategories: ["SCRIPT_TAG_SUNSET"],
+      skippedCategories: ["SCRIPT_TAG_SUNSET", HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: [],
+      notNewCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -321,9 +324,9 @@ describe("app.scans.$scanId.diff loader", () => {
     await loader(makeLoaderArgs("scan-1"));
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
-      skippedCategories: [],
+      skippedCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],
-      notNewCategories: ["GHOST_PAGE", "SCRIPT_TAG_SUNSET"],
+      notNewCategories: ["GHOST_PAGE", "SCRIPT_TAG_SUNSET", HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       // Legacy fixtures: no walk coverage recorded (gc-747u).
       currentWalks: null,
       baselineWalks: null,
@@ -339,7 +342,11 @@ describe("app.scans.$scanId.diff loader", () => {
 
     await loader(makeLoaderArgs("scan-1"));
 
-    expect(mockDiffScans.mock.calls[0][2].skippedCategories).toEqual(["SCRIPT_TAG_SUNSET"]);
+    expect(mockDiffScans.mock.calls[0][2].skippedCategories).toEqual([
+      "SCRIPT_TAG_SUNSET",
+      // gc-0htk: no homepage malicious coverage recorded on this scan.
+      HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+    ]);
   });
 
   // -------------------------------------------------------------------------

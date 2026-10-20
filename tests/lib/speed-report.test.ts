@@ -181,6 +181,32 @@ describe("computeSpeedReportStatus", () => {
   });
 });
 
+describe("readSpeedPages: maliciousDomains (gc-0htk)", () => {
+  const base = {
+    page: "home",
+    status: "OK",
+    url: "https://x.example/",
+    runsAttempted: 3,
+    runsOk: 3,
+  };
+
+  it("absent stays absent (not checked)", () => {
+    expect(readSpeedPages([base])[0]).not.toHaveProperty("maliciousDomains");
+  });
+
+  it("keeps bare lower-case domains and drops anything else", () => {
+    expect(
+      readSpeedPages([
+        {
+          ...base,
+          maliciousDomains: ["biliing.top", "BAD.TOP", "https://x.top/", 7, "<b>", "a.b-c.top"],
+        },
+      ])[0].maliciousDomains,
+    ).toEqual(["biliing.top", "a.b-c.top"]);
+    expect(readSpeedPages([{ ...base, maliciousDomains: [] }])[0].maliciousDomains).toEqual([]);
+  });
+});
+
 describe("readSpeedPages", () => {
   it("round-trips a stored page", () => {
     const page = okPage({

@@ -37,6 +37,7 @@
  * Only this summary is kept; the raw multi-MB result is dropped by the caller.
  */
 
+import { maliciousDomainsInUrls } from "./runtime-malicious.server";
 import { identifyAppForExternalUrl, isShopifyDomain } from "./scan-engine.server";
 import { isPasswordPath } from "./storefront-fetcher.server";
 import type { SpeedCostRow, SpeedMetrics } from "../lib/speed-report";
@@ -53,6 +54,11 @@ export type SpeedRunSummary = {
   apps: SpeedCostRow[];
   otherThirdParty: SpeedCostRow[];
   firstParty: { mainThreadMs: number; transferBytes: number };
+  /**
+   * Known-malicious list domains among this run's requested URLs (gc-0htk),
+   * sorted. Present only when the caller asked (RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED).
+   */
+  maliciousDomains?: string[];
 };
 
 type Obj = Record<string, unknown>;
@@ -170,10 +176,13 @@ function byCost(a: SpeedCostRow, b: SpeedCostRow): number {
 /**
  * Summarize one lighthouseResult. Returns null when it is not a usable result
  * (no audits object). `storeHosts`: the shop's primary + myshopify hosts.
+ * `opts.matchMalicious` (gc-0htk): also match every `network-requests` URL
+ * against the known-malicious list (maliciousDomains); off = no such field.
  */
 export function summarizeLighthouse(
   lhr: unknown,
   storeHosts: Iterable<string>,
+  opts: { matchMalicious?: boolean } = {},
 ): SpeedRunSummary | null {
   const root = obj(lhr);
   const audits = obj(root?.audits);
@@ -303,6 +312,9 @@ export function summarizeLighthouse(
       mainThreadMs: Math.round(firstParty.mainThreadMs),
       transferBytes: Math.round(firstParty.transferBytes),
     },
+    ...(opts.matchMalicious
+      ? { maliciousDomains: maliciousDomainsInUrls(networkItems.map((i) => i.url)) }
+      : {}),
   };
 }
 

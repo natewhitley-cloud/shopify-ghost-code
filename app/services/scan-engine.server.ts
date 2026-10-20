@@ -2150,9 +2150,10 @@ export function blankInertComments(content: string, filename: string): string {
  * Every URL host on a line, in order of appearance (repeats included). Decodes
  * encoded slashes first. A protocol-relative `//host` that is a path segment of
  * another URL (see isUrlPathChar) is not a reference. Shared by the
- * MALICIOUS_SCRIPT and APP_INCIDENT_ADVISORY detectors.
+ * MALICIOUS_SCRIPT and APP_INCIDENT_ADVISORY detectors, and by the runtime
+ * malicious check's inline-script read (gc-0htk).
  */
-function urlHostsOnLine(line: string): string[] {
+export function urlHostsOnLine(line: string): string[] {
   const text = line.replace(ENCODED_SLASH_RE, "/");
   const hosts: string[] = [];
   URL_HOST_RE.lastIndex = 0;
@@ -2319,7 +2320,7 @@ function isFilterArgument(text: string, quoteAt: number): boolean {
 }
 
 /** The host a script URL value loads from, or null when it is not an absolute URL. */
-function scriptUrlHost(value: string): string | null {
+export function scriptUrlHost(value: string): string | null {
   const url = value.trim().replace(ENCODED_SLASH_RE, "/");
   return LEADING_URL_HOST_RE.exec(url)?.[1] ?? null;
 }
@@ -2332,25 +2333,44 @@ const COMMENT_OR_OPAQUE_ELEMENT_RE =
 /**
  * One `<script ...>` opening tag starting at `start`: where it ends and its
  * `src` attribute (value and offset), or null when the tag never closes
- * (no `>`, or an attribute quote that is never closed).
- *
- * A small attribute walk, not a regex over the tag, so that `src=` INSIDE
- * another attribute's quoted value is not the tag's src, and a `>` inside a
- * quoted value does not end the tag. The first `src` wins, as in HTML. A
- * quote that never closes leaves no complete tag (a browser reads the value to
- * the end of the file), so the caller hides the rest of the file. Linear.
+ * (no `>`, or an attribute quote that is never closed). See
+ * parseOpenTagAttributes for the attribute walk.
  */
 function parseScriptOpenTag(
   text: string,
   start: number,
 ): { end: number; src: { value: string; offset: number } | null } | null {
+  const tag = parseOpenTagAttributes(text, start, "<script".length, ["src"]);
+  return tag && { end: tag.end, src: tag.attributes.src ?? null };
+}
+
+/**
+ * One opening tag starting at `start` (`tagLength` = the length of its `<name`
+ * prefix): where it ends and the requested attributes (lower-case `names`),
+ * each with its value and offset, or null when the tag never closes (no `>`,
+ * or an attribute quote that is never closed).
+ *
+ * A small attribute walk, not a regex over the tag, so that `src=` INSIDE
+ * another attribute's quoted value is not the tag's src, and a `>` inside a
+ * quoted value does not end the tag. The first occurrence of a name wins, as
+ * in HTML. A quote that never closes leaves no complete tag (a browser reads
+ * the value to the end of the file), so the caller hides the rest of the
+ * file. Linear. Shared with the runtime malicious check (gc-0htk), which
+ * reads `<script>` and `<link>` tags of the served homepage.
+ */
+export function parseOpenTagAttributes(
+  text: string,
+  start: number,
+  tagLength: number,
+  names: readonly string[],
+): { end: number; attributes: Record<string, { value: string; offset: number }> } | null {
   const n = text.length;
-  let src: { value: string; offset: number } | null = null;
-  let i = start + "<script".length;
+  const attributes: Record<string, { value: string; offset: number }> = {};
+  let i = start + tagLength;
   for (;;) {
     while (i < n && (isAsciiSpace(text.charCodeAt(i)) || text.charCodeAt(i) === CC_SLASH)) i++;
     if (i >= n) return null;
-    if (text.charCodeAt(i) === CC_GT) return { end: i + 1, src };
+    if (text.charCodeAt(i) === CC_GT) return { end: i + 1, attributes };
 
     const nameStart = i;
     while (i < n) {
@@ -2376,7 +2396,9 @@ function parseScriptOpenTag(
       while (i < n && !isAsciiSpace(text.charCodeAt(i)) && text.charCodeAt(i) !== CC_GT) i++;
       value = text.slice(valueStart, i);
     }
-    if (name === "src" && src === null) src = { value, offset: valueStart };
+    if (names.includes(name) && attributes[name] === undefined) {
+      attributes[name] = { value, offset: valueStart };
+    }
   }
 }
 

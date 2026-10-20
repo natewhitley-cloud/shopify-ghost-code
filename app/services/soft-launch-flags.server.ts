@@ -73,3 +73,15 @@ export function areStoredAdvisoriesShown(): boolean {
 export function isScriptTagSunsetLive(): boolean {
   return isSoftLaunchLive(FindingType.SCRIPT_TAG_SUNSET);
 }
+
+/**
+ * Whether the known-malicious domain list is also matched against data the
+ * app already reads at runtime (gc-0htk): the served homepage HTML (only
+ * while the storefront read itself is live, see isScriptTagSunsetLive) and
+ * the speed test's request list. Deliberately NOT in SOFT_LAUNCH_FLAGS: the
+ * hits are MALICIOUS_SCRIPT findings, and that type's theme-file detector is
+ * always live. Off = no matching, nothing stored, nothing shown.
+ */
+export function isRuntimeMaliciousCheckLive(): boolean {
+  return process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED === "true";
+}

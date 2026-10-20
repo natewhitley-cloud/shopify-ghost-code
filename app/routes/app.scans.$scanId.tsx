@@ -25,6 +25,7 @@ import {
   getFindingConfidence,
   hasVisualImpact,
   isAdminResourceFinding,
+  isHomepageMaliciousFinding,
   isOwnSectionFindingType,
   isThemeFileFinding,
   OWN_SECTION_FINDING_TYPES,
@@ -820,8 +821,9 @@ export function FindingRow({
   // resource types like GHOST_PAGE/GHOST_PRICE use synthetic locators, not
   // editable theme paths). Null when the theme id is missing/malformed so no
   // broken link renders. Requires shopDomain (passed from the loader).
+  // gc-0htk: malicious code seen on the served homepage has no theme file.
   const themeEditorUrl =
-    shopDomain && isThemeFileFinding(finding.findingType)
+    shopDomain && isThemeFileFinding(finding.findingType) && !isHomepageMaliciousFinding(finding)
       ? buildThemeEditorUrl(shopDomain, themeId, finding.filename)
       : null;
   // Admin-resource deep-link — the parallel of themeEditorUrl for finding types

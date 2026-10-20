@@ -871,6 +871,20 @@ describe("runPageSpeedAttempt", () => {
     }
   });
 
+  it("matches the run's requests against the malicious list only while the runtime check is on (gc-0htk)", async () => {
+    const call = () =>
+      runPageSpeedAttempt(attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))));
+    const off = await call();
+    expect(off.kind === "ok" && off.run).not.toHaveProperty("maliciousDomains");
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    try {
+      const on = await call();
+      expect(on.kind === "ok" && on.run.maliciousDomains).toEqual([]);
+    } finally {
+      delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+    }
+  });
+
   it("uses PAGESPEED_DAILY_CALL_BUDGET when set", async () => {
     process.env.PAGESPEED_DAILY_CALL_BUDGET = "12";
     await runPageSpeedAttempt(
@@ -1188,6 +1202,38 @@ function run(score: number, tag: string): SpeedAttempt {
     },
   };
 }
+
+describe("buildSpeedPageResult: known-malicious domains (gc-0htk)", () => {
+  const withDomains = (a: SpeedAttempt, domains: string[] | undefined): SpeedAttempt =>
+    a.kind === "ok" && domains !== undefined
+      ? { kind: "ok", run: { ...a.run, maliciousDomains: domains } }
+      : a;
+
+  it("no run checked (runtime check off): no maliciousDomains on the page", () => {
+    const p = buildSpeedPageResult("home", HOME, [run(40, "a"), run(20, "b"), run(30, "c")]);
+    expect(p).not.toHaveProperty("maliciousDomains");
+  });
+
+  it("the union of every ok run, not only the median's (a script can load on one run)", () => {
+    const p = buildSpeedPageResult("home", HOME, [
+      withDomains(run(40, "a"), ["checkout-guard.top"]),
+      withDomains(run(20, "b"), []),
+      withDomains(run(30, "c"), ["biliing.top", "checkout-guard.top"]),
+    ]);
+    expect(p.maliciousDomains).toEqual(["biliing.top", "checkout-guard.top"]);
+  });
+
+  it("checked and clean: []", () => {
+    const p = buildSpeedPageResult("home", HOME, [withDomains(run(40, "a"), [])]);
+    expect(p.maliciousDomains).toEqual([]);
+  });
+
+  it("a page with no ok run carries none", () => {
+    expect(
+      buildSpeedPageResult("home", HOME, [{ kind: "error", code: "timeout" }]),
+    ).not.toHaveProperty("maliciousDomains");
+  });
+});
 
 describe("buildSpeedPageResult", () => {
   it("reports the median of 3 runs (its own numbers and app rows)", () => {

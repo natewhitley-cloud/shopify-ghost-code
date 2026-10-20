@@ -80,6 +80,14 @@ vi.mock("../../app/services/liquid-error-detector.server", async (importOriginal
   };
 });
 
+// gc-0htk: the runtime malicious matcher reads scan-engine helpers, which are
+// mocked above, so the worker tests set its output; the matching itself is
+// covered in runtime-malicious.server.test.ts. The finding builders are real.
+vi.mock("../../app/services/runtime-malicious.server", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../app/services/runtime-malicious.server")>();
+  return { ...real, findMaliciousInHomepage: vi.fn(() => []) };
+});
+
 vi.mock("../../app/services/scan-pool.server", () => ({
   scanThemeFilesInPool: vi.fn(),
 }));
@@ -251,6 +259,10 @@ vi.mock("../../app/models/app-removal.server", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
+import {
+  HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+  HOMEPAGE_MALICIOUS_FILENAME,
+} from "../../app/lib/finding-classification";
 import { logger } from "../../app/lib/logger.server";
 import { OPTIONAL_SCOPES } from "../../app/lib/optional-scopes";
 import { canUseScanDiffing } from "../../app/lib/plan-gating.server";
@@ -315,6 +327,7 @@ import {
   fetchRedirects,
   fetchRedirectsTotal,
 } from "../../app/services/redirect-fetcher.server";
+import { findMaliciousInHomepage } from "../../app/services/runtime-malicious.server";
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
 import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
@@ -5676,6 +5689,158 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         const { results } = await run();
         expect(JSON.stringify(results["fetch-and-scan"])).not.toContain("klaviyo-form");
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // gc-0htk: known malicious code on the served homepage (same request)
+  // -------------------------------------------------------------------------
+  describe("known malicious code on the served homepage (gc-0htk)", () => {
+    const mockFindMalicious = findMaliciousInHomepage as ReturnType<typeof vi.fn>;
+    const HIT = { domain: "biliing.top", host: "www.biliing.top", source: "script_tag" as const };
+    const homepageDelete = {
+      where: {
+        scanId: SCAN_ID,
+        findingType: FindingType.MALICIOUS_SCRIPT,
+        filename: HOMEPAGE_MALICIOUS_FILENAME,
+      },
+    };
+    const homepagePersistCall = () =>
+      mockCreateFindings.mock.calls.find((c) =>
+        (c[1] as Array<{ filename: string }>).some(
+          (f) => f.filename === HOMEPAGE_MALICIOUS_FILENAME,
+        ),
+      );
+    const readable = () => {
+      process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+      fetchSpy.mockResolvedValue(new Response(storefrontHtml([]), { status: 200 }));
+    };
+
+    beforeEach(() => {
+      mockFindMalicious.mockReset();
+      mockFindMalicious.mockReturnValue([HIT]);
+    });
+
+    afterEach(() => {
+      delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+    });
+
+    it("runtime flag off: no matching, no homepage rows or delete, no coverage key, same step result", async () => {
+      readable();
+      const { results } = await run();
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(homepagePersistCall()).toBeUndefined();
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith(homepageDelete);
+      expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+        HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+      );
+    });
+
+    it("on: one MALICIOUS_SCRIPT per domain filed under the homepage, counted, coverage recorded", async () => {
+      readable();
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      const { results, result } = await run();
+      // The same single homepage request: no extra fetch.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(mockFindMalicious).toHaveBeenCalledTimes(1);
+      const rows = homepagePersistCall()?.[1] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        {
+          filename: HOMEPAGE_MALICIOUS_FILENAME,
+          lineNumber: 0,
+          codeSnippet: "biliing.top\nLoaded by a script tag an app added: www.biliing.top",
+          findingType: FindingType.MALICIOUS_SCRIPT,
+          severity: Severity.HIGH,
+          description: expect.stringContaining("Your live homepage"),
+        },
+      ]);
+      // Idempotent, and scoped: never the theme detector's MALICIOUS_SCRIPT rows.
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith(homepageDelete);
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.MALICIOUS_SCRIPT },
+      });
+      expect(results["storefront-script-tags"]).toMatchObject({ homepageMaliciousCount: 1 });
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+        HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+      );
+      expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
+    });
+
+    it("on, clean page: checked (coverage recorded), nothing persisted", async () => {
+      readable();
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      mockFindMalicious.mockReturnValue([]);
+      const { results } = await run();
+      expect(homepagePersistCall()).toBeUndefined();
+      expect(results["storefront-script-tags"]).toMatchObject({ homepageMaliciousCount: 0 });
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+        HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+      );
+    });
+
+    it("on: a domain the theme files already report is not reported twice", async () => {
+      readable();
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      const { maliciousDescription, KNOWN_MALICIOUS_DOMAINS } =
+        await import("../../app/data/malicious-domains.server");
+      const biliing = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "biliing.top")!;
+      mockDb.finding.findMany.mockImplementation(async (args: { where?: { NOT?: unknown } }) =>
+        args?.where?.NOT ? [{ description: maliciousDescription(biliing) }] : [],
+      );
+      const { results } = await run();
+      expect(homepagePersistCall()).toBeUndefined();
+      expect(results["storefront-script-tags"]).toMatchObject({ homepageMaliciousCount: 0 });
+    });
+
+    it("on + unreachable storefront: no matching, no coverage key (never new or fixed)", async () => {
+      process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+      fetchSpy.mockResolvedValue(
+        new Response("<body class='template-password'></body>", { status: 200 }),
+      );
+      const { results } = await run();
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(results["storefront-script-tags"]).toEqual({
+        findingCount: 0,
+        unreachable: true,
+        audited: true,
+        liquidErrorCount: 0,
+      });
+      // An earlier attempt's homepage rows are still cleared on retry.
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith(homepageDelete);
+      const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+      expect(finalizeArgs.liveFindingTypes).not.toContain(HOMEPAGE_MALICIOUS_COVERAGE_KEY);
+      expect(finalizeArgs.unreachableCategories).toEqual(STOREFRONT_TYPES);
+    });
+
+    it("on + the matcher throws: not checked (no key), the script-tag audit still runs", async () => {
+      readable();
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      mockFindMalicious.mockImplementation(() => {
+        throw new Error("boom");
+      });
+      const { results } = await run();
+      expect(results["storefront-script-tags"]).toMatchObject({
+        unreachable: false,
+        audited: true,
+      });
+      expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+        HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+      );
+    });
+
+    it("storefront flag off: the runtime flag alone makes no request and records nothing", async () => {
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      const { names } = await run();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(names).not.toContain("storefront-script-tags");
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+        HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+      );
     });
   });
 });

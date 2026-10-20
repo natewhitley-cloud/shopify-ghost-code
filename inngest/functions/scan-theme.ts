@@ -36,7 +36,10 @@
  *                                  category, no finding). An unreadable
  *                                  storefront records both categories in
  *                                  `unreachableCategories`; it never fails the
- *                                  scan.
+ *                                  scan. Also matches that page against the
+ *                                  known-malicious list while
+ *                                  RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is on
+ *                                  (gc-0htk, see persistHomepageMalicious).
  *   9. finalize-scan             — sets the terminal status to COMPLETED. The
  *                                  core theme audit ran, so success is COMPLETED
  *                                  even when optional categories were skipped for
@@ -61,7 +64,11 @@
 import { FindingType, type Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
-import { isStorefrontFinding } from "../../app/lib/finding-classification";
+import {
+  HOMEPAGE_MALICIOUS_COVERAGE_KEY,
+  HOMEPAGE_MALICIOUS_FILENAME,
+  isStorefrontFinding,
+} from "../../app/lib/finding-classification";
 import {
   type PaginateStats,
   type QueryCostStats,
@@ -112,6 +119,7 @@ import {
 } from "../../app/services/dangling-reference-extractor.server";
 import { buildMissingSnippetIndex } from "../../app/services/liquid-error-detector.server";
 import type { BulkRedirectGroups } from "../../app/services/redirect-detector.server";
+import type { HomepageMaliciousHit } from "../../app/services/runtime-malicious.server";
 import {
   enabledAppEmbedApps,
   observedEmbedApps,
@@ -121,6 +129,7 @@ import {
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import {
   isAdvisoryCheckLive,
+  isRuntimeMaliciousCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
 } from "../../app/services/soft-launch-flags.server";
@@ -244,6 +253,46 @@ async function persistAuditFindings(opts: {
     shopId: opts.shopId,
     count: opts.findings.length,
   });
+}
+
+/**
+ * Known malicious code seen on the served homepage (gc-0htk): persist one
+ * MALICIOUS_SCRIPT finding per listed domain the page uses, filed under
+ * HOMEPAGE_MALICIOUS_FILENAME, except domains this scan's theme files already
+ * report (the theme finding is where the merchant can remove it). The delete
+ * is scoped to the homepage rows, so the theme detector's MALICIOUS_SCRIPT
+ * rows are never touched. Returns how many were persisted.
+ */
+async function persistHomepageMalicious(opts: {
+  scanId: string;
+  shopId: string;
+  hits: HomepageMaliciousHit[];
+}): Promise<number> {
+  const db = (await import("../../app/db.server")).default;
+  const { homepageMaliciousFindings, themeMaliciousDomains } =
+    await import("../../app/services/runtime-malicious.server");
+  const themeRows = await db.finding.findMany({
+    where: {
+      scanId: opts.scanId,
+      findingType: FindingType.MALICIOUS_SCRIPT,
+      NOT: { filename: HOMEPAGE_MALICIOUS_FILENAME },
+    },
+    select: { description: true },
+  });
+  const findings = homepageMaliciousFindings(
+    opts.hits,
+    themeMaliciousDomains(themeRows.map((r) => r.description)),
+  );
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.MALICIOUS_SCRIPT,
+    findings,
+    event: "homepage_malicious_findings",
+    logMessage: "homepage malicious findings persisted",
+    deleteScope: { filename: HOMEPAGE_MALICIOUS_FILENAME },
+  });
+  return findings.length;
 }
 
 /**
@@ -1916,6 +1965,11 @@ export const scanTheme = inngest.createFunction(
         // Present only when the storefront was read and no detector cap hit;
         // absent = not observed (also for a run memoized before the field).
         scriptTagApps?: string[];
+        // gc-0htk: homepage MALICIOUS_SCRIPT rows persisted. Present only when
+        // the runtime check actually matched a readable page; absent = not
+        // checked (flag off, unreachable, or the match failed), so the scan
+        // records no homepage coverage (finalLiveFindingTypes).
+        homepageMaliciousCount?: number;
       } = Array.isArray(enabledEmbedApps)
         ? await step.run("storefront-script-tags", async () => {
             const { logger } = await import("../../app/lib/logger.server");
@@ -1953,6 +2007,16 @@ export const scanTheme = inngest.createFunction(
             await db.finding.deleteMany({
               where: { scanId, findingType: FindingType.LIQUID_ERROR_RENDERED },
             });
+            // gc-0htk: only the homepage rows, never the theme's MALICIOUS_SCRIPT.
+            if (isRuntimeMaliciousCheckLive()) {
+              await db.finding.deleteMany({
+                where: {
+                  scanId,
+                  findingType: FindingType.MALICIOUS_SCRIPT,
+                  filename: HOMEPAGE_MALICIOUS_FILENAME,
+                },
+              });
+            }
             if (storefront.status === "unreachable") {
               return { findingCount: 0, unreachable: true, audited: true, liquidErrorCount: 0 };
             }
@@ -2017,6 +2081,9 @@ export const scanTheme = inngest.createFunction(
               event: "liquid_error_findings",
               logMessage: "rendered liquid error findings persisted",
             });
+            const homepageMaliciousCount = Array.isArray(storefront.maliciousHits)
+              ? await persistHomepageMalicious({ scanId, shopId, hits: storefront.maliciousHits })
+              : undefined;
             return {
               findingCount: findings.length,
               unreachable: false,
@@ -2025,6 +2092,7 @@ export const scanTheme = inngest.createFunction(
               liquidAudited,
               ...(liquidAudited ? { liquidCapped } : {}),
               ...(scriptTagApps ? { scriptTagApps } : {}),
+              ...(homepageMaliciousCount !== undefined ? { homepageMaliciousCount } : {}),
             };
           })
         : { findingCount: 0, unreachable: false, audited: false };
@@ -2040,7 +2108,8 @@ export const scanTheme = inngest.createFunction(
         jsonLdPriceResult.findingCount +
         danglingRefResult.findingCount +
         scriptTagResult.findingCount +
-        (scriptTagResult.liquidErrorCount ?? 0);
+        (scriptTagResult.liquidErrorCount ?? 0) +
+        (scriptTagResult.homepageMaliciousCount ?? 0);
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
@@ -2154,14 +2223,21 @@ export const scanTheme = inngest.createFunction(
       // un-audited, so their prior findings are neither resolved nor new. A
       // no-op while dark (the types are not live then). NULL (undefined) for
       // an in-flight run memoized before the field existed.
+      // gc-0htk: plus the homepage malicious check's coverage key, only when
+      // it actually matched a readable page this scan.
       const finalLiveFindingTypes = Array.isArray(persistedLiveFindingTypes)
-        ? persistedLiveFindingTypes.filter(
-            (t) =>
-              !isStorefrontFinding(t) ||
-              (scriptTagResult.audited &&
-                (t !== FindingType.LIQUID_ERROR_RENDERED ||
-                  scriptTagResult.liquidAudited !== false)),
-          )
+        ? [
+            ...persistedLiveFindingTypes.filter(
+              (t) =>
+                !isStorefrontFinding(t) ||
+                (scriptTagResult.audited &&
+                  (t !== FindingType.LIQUID_ERROR_RENDERED ||
+                    scriptTagResult.liquidAudited !== false)),
+            ),
+            ...(scriptTagResult.homepageMaliciousCount !== undefined
+              ? [HOMEPAGE_MALICIOUS_COVERAGE_KEY]
+              : []),
+          ]
         : undefined;
       // What THIS scan audited, for every diff below (finalize + summary email).
       const currentCoverage = {

@@ -56,16 +56,30 @@ export interface AdvisoryRisk {
   description: string;
 }
 
-/** Code from one known malicious domain (one or more MALICIOUS_SCRIPT findings). */
+/**
+ * Where GhostCode saw known malicious code: a theme file (the theme detector),
+ * the served homepage, or the store speed test's requests (the runtime check,
+ * gc-0htk). The copy says which, and never sends a runtime hit to the theme
+ * files.
+ */
+export type MaliciousSeenIn = "theme" | "homepage" | "speed_test";
+
+/**
+ * Code from one known malicious domain: one or more MALICIOUS_SCRIPT findings
+ * (theme or homepage), or a speed test that requested it (no finding).
+ */
 export interface MaliciousRisk {
   kind: "malicious";
+  seenIn: MaliciousSeenIn;
+  /** speed_test only: the tested pages whose load requested the domain. */
+  speedPages?: Array<"home" | "product">;
   /** The listed domain, or null when the stored finding no longer matches an entry. */
   domain: string | null;
   /** What the domain is, from the curated list (e.g. "lookalike of the jsDelivr CDN"), or null. */
   note: string | null;
   /** The entry's own advice (a domain added in good faith), or null for the default. */
   advice: string | null;
-  /** Every finding that references the domain, in theme order. Never empty. */
+  /** Every finding that references the domain, in theme order. Empty only for speed_test. */
   findings: SecurityRiskFinding[];
   /** The first finding's stored description (the fallback facts). */
   description: string;
@@ -87,17 +101,22 @@ export const SEE_WHAT_TO_CHECK = "See what to check";
  * the banner gets its own id.
  */
 export function securityRiskAnchorId(risk: SecurityRisk): string {
-  return risk.kind === "advisory"
-    ? `finding-${risk.finding.id}`
-    : `security-risk-${risk.findings[0].id}`;
+  if (risk.kind === "advisory") return `finding-${risk.finding.id}`;
+  // A speed-test hit has no finding: its banner lives on the Store speed page.
+  if (risk.seenIn === "speed_test") return `security-risk-speed-${risk.domain ?? "unknown"}`;
+  return `security-risk-${risk.findings[0].id}`;
 }
 
 /** The banner's title. Names the app, or the domain. */
 export function securityRiskTitle(risk: SecurityRisk): string {
   if (risk.kind === "malicious") {
-    return risk.domain
-      ? `Your theme references ${risk.domain}, a domain linked to malicious code`
-      : "Your theme references a domain linked to malicious code";
+    const what = risk.domain ? `${risk.domain}, a domain` : "a domain";
+    if (risk.seenIn === "homepage")
+      return `Your live homepage uses ${what} linked to malicious code`;
+    if (risk.seenIn === "speed_test") {
+      return `Your store's speed test loaded ${what} linked to malicious code`;
+    }
+    return `Your theme references ${what} linked to malicious code`;
   }
   if (risk.appName === null) {
     return "An app in your theme was named in a security incident report";
@@ -114,13 +133,27 @@ function where(finding: SecurityRiskFinding): string {
     : finding.filename;
 }
 
-/** What GhostCode found in the theme, from the stored finding. */
+/** "homepage", "product page", or "homepage and product page". */
+function speedPagesLabel(pages: ReadonlyArray<"home" | "product">): string {
+  const names = (["home", "product"] as const)
+    .filter((p) => pages.includes(p))
+    .map((p) => (p === "home" ? "homepage" : "product page"));
+  return names.length > 0 ? names.join(" and ") : "store";
+}
+
+/** What GhostCode found (in the theme, on the homepage, or in the speed test). */
 export function securityRiskFound(risk: SecurityRisk): string {
   if (risk.kind === "malicious") {
+    const what = risk.domain ?? "it";
+    if (risk.seenIn === "homepage") {
+      return `GhostCode saw ${what} on your live homepage, but not in your theme files, so it is most likely added by an app.`;
+    }
+    if (risk.seenIn === "speed_test") {
+      return `In your latest store speed test, Google's test browser requested ${what} while loading your ${speedPagesLabel(risk.speedPages ?? [])}.`;
+    }
     const n = risk.findings.length;
     const places = risk.findings.slice(0, 3).map(where).join("; ");
     const more = n > 3 ? `; and ${n - 3} more` : "";
-    const what = risk.domain ?? "it";
     return n === 1
       ? `GhostCode found ${what} on 1 line of your theme (${places}).`
       : `GhostCode found ${what} on ${n} lines of your theme (${places}${more}).`;
@@ -153,9 +186,12 @@ export function securityRiskBody(risk: SecurityRisk): string {
       risk.domain && risk.note
         ? `GhostCode lists ${risk.domain} as a source of malicious code (${risk.note}).`
         : sentenceEnd(capitalize(risk.description));
+    // A runtime hit (gc-0htk) has no theme reference to remove: find its source.
     const advice = risk.advice
       ? sentenceEnd(risk.advice)
-      : "Code like this is usually added without the store owner knowing. Remove it as soon as possible.";
+      : risk.seenIn === "theme"
+        ? "Code like this is usually added without the store owner knowing. Remove it as soon as possible."
+        : "Code like this is usually added without the store owner knowing. Find what adds it as soon as possible.";
     return `${what} ${securityRiskFound(risk)} ${advice}`;
   }
   const facts = risk.report ?? `${risk.description}.`;
@@ -180,6 +216,13 @@ export function advisoryCheckSteps(risk: AdvisoryRisk): string[] {
   const named = `If you no longer use ${risk.appName},`;
   // A replacer function, so a "$" in a name is never read as a pattern.
   return steps.map((step) => step.replace("If you no longer use the app,", () => named));
+}
+
+/** The date line's words around the date: "Found in your {date} scan" or "Seen in your {date} speed test". */
+export function securityRiskDateWords(risk: SecurityRisk): { before: string; after: string } {
+  return risk.kind === "malicious" && risk.seenIn === "speed_test"
+    ? { before: "Seen in your", after: "speed test" }
+    : { before: "Found in your", after: "scan" };
 }
 
 /** The plan line under the actions (the date is rendered beside it). */

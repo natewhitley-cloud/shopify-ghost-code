@@ -30,6 +30,7 @@ import {
   type PageSpeedErrorCode,
   type PageSpeedFetch,
 } from "./pagespeed-client.server";
+import { isRuntimeMaliciousCheckLive } from "./soft-launch-flags.server";
 import {
   selectMedianRun,
   summarizeLighthouse,
@@ -857,7 +858,9 @@ export async function runPageSpeedAttempt(input: {
         ? { kind: "password" }
         : { kind: "error", code: result.code };
   } else {
-    const run = summarizeLighthouse(result.lighthouse, input.storeHosts);
+    const run = summarizeLighthouse(result.lighthouse, input.storeHosts, {
+      matchMalicious: isRuntimeMaliciousCheckLive(),
+    });
     if (!run) attempt = { kind: "error", code: "bad_response" };
     else if (run.passwordProtected) attempt = { kind: "password" };
     else attempt = { kind: "ok", run };
@@ -921,6 +924,9 @@ export function buildSpeedPageResult(
   const okRuns = attempts.flatMap((a) => (a.kind === "ok" ? [a.run] : []));
   const median = selectMedianRun(okRuns);
   if (median) {
+    // gc-0htk: known-malicious domains requested in ANY ok run (a script can
+    // load on one run of three), present only when a run checked for them.
+    const checked = okRuns.filter((r) => Array.isArray(r.maliciousDomains));
     return {
       ...base,
       status: "OK",
@@ -929,6 +935,9 @@ export function buildSpeedPageResult(
       apps: median.apps,
       otherThirdParty: median.otherThirdParty,
       firstParty: median.firstParty,
+      ...(checked.length > 0
+        ? { maliciousDomains: [...new Set(checked.flatMap((r) => r.maliciousDomains!))].sort() }
+        : {}),
     };
   }
   const last = attempts[attempts.length - 1];

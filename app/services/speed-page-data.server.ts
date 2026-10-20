@@ -18,13 +18,17 @@
  * telemetry stay in the route. Reaches only the read-only speed data modules
  * (the model and the pure lib), never the PageSpeed client or the worker.
  */
+import { isRuntimeMaliciousCheckLive } from "./soft-launch-flags.server";
+import { KNOWN_MALICIOUS_DOMAINS, type MaliciousDomain } from "../data/malicious-domains.server";
 import { getPlanFeatures } from "../lib/billing.server";
+import { logger } from "../lib/logger.server";
+import type { MaliciousRisk } from "../lib/security-risk";
 import {
   buildFreeSpeedTestView,
   buildSpeedReportView,
   SPEED_REPORT_ORIGIN,
 } from "../lib/speed-report";
-import type { FreeSpeedTestView, SpeedReportView } from "../lib/speed-report";
+import type { FreeSpeedTestView, SpeedPageResult, SpeedReportView } from "../lib/speed-report";
 import {
   countFreeSpeedTestAttempts,
   getFreeSpeedTestUsedAt,
@@ -74,4 +78,74 @@ export async function readSpeedPageReport(
     freeTest: buildFreeSpeedTestView(rows, usedAt, now, attempts),
     requestedAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Known malicious code seen in the speed test (gc-0htk)
+// ---------------------------------------------------------------------------
+
+/**
+ * One Security risk banner per listed domain the speed test's browser
+ * requested, from the stored pages (SpeedPageResult.maliciousDomains), naming
+ * the pages. A domain no longer on the list is not shown. Sorted by domain.
+ */
+export function speedSecurityRisks(
+  pages: readonly SpeedPageResult[],
+  domains: ReadonlyArray<MaliciousDomain> = KNOWN_MALICIOUS_DOMAINS,
+): MaliciousRisk[] {
+  const pagesByDomain = new Map<string, Array<"home" | "product">>();
+  for (const page of pages) {
+    for (const domain of page.maliciousDomains ?? []) {
+      const seen = pagesByDomain.get(domain) ?? [];
+      if (!seen.includes(page.page)) seen.push(page.page);
+      pagesByDomain.set(domain, seen);
+    }
+  }
+  const risks: MaliciousRisk[] = [];
+  for (const [domain, speedPages] of [...pagesByDomain].sort(([a], [b]) => a.localeCompare(b))) {
+    const entry = domains.find((d) => d.domain === domain);
+    if (!entry) continue;
+    risks.push({
+      kind: "malicious",
+      seenIn: "speed_test",
+      speedPages,
+      domain: entry.domain,
+      note: entry.note,
+      advice: null,
+      findings: [],
+      description: `${entry.domain} (${entry.note})`,
+    });
+  }
+  return risks;
+}
+
+/**
+ * The Store speed page's Security risk banners (gc-0htk): known malicious
+ * domains the shop's LATEST speed report with results requested, of ANY
+ * origin and on EVERY plan. Deliberately outside readSpeedPageReport's plan
+ * gate: a security finding is never paywalled, so a downgraded shop still
+ * sees what its last paid report found. `testedAt` = that report's date.
+ *
+ * Off (RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED not "true"): nothing is read and
+ * nothing is shown. Never throws: a failed read is logged and shows nothing.
+ */
+export async function readSpeedSecurityRisks(
+  shopId: string,
+  now: Date,
+): Promise<{ risks: MaliciousRisk[]; testedAt: string | null }> {
+  const none = { risks: [], testedAt: null };
+  if (!isRuntimeMaliciousCheckLive()) return none;
+  try {
+    const latest = buildSpeedReportView(await getRecentSpeedReports(shopId), now).lastResults;
+    if (!latest) return none;
+    const risks = speedSecurityRisks(latest.pages);
+    return risks.length > 0 ? { risks, testedAt: latest.createdAt } : none;
+  } catch (err) {
+    logger.warn("speed security risks unavailable", {
+      function: "readSpeedSecurityRisks",
+      shopId,
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+    return none;
+  }
 }
