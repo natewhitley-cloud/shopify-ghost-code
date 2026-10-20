@@ -21,7 +21,31 @@ type Row = {
   scanStatus: ScanStatus;
   /** The owning Scan's createdAt (defaults to the manifest's). */
   scanCreatedAt?: Date;
+  /** Whether the owning Scan already has its ScanChangeSet. */
+  hasChangeSet?: boolean;
 };
+
+type OrderBy = Array<
+  { createdAt?: "desc" } | { scanId?: "desc" } | { scan?: { createdAt: "desc" } }
+>;
+
+/** Sort newest first by each orderBy key in turn (desc only, as the model uses). */
+function sortRows(rows: Row[], orderBy: OrderBy): Row[] {
+  const value = (r: Row, o: OrderBy[number]): number | string =>
+    "scan" in o
+      ? (r.scanCreatedAt ?? r.createdAt).getTime()
+      : "createdAt" in o
+        ? r.createdAt.getTime()
+        : r.scanId;
+  return [...rows].sort((a, b) => {
+    for (const o of orderBy) {
+      const x = value(a, o);
+      const y = value(b, o);
+      if (x !== y) return x < y ? 1 : -1;
+    }
+    return 0;
+  });
+}
 
 const store = vi.hoisted(() => ({ rows: [] as Row[] }));
 
@@ -61,6 +85,7 @@ import {
   getLatestManifestForTheme,
   getScanManifest,
   MANIFEST_KEEP_PER_THEME,
+  PENDING_COMPUTE_GRACE_MS,
   pruneScanManifests,
   upsertScanManifest,
 } from "../../app/models/scan-manifest.server";
@@ -108,16 +133,21 @@ beforeEach(() => {
     },
   );
   mockDb.scanManifest.findMany.mockImplementation(
-    async ({ where, take }: { where: Where; take?: number }) => {
-      const sorted = store.rows
-        .filter((r) => matches(r, where))
-        .sort(
-          (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.scanId < b.scanId ? 1 : -1),
-        );
-      // The relation select (prune) reads the scan's status.
-      return sorted
-        .slice(0, take ?? sorted.length)
-        .map((r) => ({ ...r, scan: { status: r.scanStatus } }));
+    async ({ where, take, orderBy }: { where: Where; take?: number; orderBy: OrderBy }) => {
+      const sorted = sortRows(
+        store.rows.filter((r) => matches(r, where)),
+        orderBy,
+      );
+      // The relation select (prune) reads the scan's status, createdAt and
+      // whether its change set exists.
+      return sorted.slice(0, take ?? sorted.length).map((r) => ({
+        ...r,
+        scan: {
+          status: r.scanStatus,
+          createdAt: r.scanCreatedAt ?? r.createdAt,
+          changeSet: r.hasChangeSet ? { scanId: r.scanId } : null,
+        },
+      }));
     },
   );
   mockDb.scanManifest.findUnique.mockImplementation(
@@ -274,6 +304,26 @@ describe("getLatestManifestForTheme", () => {
     });
   });
 
+  it("newest by the scan's createdAt: a manifest written later by an earlier-started scan is not the baseline", async () => {
+    // Overlapping scans: "early" started at minute 1 but wrote its manifest at
+    // minute 5; "late" started at minute 2 and wrote at minute 3.
+    seed("early", 5, { scanCreatedAt: new Date(Date.UTC(2026, 9, 1, 0, 1)) });
+    seed("late", 3, { scanCreatedAt: new Date(Date.UTC(2026, 9, 1, 0, 2)) });
+    const latest = await getLatestManifestForTheme(SHOP, THEME);
+    expect(latest?.scanId).toBe("late");
+  });
+
+  it("selects candidate ids first, then loads one row's entries (no blobs for the others)", async () => {
+    seed("s1", 1);
+    seed("s2", 2);
+    seed("s3", 3);
+    await expect(getLatestManifestForTheme(SHOP, THEME)).resolves.toMatchObject({ scanId: "s3" });
+    const listArgs = mockDb.scanManifest.findMany.mock.calls[0][0];
+    expect(listArgs.select).toEqual({ scanId: true });
+    expect(mockDb.scanManifest.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockDb.scanManifest.findUnique.mock.calls[0][0].where).toEqual({ scanId: "s3" });
+  });
+
   it("a malformed newest row is skipped for the next usable one", async () => {
     seed("good", 1);
     seed("bad", 2, { entries: { not: "an array" } });
@@ -381,6 +431,75 @@ describe("pruneScanManifests (keep-N)", () => {
     await pruneScanManifests(SHOP, THEME);
 
     expect(store.rows.map((r) => r.scanId).sort()).toEqual(["pending", "running", "s2", "s3"]);
+  });
+
+  describe("overlapping scans: a finalized scan whose change set is not computed yet", () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute));
+    const NOW = at(30);
+
+    it("keeps that scan's manifest and its baseline, so its later computation still compares (M2)", async () => {
+      // S1, S2 computed. Cron S3 finalized but compute-changes not run yet;
+      // manual S4 finalized, computed, and now prunes.
+      seed("s1", 1, { hasChangeSet: true });
+      seed("s2", 2, { hasChangeSet: true });
+      seed("s3", 3);
+      seed("s4", 4, { hasChangeSet: true });
+
+      await pruneScanManifests(SHOP, THEME, MANIFEST_KEEP_PER_THEME, NOW);
+
+      expect(store.rows.map((r) => r.scanId).sort()).toEqual(["s2", "s3", "s4"]);
+      // S3's computation now runs and finds S2, not a baseline check.
+      const baseline = await getLatestManifestForTheme(SHOP, THEME, {
+        excludeScanId: "s3",
+        before: at(3),
+      });
+      expect(baseline?.scanId).toBe("s2");
+    });
+
+    it("its own manifest survives too when two newer scans finish first", async () => {
+      seed("s1", 1, { hasChangeSet: true });
+      seed("s2", 2);
+      seed("s3", 3, { hasChangeSet: true });
+      seed("s4", 4, { hasChangeSet: true });
+
+      await pruneScanManifests(SHOP, THEME, MANIFEST_KEEP_PER_THEME, NOW);
+
+      expect(store.rows.map((r) => r.scanId).sort()).toEqual(["s1", "s2", "s3", "s4"]);
+    });
+
+    it("once computed, the pin is released and the next prune keeps only the newest two", async () => {
+      seed("s1", 1, { hasChangeSet: true });
+      seed("s2", 2, { hasChangeSet: true });
+      seed("s3", 3, { hasChangeSet: true });
+      seed("s4", 4, { hasChangeSet: true });
+
+      await pruneScanManifests(SHOP, THEME, MANIFEST_KEEP_PER_THEME, NOW);
+
+      expect(store.rows.map((r) => r.scanId).sort()).toEqual(["s3", "s4"]);
+    });
+
+    it("a computation missing for longer than the grace period no longer pins (bounded retention)", async () => {
+      seed("s1", 1, { hasChangeSet: true });
+      seed("s2", 2, { hasChangeSet: true });
+      seed("s3", 3);
+      seed("s4", 4, { hasChangeSet: true });
+      const later = new Date(at(3).getTime() + PENDING_COMPUTE_GRACE_MS);
+
+      await pruneScanManifests(SHOP, THEME, MANIFEST_KEEP_PER_THEME, later);
+
+      expect(store.rows.map((r) => r.scanId).sort()).toEqual(["s3", "s4"]);
+    });
+
+    it("a FAILED scan never pins anything (it is never computed)", async () => {
+      seed("s1", 1, { hasChangeSet: true });
+      seed("s2", 2, { hasChangeSet: true });
+      seed("failed", 3, { scanStatus: ScanStatus.FAILED });
+      seed("s4", 4, { hasChangeSet: true });
+
+      await pruneScanManifests(SHOP, THEME, MANIFEST_KEEP_PER_THEME, NOW);
+
+      expect(store.rows.map((r) => r.scanId).sort()).toEqual(["s2", "s4"]);
+    });
   });
 
   it("deletes by id within the shop and theme only", async () => {

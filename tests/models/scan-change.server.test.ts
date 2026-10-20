@@ -148,9 +148,61 @@ describe("getLatestPublishedChangeSetBefore", () => {
         scanId: { not: "s1" },
         scan: { createdAt: { lt: before } },
       },
-      orderBy: [{ createdAt: "desc" }, { scanId: "desc" }],
+      orderBy: [{ scan: { createdAt: "desc" } }, { scanId: "desc" }],
       select: { scanId: true, themeId: true },
     });
+  });
+
+  it("orders by the scan's createdAt, not the change set's compute time (no false second switch)", async () => {
+    // A cron scan of theme A started (06:00) before the merchant published B,
+    // but computed its change set (06:30) after B's scan (06:10, computed 06:15).
+    const sets = [
+      {
+        scanId: "scan-a",
+        themeId: "theme-A",
+        createdAt: new Date("2026-10-19T06:30:00Z"),
+        scan: { createdAt: new Date("2026-10-19T06:00:00Z") },
+      },
+      {
+        scanId: "scan-b",
+        themeId: "theme-B",
+        createdAt: new Date("2026-10-19T06:15:00Z"),
+        scan: { createdAt: new Date("2026-10-19T06:10:00Z") },
+      },
+    ];
+    type Key = "createdAt" | "scanId";
+    type Order = { [K in Key]?: "desc" | "asc" } & { scan?: { createdAt: "desc" | "asc" } };
+    // In-memory findFirst honouring the where/orderBy shapes used here.
+    mockDb.scanChangeSet.findFirst.mockImplementation(
+      async ({
+        where,
+        orderBy,
+      }: {
+        where: { scan: { createdAt: { lt: Date } } };
+        orderBy: Order[];
+      }) => {
+        const value = (row: (typeof sets)[number], o: Order) =>
+          o.scan
+            ? row.scan.createdAt.getTime()
+            : o.createdAt
+              ? row.createdAt.getTime()
+              : row.scanId;
+        const sorted = sets
+          .filter((r) => r.scan.createdAt < where.scan.createdAt.lt)
+          .sort((x, y) => {
+            for (const o of orderBy) {
+              const a = value(x, o);
+              const b = value(y, o);
+              if (a !== b) return a < b ? 1 : -1;
+            }
+            return 0;
+          });
+        return sorted[0] ? { scanId: sorted[0].scanId, themeId: sorted[0].themeId } : null;
+      },
+    );
+    await expect(
+      getLatestPublishedChangeSetBefore("shop-1", new Date("2026-10-26T06:40:00Z"), "scan-c"),
+    ).resolves.toEqual({ scanId: "scan-b", themeId: "theme-B" });
   });
 
   it("none: null", async () => {

@@ -74,6 +74,12 @@ export type ChangeLogScanRow = NonNullable<Awaited<ReturnType<typeof getScanForC
  * The theme of the shop's latest published-theme change set from a scan
  * created before `before` (spec 2.2, theme switch), excluding `excludeScanId`
  * (the current scan, on a recompute). Null when there is none.
+ *
+ * "Latest" is by the SCAN's createdAt, the same clock as the `before` filter,
+ * never the change set's own createdAt (its compute time): a cron scan of
+ * theme A that started before the merchant published B but finished after B's
+ * scan computed must not sort as the newest published check, or B's next scan
+ * would record a false second theme switch.
  */
 export async function getLatestPublishedChangeSetBefore(
   shopId: string,
@@ -87,7 +93,7 @@ export async function getLatestPublishedChangeSetBefore(
       scanId: { not: excludeScanId },
       scan: { createdAt: { lt: before } },
     },
-    orderBy: [{ createdAt: "desc" }, { scanId: "desc" }],
+    orderBy: [{ scan: { createdAt: "desc" } }, { scanId: "desc" }],
     select: { scanId: true, themeId: true },
   });
 }
