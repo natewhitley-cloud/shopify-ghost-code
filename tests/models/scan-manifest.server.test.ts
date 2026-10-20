@@ -19,6 +19,8 @@ type Row = {
   appBlocks: unknown;
   createdAt: Date;
   scanStatus: ScanStatus;
+  /** The owning Scan's createdAt (defaults to the manifest's). */
+  scanCreatedAt?: Date;
 };
 
 const store = vi.hoisted(() => ({ rows: [] as Row[] }));
@@ -27,8 +29,8 @@ type Where = {
   shopId?: string;
   themeId?: string;
   version?: number;
-  scanId?: { not?: string; notIn?: string[] };
-  scan?: { status: { in: ScanStatus[] } };
+  scanId?: { not?: string; notIn?: string[]; in?: string[] };
+  scan?: { status: { in: ScanStatus[] }; createdAt?: { lt: Date } };
 };
 
 function matches(row: Row, where: Where): boolean {
@@ -37,7 +39,10 @@ function matches(row: Row, where: Where): boolean {
   if (where.version !== undefined && row.version !== where.version) return false;
   if (where.scanId?.not !== undefined && row.scanId === where.scanId.not) return false;
   if (where.scanId?.notIn !== undefined && where.scanId.notIn.includes(row.scanId)) return false;
+  if (where.scanId?.in !== undefined && !where.scanId.in.includes(row.scanId)) return false;
   if (where.scan && !where.scan.status.in.includes(row.scanStatus)) return false;
+  const scanCreatedAt = row.scanCreatedAt ?? row.createdAt;
+  if (where.scan?.createdAt && !(scanCreatedAt < where.scan.createdAt.lt)) return false;
   return true;
 }
 
@@ -45,6 +50,7 @@ const mockDb = vi.hoisted(() => ({
   scanManifest: {
     upsert: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
     deleteMany: vi.fn(),
   },
 }));
@@ -53,6 +59,7 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 import { MANIFEST_VERSION, type ManifestEntry } from "../../app/lib/theme-manifest";
 import {
   getLatestManifestForTheme,
+  getScanManifest,
   MANIFEST_KEEP_PER_THEME,
   pruneScanManifests,
   upsertScanManifest,
@@ -107,8 +114,15 @@ beforeEach(() => {
         .sort(
           (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.scanId < b.scanId ? 1 : -1),
         );
-      return sorted.slice(0, take ?? sorted.length);
+      // The relation select (prune) reads the scan's status.
+      return sorted
+        .slice(0, take ?? sorted.length)
+        .map((r) => ({ ...r, scan: { status: r.scanStatus } }));
     },
+  );
+  mockDb.scanManifest.findUnique.mockImplementation(
+    async ({ where }: { where: { scanId: string } }) =>
+      store.rows.find((r) => r.scanId === where.scanId) ?? null,
   );
   mockDb.scanManifest.deleteMany.mockImplementation(async ({ where }: { where: Where }) => {
     const before = store.rows.length;
@@ -244,10 +258,49 @@ describe("getLatestManifestForTheme", () => {
     expect(mockDb.scanManifest.findMany.mock.calls[0][0].where.version).toBe(MANIFEST_VERSION);
   });
 
+  it("with `before`, a scan created at or after it is never the baseline (a recompute of an older check)", async () => {
+    seed("older", 1);
+    seed("current", 2);
+    seed("newer", 3);
+    const before = new Date(Date.UTC(2026, 9, 1, 0, 2));
+    const latest = await getLatestManifestForTheme(SHOP, THEME, {
+      excludeScanId: "current",
+      before,
+    });
+    expect(latest?.scanId).toBe("older");
+    expect(mockDb.scanManifest.findMany.mock.calls[0][0].where.scan).toEqual({
+      status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+      createdAt: { lt: before },
+    });
+  });
+
   it("a malformed newest row is skipped for the next usable one", async () => {
     seed("good", 1);
     seed("bad", 2, { entries: { not: "an array" } });
     expect((await getLatestManifestForTheme(SHOP, THEME))?.scanId).toBe("good");
+  });
+});
+
+describe("getScanManifest", () => {
+  it("returns the scan's own manifest, parsed", async () => {
+    seed("current", 2);
+    await expect(getScanManifest("current")).resolves.toEqual({
+      scanId: "current",
+      themeId: THEME,
+      createdAt: new Date(Date.UTC(2026, 9, 1, 0, 2)),
+      entries: ENTRIES,
+    });
+  });
+
+  it("none written: null", async () => {
+    await expect(getScanManifest("missing")).resolves.toBeNull();
+  });
+
+  it("another encoding version or malformed entries: null (unusable, never invented changes)", async () => {
+    seed("v2", 1, { version: MANIFEST_VERSION + 1 });
+    seed("bad", 2, { entries: [["only-a-path"]] });
+    await expect(getScanManifest("v2")).resolves.toBeNull();
+    await expect(getScanManifest("bad")).resolves.toBeNull();
   });
 });
 
@@ -303,6 +356,43 @@ describe("pruneScanManifests (keep-N)", () => {
     seed("b", 1);
     await pruneScanManifests(SHOP, THEME, 1);
     expect(store.rows.map((r) => r.scanId)).toEqual(["b"]);
+  });
+
+  it("ranks successful scans only: a newer FAILED scan never pushes out the baseline a retry needs", async () => {
+    seed("baseline", 1);
+    seed("failed", 2, { scanStatus: ScanStatus.FAILED });
+    seed("current", 3);
+
+    await pruneScanManifests(SHOP, THEME);
+
+    expect(store.rows.map((r) => r.scanId).sort()).toEqual(["baseline", "current"]);
+    // The retried computation still finds its baseline.
+    const latest = await getLatestManifestForTheme(SHOP, THEME, { excludeScanId: "current" });
+    expect(latest?.scanId).toBe("baseline");
+  });
+
+  it("never deletes a still-running scan's manifest (its own computation has not run)", async () => {
+    seed("s1", 1);
+    seed("s2", 2);
+    seed("s3", 3);
+    seed("pending", 0, { scanStatus: ScanStatus.PENDING });
+    seed("running", 4, { scanStatus: ScanStatus.IN_PROGRESS });
+
+    await pruneScanManifests(SHOP, THEME);
+
+    expect(store.rows.map((r) => r.scanId).sort()).toEqual(["pending", "running", "s2", "s3"]);
+  });
+
+  it("deletes by id within the shop and theme only", async () => {
+    seed("s1", 1);
+    seed("s2", 2);
+    seed("s3", 3);
+    await pruneScanManifests(SHOP, THEME);
+    expect(mockDb.scanManifest.deleteMany.mock.calls[0][0].where).toEqual({
+      shopId: SHOP,
+      themeId: THEME,
+      scanId: { in: ["s1"] },
+    });
   });
 
   it.each([0, -1, 1.5])("rejects keep = %s rather than deleting everything", async (keep) => {

@@ -65,17 +65,32 @@ export type StoredManifest = {
   entries: ManifestEntry[];
 };
 
+/** Parse one stored row; null when its entries are unusable. */
+function toStoredManifest(row: {
+  scanId: string;
+  themeId: string;
+  createdAt: Date;
+  entries: unknown;
+}): StoredManifest | null {
+  const entries = parseManifestEntries(row.entries);
+  return entries
+    ? { scanId: row.scanId, themeId: row.themeId, createdAt: row.createdAt, entries }
+    : null;
+}
+
 /**
  * The newest usable baseline manifest for a shop's theme: same encoding
  * version, from a scan that finished (COMPLETED or PARTIAL; a FAILED scan's
- * manifest is never a baseline), excluding `excludeScanId` (the current scan).
- * A row whose entries do not parse is skipped as unusable, so the caller falls
- * back to an older one or to a baseline check, never to invented changes.
+ * manifest is never a baseline), excluding `excludeScanId` (the current scan)
+ * and, with `before`, any scan created at or after it (so a recompute of an
+ * older check never compares against a newer one). A row whose entries do
+ * not parse is skipped as unusable, so the caller falls back to an older one
+ * or to a baseline check, never to invented changes.
  */
 export async function getLatestManifestForTheme(
   shopId: string,
   themeId: string,
-  { excludeScanId }: { excludeScanId?: string } = {},
+  { excludeScanId, before }: { excludeScanId?: string; before?: Date } = {},
 ): Promise<StoredManifest | null> {
   const rows = await db.scanManifest.findMany({
     where: {
@@ -83,7 +98,10 @@ export async function getLatestManifestForTheme(
       themeId,
       version: MANIFEST_VERSION,
       ...(excludeScanId ? { scanId: { not: excludeScanId } } : {}),
-      scan: { status: { in: BASELINE_STATUSES } },
+      scan: {
+        status: { in: BASELINE_STATUSES },
+        ...(before ? { createdAt: { lt: before } } : {}),
+      },
     },
     orderBy: [{ createdAt: "desc" }, { scanId: "desc" }],
     // Only the kept window can exist (plus the current scan's, excluded).
@@ -91,18 +109,41 @@ export async function getLatestManifestForTheme(
     select: { scanId: true, themeId: true, createdAt: true, entries: true },
   });
   for (const row of rows) {
-    const entries = parseManifestEntries(row.entries);
-    if (entries) {
-      return { scanId: row.scanId, themeId: row.themeId, createdAt: row.createdAt, entries };
-    }
+    const manifest = toStoredManifest(row);
+    if (manifest) return manifest;
   }
   return null;
 }
 
 /**
- * Delete the (shop, theme)'s manifests older than the newest `keep` (spec
- * 1.4). Two queries: read the newest ids, then one deleteMany for the rest.
- * Scoped to one shop and theme, so another shop or theme is never touched.
+ * One scan's own manifest (the current side of a change computation), or
+ * null when none was written, it is another encoding version, or its entries
+ * do not parse.
+ */
+export async function getScanManifest(scanId: string): Promise<StoredManifest | null> {
+  const row = await db.scanManifest.findUnique({
+    where: { scanId },
+    select: { scanId: true, themeId: true, createdAt: true, entries: true, version: true },
+  });
+  if (!row || row.version !== MANIFEST_VERSION) return null;
+  return toStoredManifest(row);
+}
+
+/** Scan states whose manifest no change computation can still need. */
+const RUNNING_STATUSES: ReadonlySet<ScanStatus> = new Set([
+  ScanStatus.PENDING,
+  ScanStatus.IN_PROGRESS,
+]);
+
+/**
+ * Keep the (shop, theme)'s newest `keep` baseline-eligible manifests (spec
+ * 1.4) and delete the rest. Ranked over COMPLETED / PARTIAL scans only, so a
+ * newer FAILED scan's manifest never pushes out the baseline a retried change
+ * computation still needs; FAILED scans' manifests are deleted (they are never
+ * baselines). A still-running scan's manifest is never deleted (its own change
+ * computation has not run yet). Scoped to one shop and theme, so another shop
+ * or theme is never touched. Two queries at most: the theme's few rows, then
+ * one deleteMany by id.
  */
 export async function pruneScanManifests(
   shopId: string,
@@ -112,14 +153,22 @@ export async function pruneScanManifests(
   if (!Number.isInteger(keep) || keep < 1) {
     throw new Error(`[scan-manifest] keep must be a positive integer, got ${keep}`);
   }
-  const newest = await db.scanManifest.findMany({
+  const rows = await db.scanManifest.findMany({
     where: { shopId, themeId },
     orderBy: [{ createdAt: "desc" }, { scanId: "desc" }],
-    take: keep,
-    select: { scanId: true },
+    select: { scanId: true, scan: { select: { status: true } } },
   });
-  if (newest.length < keep) return { count: 0 };
+  const kept = new Set(
+    rows
+      .filter((row) => BASELINE_STATUSES.includes(row.scan.status))
+      .slice(0, keep)
+      .map((row) => row.scanId),
+  );
+  const doomed = rows
+    .filter((row) => !kept.has(row.scanId) && !RUNNING_STATUSES.has(row.scan.status))
+    .map((row) => row.scanId);
+  if (doomed.length === 0) return { count: 0 };
   return db.scanManifest.deleteMany({
-    where: { shopId, themeId, scanId: { notIn: newest.map((row) => row.scanId) } },
+    where: { shopId, themeId, scanId: { in: doomed } },
   });
 }

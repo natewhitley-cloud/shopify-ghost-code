@@ -62,6 +62,9 @@ const SCAN_ENTRY_POINTS = [
   "app/services/scan-differ.server.ts",
   "app/services/summary-email.server.ts",
   "app/services/scan-dispatch.server.ts",
+  // gc-rrh.4: the change computation and its model run in the scan worker.
+  "app/services/change-log.server.ts",
+  "app/models/scan-change.server.ts",
   "app/routes/app._index.tsx",
   "app/routes/app.scans.$scanId.tsx",
 ];
