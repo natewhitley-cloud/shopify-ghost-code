@@ -380,13 +380,55 @@ describe("computeChangeSet: false-positive guards (A/B)", () => {
     expect(live.rows.some((r) => r.app === "EComposer")).toBe(false);
     expect(live.footnotes.pageBuilderFiles).toEqual([{ app: "EComposer", n: 1 }]);
 
+    // A builder file owned by its exact snippet name only (no filePatterns
+    // match: `ecomposer` is not `ecom-`), so the live hook decides.
+    const snippet = "snippets/ecomposer.liquid";
+    const before = beforeScan({
+      manifest: withEntries(beforeScan().manifest, [snippet, fakeMd5(snippet), 10, 1, "EComposer"]),
+    });
+    const changed: ManifestEntry = [snippet, fakeMd5(snippet, 2), 10, 2, "EComposer"];
+    const liveSnippet = compute(
+      afterScan({ manifest: withEntries(afterScan().manifest, changed) }),
+      before,
+    );
+    expect(row(liveSnippet.rows, "app_files:EComposer")).toBeUndefined();
     const notLive = compute(
-      afterScan({ liveAppHooks: { embedApps: ["Judge.me"], scriptTagApps: [] } }),
+      afterScan({
+        manifest: withEntries(afterScan().manifest, changed),
+        liveAppHooks: { embedApps: ["Judge.me"], scriptTagApps: [] },
+      }),
+      before,
     );
     expect(row(notLive.rows, "app_files:EComposer")?.files).toEqual([
-      expect.objectContaining({ path: "sections/ecom-landing-hero.liquid", status: "changed" }),
+      expect.objectContaining({ path: snippet, status: "changed" }),
     ]);
-    expect(notLive.footnotes.pageBuilderFiles).toEqual([]);
+    // The ecom- section still matches the builder's file pattern: a footnote.
+    expect(notLive.footnotes.pageBuilderFiles).toEqual([{ app: "EComposer", n: 1 }]);
+  });
+
+  it("M6: a page builder's file-pattern file is a footnote even without a live embed hook", () => {
+    const set = compute(
+      afterScan({ liveAppHooks: { embedApps: ["Judge.me"], scriptTagApps: [] } }),
+    );
+    expect(row(set.rows, "app_files:EComposer")).toBeUndefined();
+    expect(set.footnotes.pageBuilderFiles).toEqual([{ app: "EComposer", n: 1 }]);
+  });
+
+  it("M6: a file pattern alone never makes a non-builder app's edit a footnote", () => {
+    // Spreadr has filePatterns but is not a content builder.
+    const path = "snippets/spreadr-custom.liquid";
+    const before = beforeScan({
+      manifest: withEntries(beforeScan().manifest, [path, fakeMd5(path), 10, 1, "Spreadr"]),
+    });
+    const set = compute(
+      afterScan({
+        manifest: withEntries(afterScan().manifest, [path, fakeMd5(path, 2), 10, 2, "Spreadr"]),
+      }),
+      before,
+    );
+    expect(row(set.rows, "app_files:Spreadr")?.files).toEqual([
+      expect.objectContaining({ path, status: "changed" }),
+    ]);
   });
 
   it("A/B 6b: a live page builder's ADDED file still counts", () => {

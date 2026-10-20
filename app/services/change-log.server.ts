@@ -25,7 +25,7 @@
 
 import { FindingType } from "@prisma/client";
 
-import { isTrackerApp } from "./app-lookup.server";
+import { identifyAppFromFilename, isTrackerApp } from "./app-lookup.server";
 import { parseAppSignatureFingerprints, parseLiveAppHooks } from "./app-removal.server";
 import { filterIgnoredExceptMalicious } from "./finding-aggregation.server";
 import {
@@ -513,11 +513,20 @@ export function computeChangeSet(input: {
   const builderChurn = new Map<string, number>();
   for (const app of [...ownersLeft].sort(cmp)) {
     const claimed = claim((c) => c.owner === app);
-    const liveBuilder = CONTENT_BUILDERS.has(app) && currentHooks?.embed?.has(app) === true;
-    // A live page builder rewriting files it already owned: a footnote.
-    // Added or removed builder files still count (spec 2.8).
+    const builder = CONTENT_BUILDERS.has(app);
+    const liveBuilder = builder && currentHooks?.embed?.has(app) === true;
+    // A page builder rewriting files it already owned: a footnote, while the
+    // builder has a live embed hook (spec 2.8), or when the file's own path
+    // is the builder's (a filePatterns match). The path is the stronger
+    // signal: a builder without a verified embed handle never shows a live
+    // hook, yet its page saves rewrite exactly those files. A file owned only
+    // by an exact snippet name still needs the live hook. Added or removed
+    // builder files still count.
     const isChurn = (c: FileChange) =>
-      liveBuilder && c.status === "changed" && c.beforeOwner === app;
+      builder &&
+      c.status === "changed" &&
+      c.beforeOwner === app &&
+      (liveBuilder || identifyAppFromFilename(c.path)?.appName === app);
     const churn = claimed.filter(isChurn);
     const counted = claimed.filter((c) => !isChurn(c));
     if (churn.length > 0) builderChurn.set(app, churn.length);
