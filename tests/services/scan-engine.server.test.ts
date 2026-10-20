@@ -6960,8 +6960,16 @@ describe("detectMaliciousScripts", () => {
 
 describe("KNOWN_MALICIOUS_DOMAINS", () => {
   const NEW_DOMAINS = ["polyfill.io", "googie-anaiytics.com", "wp54trk.com", "shinedezign.tk"];
-  // Fake checkout hosts from the 2026-10-10 compromised-app checkout hijack (gc-mhlh).
-  const CHECKOUT_HIJACK_DOMAINS = ["biliing.top", "checkout-confirm.top", "order-confirm.top"];
+  // Fake checkout hosts from the 2026-10-10 compromised-app checkout hijack
+  // (gc-mhlh), plus the campaign's other hosts added 2026-10-19 (gc-0htk).
+  const CHECKOUT_HIJACK_DOMAINS = [
+    "biliing.top",
+    "checkout-confirm.top",
+    "order-confirm.top",
+    "account-confirm.top",
+    "billing-confirm.top",
+    "checkout-guard.top",
+  ];
 
   // Hosts that must stay OFF the list: the legitimate polyfill replacements,
   // lookalike-shaped neighbours, the real hosts the listed ones imitate, and
@@ -6992,6 +7000,15 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "order-confirm.com",
     "confirm.top",
     "checkout.shopify.com",
+    // gc-0htk lookalikes: other TLDs, a missing hyphen, a longer label.
+    "account-confirm.com",
+    "accountconfirm.top",
+    "billingconfirm.top",
+    "billing-confirmed.top",
+    "my-billing-confirm.top",
+    "checkout-guard.com",
+    "checkoutguard.top",
+    "checkout-guard.top.example.com",
   ];
 
   const SHARED_HOSTS = [
@@ -7009,7 +7026,7 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "cloudflare.com",
   ];
 
-  it("lists exactly the nine vetted domains", () => {
+  it("lists exactly the twelve vetted domains", () => {
     expect(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain)).toEqual([
       "jsdeliver.cloud",
       "cb28utrk.com",
@@ -7129,6 +7146,12 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
         "References known-malicious domain checkout-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
       "order-confirm.top":
         "References known-malicious domain order-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+      "account-confirm.top":
+        "References known-malicious domain account-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+      "billing-confirm.top":
+        "References known-malicious domain billing-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+      "checkout-guard.top":
+        "References known-malicious domain checkout-guard.top (fake checkout page that collects card details), likely injected code. Your theme may be compromised",
     });
   });
 
