@@ -6,7 +6,7 @@
 import { AppRemovalState, FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
-import type { AppSignature } from "../../app/data/app-signatures.server";
+import { APP_SIGNATURES, type AppSignature } from "../../app/data/app-signatures.server";
 import type { ShopIgnores } from "../../app/models/ignored-finding.server";
 import {
   appLeftoverFindings,
@@ -416,6 +416,31 @@ describe("computeAppSignatureFingerprints", () => {
     expect(real.Klaviyo).toMatch(/^[0-9a-f]{8}$/);
     const parsed = parseAppSignatureFingerprints(JSON.parse(JSON.stringify(real)));
     expect(parsed?.get("Klaviyo")).toBe(real.Klaviyo);
+  });
+
+  // gc-rrh.4: contentBuilder marks page-builder churn for the change log. It
+  // matches nothing, so it must not move a fingerprint: a moved fingerprint
+  // suppresses removal detection for that app on the next scan.
+  it("contentBuilder is not part of the fingerprint", () => {
+    expect(computeAppSignatureFingerprints([{ ...base(), contentBuilder: true }])).toEqual(
+      computeAppSignatureFingerprints([base()]),
+    );
+  });
+
+  it("the real page builders hash exactly as they would without the flag", () => {
+    const builders = APP_SIGNATURES.filter((s) => s.contentBuilder === true);
+    expect(builders.map((s) => s.appName).sort()).toEqual([
+      "EComposer",
+      "GemPages",
+      "PageFly",
+      "Shogun",
+    ]);
+    const stripped = APP_SIGNATURES.map((s) => {
+      const copy: AppSignature = { ...s };
+      delete copy.contentBuilder;
+      return copy;
+    });
+    expect(computeAppSignatureFingerprints()).toEqual(computeAppSignatureFingerprints(stripped));
   });
 });
 

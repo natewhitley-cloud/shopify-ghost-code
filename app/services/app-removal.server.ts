@@ -70,17 +70,21 @@ function canonicalize(value: unknown): unknown {
 }
 
 /**
- * `{ [appName]: fingerprint }` over every field of each app's signature. Two
- * entries with the same appName (none today) are hashed together, so editing
- * either changes the app's fingerprint.
+ * `{ [appName]: fingerprint }` over every MATCHING field of each app's
+ * signature. Two entries with the same appName (none today) are hashed
+ * together, so editing either changes the app's fingerprint. `contentBuilder`
+ * (gc-rrh.4) is excluded: it changes no match, so it must not change the
+ * fingerprint (that would suppress removals of the app for a scan).
  */
 export function computeAppSignatureFingerprints(
   signatures: readonly AppSignature[] = APP_SIGNATURES,
 ): Record<string, string> {
   const serialized = new Map<string, string[]>();
   for (const signature of signatures) {
+    const matching: AppSignature = { ...signature };
+    delete matching.contentBuilder;
     const parts = serialized.get(signature.appName) ?? [];
-    parts.push(JSON.stringify(canonicalize(signature)));
+    parts.push(JSON.stringify(canonicalize(matching)));
     serialized.set(signature.appName, parts);
   }
   const out: Record<string, string> = {};

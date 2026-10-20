@@ -48,6 +48,14 @@ export type AppSignature = {
   /** App-specific evidence that unlocks `corroboratedSnippetNames`. */
   corroborationPatterns?: RegExp[];
   isTracker?: boolean;
+  /**
+   * A page builder that rewrites its own section files on every page save
+   * (gc-rrh.4, spec 2.8). The "What changed" log shows that churn as an
+   * uncounted footnote instead of a change. Not a matching field: excluded
+   * from the signature fingerprint (computeAppSignatureFingerprints), so
+   * setting it never suppresses app-removal detection.
+   */
+  contentBuilder?: true;
 };
 
 export const APP_SIGNATURES: AppSignature[] = [
@@ -713,6 +721,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [/pagefly/i],
     filePatterns: [/(^|\/)pagefly[-.]/i],
     embedHandles: ["pagefly-page-builder"],
+    contentBuilder: true,
   },
   {
     appName: "Shogun",
@@ -720,6 +729,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/getshogun\.com/, /window\.ShogunFrontend/, /shogun-root/],
     snippetNames: ["shogun-head", "shogun-scripts", "shogun"],
     cssPatterns: [/getshogun/, /shogun-/],
+    contentBuilder: true,
   },
   {
     appName: "GemPages",
@@ -727,6 +737,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/gempages\.net/, /GemPages/, /gemcommerce\.com/],
     snippetNames: ["gem-app-header-scripts", "gem-app-footer-scripts", "gempages"],
     cssPatterns: [/gempages/],
+    contentBuilder: true,
   },
   {
     appName: "EComposer",
@@ -738,6 +749,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     // Verified on a live EComposer storefront (paw-naturals, 2026-10-04,
     // gc-clt4): `shopify://apps/ecomposer-builder/blocks/app-embed/...`.
     embedHandles: ["ecomposer-builder"],
+    contentBuilder: true,
   },
 
   // -------------------------------------------------------------------------
