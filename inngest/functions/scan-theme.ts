@@ -1025,6 +1025,19 @@ const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> 
  */
 export const APP_REMOVALS_FAILURE_KEY = "scan-theme/app-removals";
 
+/**
+ * OpsEvent key for a failed change computation (gc-rrh.4): a function_failure
+ * under its own key, mirroring APP_REMOVALS_FAILURE_KEY, so it never
+ * dedup-suppresses a real scan failure alert. No new OpsEvent type (spec 8).
+ */
+export const CHANGE_LOG_FAILURE_KEY = "scan-theme/change-log";
+
+/** Bound on a logged or recorded error message: a Prisma error can echo its arguments. */
+const MAX_LOGGED_ERROR_CHARS = 500;
+
+const cappedErrorMessage = (err: unknown) =>
+  (err instanceof Error ? err.message : String(err)).slice(0, MAX_LOGGED_ERROR_CHARS);
+
 export const scanTheme = inngest.createFunction(
   {
     id: "scan-theme",
@@ -1101,6 +1114,9 @@ export const scanTheme = inngest.createFunction(
         missingSnippetsCapped,
         appsWithEnabledEmbed,
         themeInfo,
+        isPublishedTheme,
+        manifestFileCount,
+        manifestBytes: manifestByteCount,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -2283,8 +2299,10 @@ export const scanTheme = inngest.createFunction(
 
       // FINAL step: compute resolution counts vs the previous scan, then set the
       // terminal status. This is the ONLY place the scan leaves IN_PROGRESS on the
-      // success path (LOG-4). Idempotent on retry.
-      await step.run("finalize-scan", async () => {
+      // success path (LOG-4). Idempotent on retry. Returns whether THIS attempt
+      // finalized the scan (read by compute-changes; a run memoized before the
+      // field existed returns undefined, which reads as not finalized).
+      const finalizeOutcome = await step.run("finalize-scan", async () => {
         const db = (await import("../../app/db.server")).default;
 
         // Diff this scan's persisted findings against the previous completed scan
@@ -2442,6 +2460,81 @@ export const scanTheme = inngest.createFunction(
             }
           }
         }
+        return { finalized: finalized?.finalized === true };
+      });
+
+      // "What changed" (gc-rrh.4, dark): compute and save this check's change
+      // set, then prune the theme's manifests to the newest two successful
+      // ones (spec 1.4). Runs only when this run finalized the scan, after
+      // finalize-scan so this scan's AppRemoval rows exist. NEVER throws and
+      // never changes the scan, its findings or any alert: a failure is
+      // logged (message capped) and recorded as a function_failure under
+      // CHANGE_LOG_FAILURE_KEY, and the scan stays finalized. Idempotent on a
+      // re-run: the change set is upserted on the scan id against the same
+      // baseline (only earlier scans are considered, and the prune keeps it).
+      // Returns a few scalars for scan_signal.
+      const changeLog = await step.run("compute-changes", async () => {
+        if (finalizeOutcome?.finalized !== true) {
+          return { status: "skipped" as const, reason: "not_finalized" };
+        }
+        const startedAt = Date.now();
+        let outcome:
+          | { status: "saved"; kind: string; changeCount: number; worthALookCount: number }
+          | { status: "skipped"; reason: string }
+          | { status: "failed" };
+        try {
+          if (typeof manifestFileCount !== "number") {
+            // No manifest was persisted (or a run memoized before it existed):
+            // nothing to compare, and the next check compares to the last one.
+            outcome = { status: "skipped", reason: "no_manifest" };
+          } else {
+            const { recordChangeSetForScan } = await import("../../app/services/change-log.server");
+            outcome = await recordChangeSetForScan({
+              scanId,
+              shopId,
+              themeId,
+              isPublishedTheme: typeof isPublishedTheme === "boolean" ? isPublishedTheme : null,
+            });
+          }
+        } catch (err) {
+          outcome = { status: "failed" };
+          logger.error("change log not computed; scan unaffected", {
+            function: "scan-theme",
+            event: "change_log_failed",
+            scanId,
+            shopId,
+            errorName: err instanceof Error ? err.name : typeof err,
+            error: cappedErrorMessage(err),
+          });
+          try {
+            const { recordOpsEvent, OPS_EVENT_TYPES } =
+              await import("../../app/models/ops-event.server");
+            await recordOpsEvent({
+              eventType: OPS_EVENT_TYPES.FUNCTION_FAILURE,
+              key: CHANGE_LOG_FAILURE_KEY,
+              message: cappedErrorMessage(err),
+              metadata: { scanId, shopId },
+            });
+          } catch {
+            // Never let the alert path fail the finalized scan.
+          }
+        }
+        // Keep-2 manifest retention (spec 1.4), whatever the computation did,
+        // so a failing computation can never let manifests pile up.
+        try {
+          const { pruneScanManifests } = await import("../../app/models/scan-manifest.server");
+          await pruneScanManifests(shopId, themeId);
+        } catch (err) {
+          logger.warn("manifest prune failed; scan unaffected", {
+            function: "scan-theme",
+            event: "manifest_prune_failed",
+            scanId,
+            shopId,
+            errorName: err instanceof Error ? err.name : typeof err,
+            error: cappedErrorMessage(err),
+          });
+        }
+        return { ...outcome, computeMs: Date.now() - startedAt };
       });
 
       // Emit ONE scan_signal OpsEvent per completed scan (Feature 2). Runs AFTER
@@ -2556,6 +2649,17 @@ export const scanTheme = inngest.createFunction(
               danglingCapped,
               danglingTruncated,
               staticCandidatesCapped,
+              // "What changed" pipeline health (gc-rrh.4, spec 8): additive.
+              // From the compute-changes step's memoized result, so no query.
+              changes: {
+                status: changeLog.status,
+                kind: "kind" in changeLog ? changeLog.kind : null,
+                changeCount: "changeCount" in changeLog ? changeLog.changeCount : null,
+                worthALookCount: "worthALookCount" in changeLog ? changeLog.worthALookCount : null,
+                manifestFiles: typeof manifestFileCount === "number" ? manifestFileCount : null,
+                manifestBytes: typeof manifestByteCount === "number" ? manifestByteCount : null,
+                computeMs: "computeMs" in changeLog ? changeLog.computeMs : null,
+              },
             },
           });
         } catch (err) {

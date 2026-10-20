@@ -96,6 +96,17 @@ vi.mock("../../app/models/scan-domain.server", () => ({
 // assert what is written and make the write fail.
 vi.mock("../../app/models/scan-manifest.server", () => ({
   upsertScanManifest: vi.fn(),
+  getScanManifest: vi.fn(),
+  getLatestManifestForTheme: vi.fn(),
+  pruneScanManifests: vi.fn(),
+}));
+
+// Change-log reads and the change-set write (gc-rrh.4, compute-changes): the
+// real computation (app/services/change-log.server.ts) runs on these.
+vi.mock("../../app/models/scan-change.server", () => ({
+  getScanForChangeLog: vi.fn(),
+  getLatestPublishedChangeSetBefore: vi.fn(),
+  upsertScanChangeSet: vi.fn(),
 }));
 
 // scan_signal telemetry (Feature 2): mock the sink so the emitted metadata can be
@@ -250,6 +261,8 @@ vi.mock("../../app/models/app-removal.server", () => ({
   getOpenAppRemovals: vi.fn(),
   applyAppRemovalPlan: vi.fn(),
   getAppRemovalsTouchedByScans: vi.fn(),
+  // gc-rrh.4: the change log's removal rows for this scan.
+  getRemovalNoticeRows: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -281,13 +294,24 @@ import {
   applyAppRemovalPlan,
   getAppRemovalsTouchedByScans,
   getOpenAppRemovals,
+  getRemovalNoticeRows,
 } from "../../app/models/app-removal.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getLatestMerchantAlert } from "../../app/models/merchant-alert.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
+import {
+  getLatestPublishedChangeSetBefore,
+  getScanForChangeLog,
+  upsertScanChangeSet,
+} from "../../app/models/scan-change.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
-import { upsertScanManifest } from "../../app/models/scan-manifest.server";
+import {
+  getLatestManifestForTheme,
+  getScanManifest,
+  pruneScanManifests,
+  upsertScanManifest,
+} from "../../app/models/scan-manifest.server";
 import {
   finalizeScan,
   markScanStarted,
@@ -298,6 +322,7 @@ import {
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { computeAppSignatureFingerprints } from "../../app/services/app-removal.server";
+import type { ChangeLogScan as FixtureScan } from "../../app/services/change-log.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
@@ -334,7 +359,12 @@ import {
   auditTranslations,
 } from "../../app/services/translation-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
-import { APP_REMOVALS_FAILURE_KEY, scanTheme } from "../../inngest/functions/scan-theme";
+import {
+  APP_REMOVALS_FAILURE_KEY,
+  CHANGE_LOG_FAILURE_KEY,
+  scanTheme,
+} from "../../inngest/functions/scan-theme";
+import { PUSHOWL_REMOVED, afterScan, beforeScan } from "../fixtures/change-log-scans";
 import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
@@ -7213,5 +7243,285 @@ describe("scanTheme — change-log manifest in fetch-and-scan (gc-rrh.4)", () =>
     expect(fetchAndScan(results).manifestFileCount).toBeNull();
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
     expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compute-changes step (gc-rrh.4, spec 2.1 and 1.4)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — compute-changes step (gc-rrh.4)", () => {
+  const mockUpsertScanManifest = upsertScanManifest as ReturnType<typeof vi.fn>;
+  const mockGetScanManifest = getScanManifest as ReturnType<typeof vi.fn>;
+  const mockGetLatestManifest = getLatestManifestForTheme as ReturnType<typeof vi.fn>;
+  const mockPrune = pruneScanManifests as ReturnType<typeof vi.fn>;
+  const mockGetScanForChangeLog = getScanForChangeLog as ReturnType<typeof vi.fn>;
+  const mockGetLatestPublished = getLatestPublishedChangeSetBefore as ReturnType<typeof vi.fn>;
+  const mockUpsertChangeSet = upsertScanChangeSet as ReturnType<typeof vi.fn>;
+  const mockRemovalRows = getRemovalNoticeRows as ReturnType<typeof vi.fn>;
+  const mockIgnores = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+
+  const BASELINE_ID = "scan-baseline-1";
+  const AT = new Date("2026-10-19T06:40:00Z");
+  const EARLIER = new Date("2026-10-12T06:40:00Z");
+
+  /** A fixture scan as the change-log model returns it, under this test's ids. */
+  function dbRow(scan: FixtureScan, id: string, createdAt: Date) {
+    return {
+      id,
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      themeName: scan.themeName,
+      status: "COMPLETED",
+      origin: "SCHEDULED",
+      createdAt,
+      ...scan.coverage,
+      liveAppHooks: scan.liveAppHooks,
+      appSignatureFingerprints: scan.appSignatureFingerprints,
+      themeInfo: scan.themeInfo,
+      shop: { plan: "Professional" },
+      findings: scan.findings,
+      unknownScripts: scan.unknownScripts,
+      scanDomains: scan.scanDomains,
+    };
+  }
+
+  beforeEach(() => {
+    publishTheme(THEME_ID);
+    mockFinalizeScan.mockResolvedValue({ finalized: true });
+    mockUpsertScanManifest.mockResolvedValue({ scanId: SCAN_ID });
+    mockGetScanForChangeLog.mockImplementation(async (id: string) =>
+      id === SCAN_ID
+        ? dbRow(afterScan(), SCAN_ID, AT)
+        : id === BASELINE_ID
+          ? dbRow(beforeScan(), BASELINE_ID, EARLIER)
+          : null,
+    );
+    mockGetScanManifest.mockResolvedValue({
+      scanId: SCAN_ID,
+      themeId: THEME_ID,
+      createdAt: AT,
+      entries: afterScan().manifest,
+    });
+    mockGetLatestManifest.mockResolvedValue({
+      scanId: BASELINE_ID,
+      themeId: THEME_ID,
+      createdAt: EARLIER,
+      entries: beforeScan().manifest,
+    });
+    mockGetLatestPublished.mockResolvedValue({ scanId: BASELINE_ID, themeId: THEME_ID });
+    mockRemovalRows.mockResolvedValue([PUSHOWL_REMOVED]);
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
+    mockUpsertChangeSet.mockResolvedValue({ scanId: SCAN_ID });
+    mockPrune.mockResolvedValue({ count: 1 });
+    // App-removal detection at finalize: nothing to do in these tests.
+    mockGetPreviousScanForTheme.mockResolvedValue(null);
+  });
+
+  async function runCapturing(stepOverride?: (name: string, fn: () => unknown) => unknown) {
+    const results: Record<string, unknown> = {};
+    const order: string[] = [];
+    const step = {
+      ...createMockInngestStep(),
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        order.push(name);
+        const out = await (stepOverride ? stepOverride(name, fn) : fn());
+        results[name] = out;
+        return out;
+      }),
+    };
+    const result = await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+    return { results, result, order };
+  }
+
+  const scanSignal = () =>
+    mockRecordOpsEvent.mock.calls.find(([e]) => e.eventType === "scan_signal")?.[0];
+  const changeLogFailures = () =>
+    mockRecordOpsEvent.mock.calls.filter(([e]) => e.key === CHANGE_LOG_FAILURE_KEY);
+
+  it("runs between finalize-scan and emit-scan-signal", async () => {
+    const { order } = await runCapturing();
+    const at = (name: string) => order.indexOf(name);
+    expect(at("compute-changes")).toBe(at("finalize-scan") + 1);
+    expect(at("emit-scan-signal")).toBe(at("compute-changes") + 1);
+  });
+
+  it("saves the change set (compared with the earlier manifest), prunes, and reports to scan_signal", async () => {
+    const { results } = await runCapturing();
+
+    expect(mockUpsertChangeSet).toHaveBeenCalledTimes(1);
+    const [scanId, saved] = mockUpsertChangeSet.mock.calls[0];
+    expect(scanId).toBe(SCAN_ID);
+    expect(saved).toMatchObject({
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      kind: "compared",
+      baselineScanId: BASELINE_ID,
+      checkKind: "weekly",
+      onPublishedTheme: true,
+      changeCount: 4,
+      worthALookCount: 2,
+    });
+    expect(saved.rows.map((r: { key: string }) => r.key)).toEqual([
+      "app_inactive:PushOwl",
+      "app_added:Judge.me",
+      "file_edit:layout/theme.liquid",
+      "file_edit:sections/header.liquid",
+    ]);
+    expect(mockPrune).toHaveBeenCalledWith(SHOP_ID, THEME_ID);
+
+    expect(results["compute-changes"]).toMatchObject({
+      status: "saved",
+      kind: "compared",
+      changeCount: 4,
+      worthALookCount: 2,
+    });
+    expect(scanSignal().metadata.changes).toEqual({
+      status: "saved",
+      kind: "compared",
+      changeCount: 4,
+      worthALookCount: 2,
+      // The default theme mock reports no file metadata: an empty manifest.
+      manifestFiles: 0,
+      manifestBytes: 2,
+      computeMs: expect.any(Number),
+    });
+    expect(changeLogFailures()).toHaveLength(0);
+  });
+
+  it("only scalars cross the step boundary, never rows or paths", async () => {
+    const { results } = await runCapturing();
+    const out = JSON.stringify(results["compute-changes"]);
+    expect(out).not.toContain("layout/theme.liquid");
+    expect(out).not.toContain("PushOwl");
+  });
+
+  it("not finalized by this run (watchdog FAILED, or a memoized pre-feature run): no computation, no prune", async () => {
+    mockFinalizeScan.mockResolvedValue({ finalized: false });
+    const { results } = await runCapturing();
+    expect(results["compute-changes"]).toEqual({ status: "skipped", reason: "not_finalized" });
+    expect(mockGetScanForChangeLog).not.toHaveBeenCalled();
+    expect(mockUpsertChangeSet).not.toHaveBeenCalled();
+    expect(mockPrune).not.toHaveBeenCalled();
+    expect(scanSignal().metadata.changes).toMatchObject({ status: "skipped", kind: null });
+  });
+
+  it("no manifest persisted this scan: skipped without a read, prune still runs", async () => {
+    mockUpsertScanManifest.mockRejectedValue(new Error("manifest write failed"));
+    const { results } = await runCapturing();
+    expect(results["compute-changes"]).toMatchObject({ status: "skipped", reason: "no_manifest" });
+    expect(mockGetScanForChangeLog).not.toHaveBeenCalled();
+    expect(mockPrune).toHaveBeenCalledTimes(1);
+  });
+
+  it("a compute failure never fails the scan: logged (message capped), recorded, prune still runs", async () => {
+    const huge = `write failed: ${"x".repeat(5000)}`;
+    mockUpsertChangeSet.mockRejectedValue(new Error(huge));
+    const error = vi.spyOn(logger, "error");
+
+    const { results, result } = await runCapturing();
+
+    expect(result).toEqual({
+      scanId: SCAN_ID,
+      findingCount: MOCK_FINDINGS.length,
+      status: "COMPLETED",
+    });
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED", expect.anything());
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+    expect(results["compute-changes"]).toMatchObject({ status: "failed" });
+    expect(mockPrune).toHaveBeenCalledTimes(1);
+
+    const logged = error.mock.calls.find(
+      ([msg]) => msg === "change log not computed; scan unaffected",
+    );
+    expect(logged?.[1]).toMatchObject({
+      event: "change_log_failed",
+      scanId: SCAN_ID,
+      shopId: SHOP_ID,
+    });
+    expect((logged?.[1] as { error: string }).error.length).toBe(500);
+
+    const [failure] = changeLogFailures();
+    expect(failure[0]).toMatchObject({
+      eventType: "function_failure",
+      key: CHANGE_LOG_FAILURE_KEY,
+      metadata: { scanId: SCAN_ID, shopId: SHOP_ID },
+    });
+    expect(failure[0].message.length).toBe(500);
+    expect(scanSignal().metadata.changes).toMatchObject({ status: "failed", kind: null });
+    error.mockRestore();
+  });
+
+  it("a prune failure never fails the scan and the change set is still saved", async () => {
+    mockPrune.mockRejectedValue(new Error("prune failed"));
+    const warn = vi.spyOn(logger, "warn");
+
+    const { results, result } = await runCapturing();
+
+    expect(result.status).toBe("COMPLETED");
+    expect(mockUpsertChangeSet).toHaveBeenCalledTimes(1);
+    expect(results["compute-changes"]).toMatchObject({ status: "saved" });
+    expect(warn).toHaveBeenCalledWith(
+      "manifest prune failed; scan unaffected",
+      expect.objectContaining({ event: "manifest_prune_failed", error: "prune failed" }),
+    );
+    expect(changeLogFailures()).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("a step retry is idempotent: the same row is upserted again, never a second one", async () => {
+    // Inngest re-runs a step whose attempt did not complete: run it twice.
+    await runCapturing(async (name, fn) => {
+      if (name === "compute-changes") await fn();
+      return fn();
+    });
+    expect(mockUpsertChangeSet).toHaveBeenCalledTimes(2);
+    const [first, second] = mockUpsertChangeSet.mock.calls;
+    expect(first[0]).toBe(SCAN_ID);
+    expect(second).toEqual(first);
+  });
+
+  it("scan results are identical with the step succeeding or failing", async () => {
+    /** Wall-clock fields (`*Ms`, deadlines) differ run to run; everything else must match. */
+    const stripTimings = (value: unknown): unknown =>
+      JSON.parse(JSON.stringify(value ?? null, (k, v) => (/(Ms|Deadline)$/.test(k) ? 0 : v)));
+    const capture = () => ({
+      finalize: mockFinalizeScan.mock.calls,
+      saved: mockSaveThemeFindings.mock.calls,
+      scripts: mockCreateUnknownScripts.mock.calls,
+      domains: mockCreateScanDomains.mock.calls,
+      statuses: mockUpdateScanStatus.mock.calls,
+      signal: (() => {
+        const meta = { ...scanSignal().metadata };
+        delete meta.changes;
+        return meta;
+      })(),
+    });
+
+    const ok = await runCapturing();
+    const okState = stripTimings(capture());
+    expect(ok.results["compute-changes"]).toMatchObject({ status: "saved" });
+
+    vi.clearAllMocks();
+    MOCK_ADMIN.graphql.mockReset();
+    publishTheme(THEME_ID);
+    mockFinalizeScan.mockResolvedValue({ finalized: true });
+    mockUpsertScanManifest.mockResolvedValue({ scanId: SCAN_ID });
+    mockGetScanForChangeLog.mockRejectedValue(new Error("read failed"));
+    mockPrune.mockRejectedValue(new Error("prune failed"));
+
+    const failed = await runCapturing();
+
+    expect(failed.results["compute-changes"]).toMatchObject({ status: "failed" });
+    expect(failed.result).toEqual(ok.result);
+    expect(stripTimings(capture())).toEqual(okState);
+    // Every other step returned the same thing.
+    for (const name of Object.keys(ok.results)) {
+      if (name === "compute-changes") continue;
+      expect([name, stripTimings(failed.results[name])]).toEqual([
+        name,
+        stripTimings(ok.results[name]),
+      ]);
+    }
   });
 });
