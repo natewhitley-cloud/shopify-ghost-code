@@ -2299,10 +2299,8 @@ export const scanTheme = inngest.createFunction(
 
       // FINAL step: compute resolution counts vs the previous scan, then set the
       // terminal status. This is the ONLY place the scan leaves IN_PROGRESS on the
-      // success path (LOG-4). Idempotent on retry. Returns whether THIS attempt
-      // finalized the scan (read by compute-changes; a run memoized before the
-      // field existed returns undefined, which reads as not finalized).
-      const finalizeOutcome = await step.run("finalize-scan", async () => {
+      // success path (LOG-4). Idempotent on retry.
+      await step.run("finalize-scan", async () => {
         const db = (await import("../../app/db.server")).default;
 
         // Diff this scan's persisted findings against the previous completed scan
@@ -2460,13 +2458,15 @@ export const scanTheme = inngest.createFunction(
             }
           }
         }
-        return { finalized: finalized?.finalized === true };
       });
 
       // "What changed" (gc-rrh.4, dark): compute and save this check's change
       // set, then prune the theme's manifests to the newest two successful
-      // ones (spec 1.4). Runs only when this run finalized the scan, after
-      // finalize-scan so this scan's AppRemoval rows exist. NEVER throws and
+      // ones (spec 1.4). Runs after finalize-scan so this scan's AppRemoval
+      // rows exist. Gated on the scan's PERSISTED status, not on whether this
+      // attempt's finalize write landed: a retried finalize finds the scan
+      // already COMPLETED and must still get its change set, while a
+      // watchdog-FAILED scan is skipped (getScanForChangeLog returns null). NEVER throws and
       // never changes the scan, its findings or any alert: a failure is
       // logged (message capped) and recorded as a function_failure under
       // CHANGE_LOG_FAILURE_KEY, and the scan stays finalized. Idempotent on a
@@ -2474,9 +2474,6 @@ export const scanTheme = inngest.createFunction(
       // baseline (only earlier scans are considered, and the prune keeps it).
       // Returns a few scalars for scan_signal.
       const changeLog = await step.run("compute-changes", async () => {
-        if (finalizeOutcome?.finalized !== true) {
-          return { status: "skipped" as const, reason: "not_finalized" };
-        }
         const startedAt = Date.now();
         let outcome:
           | { status: "saved"; kind: string; changeCount: number; worthALookCount: number }

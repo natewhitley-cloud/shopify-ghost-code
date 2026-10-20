@@ -172,6 +172,9 @@ export type ComputedChangeSet = {
   footnotes: ChangeFootnotes;
 };
 
+/** Scan origins that always scan the shop's MAIN (published) theme (spec 0). */
+const MAIN_THEME_ORIGINS: ReadonlySet<string> = new Set(["SCHEDULED", "AUTO_PUBLISH"]);
+
 const SECURITY_TYPES: ReadonlySet<string> = new Set(["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"]);
 
 const CONTENT_BUILDERS: ReadonlySet<string> = new Set(
@@ -738,11 +741,10 @@ export async function recordChangeSetForScan(input: {
   scanId: string;
   shopId: string;
   themeId: string;
-  /** From fetch-and-scan; null (unknown) counts as not published. */
+  /** From fetch-and-scan; null when the published-theme read failed (see below). */
   isPublishedTheme: boolean | null;
 }): Promise<ChangeLogOutcome> {
   const { scanId, shopId, themeId } = input;
-  const onPublishedTheme = input.isPublishedTheme === true;
   const [scan, manifest] = await Promise.all([
     getScanForChangeLog(scanId),
     getScanManifest(scanId),
@@ -750,10 +752,29 @@ export async function recordChangeSetForScan(input: {
   if (!scan) return { status: "skipped", reason: "scan_not_found" };
   if (!manifest) return { status: "skipped", reason: "no_manifest" };
 
+  // Published theme unknown (the read failed twice): saving it as "not
+  // published" would hide this check from every published-theme surface and
+  // the next check would compare against it, so its changes would never show.
+  // Scheduled and publish scans always target the MAIN theme (poll-check-shop
+  // and the themes/publish webhook resolve it at dispatch), so they are
+  // published; any other scan is published when its theme is the one the
+  // latest published check was on; otherwise not.
+  const readPrevious = () => getLatestPublishedChangeSetBefore(shopId, scan.createdAt, scanId);
+  let previous: Awaited<ReturnType<typeof readPrevious>> | undefined;
+  let onPublishedTheme: boolean;
+  if (input.isPublishedTheme !== null) {
+    onPublishedTheme = input.isPublishedTheme;
+  } else if (MAIN_THEME_ORIGINS.has(scan.origin)) {
+    onPublishedTheme = true;
+  } else {
+    previous = await readPrevious();
+    onPublishedTheme = previous?.themeId === themeId;
+  }
+
   let kind: ChangeSetKind = "baseline";
   let baselineManifest = null;
   if (onPublishedTheme) {
-    const previous = await getLatestPublishedChangeSetBefore(shopId, scan.createdAt, scanId);
+    if (previous === undefined) previous = await readPrevious();
     if (previous && previous.themeId !== themeId) {
       baselineManifest = await getLatestManifestForTheme(shopId, previous.themeId, {
         before: scan.createdAt,

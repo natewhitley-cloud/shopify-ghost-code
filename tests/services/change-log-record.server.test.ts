@@ -209,13 +209,54 @@ describe("recordChangeSetForScan", () => {
     await expect(run()).resolves.toMatchObject({ kind: "compared" });
   });
 
-  it("an unpublished or unknown theme never checks for a switch, and is saved as not published", async () => {
-    for (const isPublishedTheme of [false, null]) {
-      m.upsertScanChangeSet.mockClear();
-      await run({ isPublishedTheme });
-      expect(m.upsertScanChangeSet.mock.calls[0][1].onPublishedTheme).toBe(false);
-    }
+  it("an unpublished theme never checks for a switch, and is saved as not published", async () => {
+    await run({ isPublishedTheme: false });
+    expect(m.upsertScanChangeSet.mock.calls[0][1].onPublishedTheme).toBe(false);
     expect(m.getLatestPublishedChangeSetBefore).not.toHaveBeenCalled();
+  });
+
+  describe("published theme unknown (the read failed twice) (M5)", () => {
+    const withOrigin = (origin: string) =>
+      m.getScanForChangeLog.mockImplementation(async (id: string) =>
+        SCANS[id] ? dbRow(SCANS[id], { origin }) : null,
+      );
+    const savedPublished = () => m.upsertScanChangeSet.mock.calls[0][1].onPublishedTheme;
+
+    it.each(["SCHEDULED", "AUTO_PUBLISH"])(
+      "a %s scan always targets the MAIN theme: saved as published",
+      async (origin) => {
+        withOrigin(origin);
+        await run({ isPublishedTheme: null });
+        expect(savedPublished()).toBe(true);
+      },
+    );
+
+    it("a manual scan of the theme the latest published check was on: published", async () => {
+      withOrigin("MANUAL");
+      await run({ isPublishedTheme: null });
+      expect(savedPublished()).toBe(true);
+      // One read serves both the fallback and the switch check.
+      expect(m.getLatestPublishedChangeSetBefore).toHaveBeenCalledTimes(1);
+      expect(m.upsertScanChangeSet.mock.calls[0][1].kind).toBe("compared");
+    });
+
+    it("a manual scan of another theme than the latest published check: not published", async () => {
+      withOrigin("MANUAL");
+      m.getLatestPublishedChangeSetBefore.mockResolvedValue({
+        scanId: BEFORE_SCAN_ID,
+        themeId: OTHER_THEME_ID,
+      });
+      await run({ isPublishedTheme: null });
+      expect(savedPublished()).toBe(false);
+      expect(m.upsertScanChangeSet.mock.calls[0][1].kind).toBe("compared");
+    });
+
+    it("a manual scan with no published check on record: not published", async () => {
+      withOrigin("MANUAL");
+      m.getLatestPublishedChangeSetBefore.mockResolvedValue(null);
+      await run({ isPublishedTheme: null });
+      expect(savedPublished()).toBe(false);
+    });
   });
 
   it("no earlier manifest (first scan, legacy, pruned): a baseline check with no rows", async () => {

@@ -7396,14 +7396,27 @@ describe("scanTheme — compute-changes step (gc-rrh.4)", () => {
     expect(out).not.toContain("PushOwl");
   });
 
-  it("not finalized by this run (watchdog FAILED, or a memoized pre-feature run): no computation, no prune", async () => {
+  it("a retried finalize (this attempt did not write the status) still computes: gated on the persisted status (L4)", async () => {
+    // The scan is already COMPLETED from the earlier attempt.
     mockFinalizeScan.mockResolvedValue({ finalized: false });
     const { results } = await runCapturing();
-    expect(results["compute-changes"]).toEqual({ status: "skipped", reason: "not_finalized" });
-    expect(mockGetScanForChangeLog).not.toHaveBeenCalled();
+    expect(results["compute-changes"]).toMatchObject({ status: "saved", kind: "compared" });
+    expect(mockUpsertChangeSet).toHaveBeenCalledTimes(1);
+    expect(mockPrune).toHaveBeenCalledWith(SHOP_ID, THEME_ID);
+  });
+
+  it("a scan that did not succeed (watchdog FAILED): no change set, the scan is unaffected", async () => {
+    mockFinalizeScan.mockResolvedValue({ finalized: false });
+    // getScanForChangeLog returns null for a FAILED scan.
+    mockGetScanForChangeLog.mockResolvedValue(null);
+    const { results } = await runCapturing();
+    expect(results["compute-changes"]).toMatchObject({
+      status: "skipped",
+      reason: "scan_not_found",
+    });
     expect(mockUpsertChangeSet).not.toHaveBeenCalled();
-    expect(mockPrune).not.toHaveBeenCalled();
     expect(scanSignal().metadata.changes).toMatchObject({ status: "skipped", kind: null });
+    expect(changeLogFailures()).toHaveLength(0);
   });
 
   it("no manifest persisted this scan: skipped without a read, prune still runs", async () => {
