@@ -29,7 +29,7 @@
  * NEVER THROWS: a failed email must never fail or retry a scan.
  */
 
-import { filterIgnoredExceptMalicious } from "./finding-aggregation.server";
+import { diffFindingLists, type FindingDiffArgs } from "./change-log.server";
 import {
   ALERT_WINDOW_TOLERANCE,
   buildBodyUnsubscribeUrl,
@@ -39,14 +39,7 @@ import {
   getMerchantAlertConfigStatus,
   sendMerchantAlert,
 } from "./merchant-alert.server";
-import {
-  diffScans,
-  djb2Hex,
-  parseLiveFindingTypes,
-  restrictToLiveInBoth,
-  scanDiffOptions,
-} from "./scan-differ.server";
-import type { DiffableFinding, ScanCoverage } from "./scan-differ.server";
+import { djb2Hex } from "./scan-differ.server";
 import { refreshShopContact } from "./shop-alert-email.server";
 import { SPEED_LINK_LABEL, summarySpeedLines } from "./summary-speed.server";
 import type { SummarySpeed } from "./summary-speed.server";
@@ -56,7 +49,6 @@ import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
 import { safeErrorFields } from "../lib/safe-error";
 import type { SummaryCadence } from "../lib/summary-email-copy";
 import type { SummaryRemovalRow } from "../models/app-removal.server";
-import type { ShopIgnores } from "../models/ignored-finding.server";
 import { ensureUnsubscribeToken, recordMerchantAlert } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -148,8 +140,6 @@ export function summarizeAppRemovals(
   };
 }
 
-type BaselineScan = ScanCoverage & { findings: DiffableFinding[]; liveFindingTypes: unknown };
-
 /**
  * Finding counts for the summary, with the same guards as the in-app diff:
  * ignored findings never count (one exception below), a category either scan did not audit is
@@ -164,37 +154,22 @@ type BaselineScan = ScanCoverage & { findings: DiffableFinding[]; liveFindingTyp
  *
  * An affected-app advisory (gc-14x5) counts in NONE of the three numbers:
  * advisories are shown in the app only.
+ *
+ * The lists behind the counts come from diffFindingLists (gc-rrh.4), which the
+ * "What changed" log shares, so the two can never disagree on what is new.
  */
-export function computeFindingChanges(args: {
-  currentFindings: DiffableFinding[];
-  currentCoverage: ScanCoverage & { skippedFiles: readonly string[] };
-  currentLiveFindingTypes: unknown;
-  baseline: BaselineScan;
-  ignores: ShopIgnores;
-}):
+export function computeFindingChanges(
+  args: FindingDiffArgs,
+):
   | { ok: true; newCount: number; fixedCount: number; openCount: number }
   | { ok: false; reason: "baseline_unversioned" | "current_unversioned" } {
-  const baselineLive = parseLiveFindingTypes(args.baseline.liveFindingTypes);
-  if (!baselineLive) return { ok: false, reason: "baseline_unversioned" };
-  const currentLive = parseLiveFindingTypes(args.currentLiveFindingTypes);
-  if (!currentLive) return { ok: false, reason: "current_unversioned" };
-
-  // An affected-app advisory is in-app only (gc-14x5): it is left out of all
-  // three numbers, so it can never cause, change or appear in a summary email
-  // (a new advisory, a removed script, or an entry that expired).
-  const emailed = <T extends DiffableFinding>(findings: T[]): T[] =>
-    findings.filter((f) => f.findingType !== "APP_INCIDENT_ADVISORY");
-  const current = filterIgnoredExceptMalicious(emailed(args.currentFindings), args.ignores).shown;
-  const diff = diffScans(
-    current,
-    filterIgnoredExceptMalicious(emailed(args.baseline.findings), args.ignores).shown,
-    scanDiffOptions(args.currentCoverage, args.baseline),
-  );
+  const diff = diffFindingLists(args, { includeAdvisories: false });
+  if (!diff.ok) return diff;
   return {
     ok: true,
-    newCount: restrictToLiveInBoth(diff.newFindings, baselineLive, currentLive).length,
-    fixedCount: restrictToLiveInBoth(diff.resolvedFindings, baselineLive, currentLive).length,
-    openCount: current.length,
+    newCount: diff.newFindings.length,
+    fixedCount: diff.fixedFindings.length,
+    openCount: diff.openCount,
   };
 }
 
