@@ -2,13 +2,14 @@
 
 ### RESUME HERE (2026-10-21 ~16:00Z)
 - **main = 92d0700, prod = dce2101 (NOT deployed yet).** Push to main succeeded; the Deploy workflow
-  (run 39629377721) failed at "Deploy to Railway": `Invalid RAILWAY_TOKEN` (GH secret set 2026-03-22,
-  worked 10-20, now expired or revoked). Railway never got a build, so prod is untouched.
-- **Unblock:** Nathan creates a new Railway project token (production) and runs
-  `! gh secret set RAILWAY_TOKEN --repo natewhitley-cloud/shopify-ghost-code`. Then
-  `gh run rerun 39629377721` (redeploys 92d0700 with .deploy-sha; smoke pins EXPECTED_SHA).
-  If smoke fails on a SHA mismatch right after deploy, it is usually Railway swap lag: wait 1-2 min,
-  `gh run rerun --failed <run-id>`.
+  (run 39629377721, re-run once) failed at "Deploy to Railway" with `Invalid RAILWAY_TOKEN`. Cause is NOT
+  the token: Railway major incident https://status.railway.com/incident/QH8L8B3E ("Dashboard and API
+  unavailable, builds paused", from 07:24 UTC 10-21). Same CLI image digest as the 10-20 good run and the
+  secret is unchanged since 2026-03-22. Railway never got a build, so prod is untouched.
+- **Unblock:** once the incident is Resolved (builds unpaused), `gh run rerun 39629377721` (redeploys
+  92d0700 with .deploy-sha; smoke pins EXPECTED_SHA). Only if it STILL says invalid token with Railway
+  green, create a new project token (production) and `gh secret set RAILWAY_TOKEN`. If smoke fails on a
+  SHA mismatch right after deploy, it is usually Railway swap lag: wait 1-2 min, `gh run rerun --failed <run-id>`.
 - **After green:** close gc-dcyh (Phase 0 shipped dark), gc-3y89 (1-4, 6, 10 shipped; 9 -> gc-s6p2;
   5, 7, 8 -> gc-e3zo), gc-xtno (1, 2, 3, 4a shipped; 4b -> gc-o7y7; 5 deferred: remaining 3 Hulk
   files are store theme repos, fixture bar already met), gc-n3in. Then decide on turning on
