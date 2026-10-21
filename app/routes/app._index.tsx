@@ -1,4 +1,4 @@
-import { ScanOrigin, Severity } from "@prisma/client";
+import { FindingType, ScanOrigin, Severity } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
@@ -152,6 +152,12 @@ import {
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
+
+/** The finding types behind Home's Security risk banners (gc-q5z8). */
+const HOME_SECURITY_TYPES: readonly FindingType[] = [
+  FindingType.MALICIOUS_SCRIPT,
+  FindingType.APP_INCIDENT_ADVISORY,
+];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -384,7 +390,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // "Start here" (gc-bn0x): the latest successful scan's top 3 findings, by the
   // same ranking and plan rules as the scan page (Free ranks only its preview
   // and malicious rows, never a hidden finding). Only for a SUCCESSFUL latest
-  // scan, so the 3s poll while a scan runs adds nothing. Cost per load, no
+  // scan, so the 3s poll while a scan runs reads nothing here (its one extra
+  // read is the Security risk banners' fallback, gc-xtno). Cost per load, no
   // ignores: full-list plans one (type, severity) groupBy plus a few
   // `take <= 3` reads; Free the preview's bounded per-bucket reads (`take <= 5`)
   // plus one `take 3` malicious read only when the scan has malicious findings.
@@ -453,15 +460,48 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Security risk banners (gc-q5z8), at the top of Home on EVERY plan: one
   // per known malicious domain (every malicious finding, ignored or not, like
   // the tile and the scan page's alert) and one per non-ignored affected-app
-  // advisory. No query when the counts say there is nothing to show.
+  // advisory. For a successful latest scan, no query when its counts (loaded
+  // above) say there is nothing to show.
   //
   // gc-xtno: from the latest scan when it succeeded; while a scan runs, or
   // after one failed, from the most recent successful scan instead, so known
   // malicious code never vanishes from Home because a rescan is running (the
-  // page says which scan they are from). The fallback scan is usually the
-  // previous one, whose filtered summary a shop with ignores already read.
+  // page says which scan they are from).
+  //
+  // Cost on the in-progress poll (every 3 s): nothing for a first scan (no
+  // successful scan: completedScanCheck above); otherwise ONE lean groupBy
+  // limited to the two security types on the fallback scan (none when a shop
+  // with ignores already read its filtered summary). Only a scan that holds
+  // one reads more (loadHomeSecurityRisks' rows). The fallback scan is
+  // usually the previous one; when that one did not succeed either, one
+  // more indexed read finds the most recent successful scan.
   let securityRisks: SecurityRisk[] = [];
   let securityRiskSource: SecurityRiskSource | null = null;
+  // The fallback scan's inputs to loadHomeSecurityRisks, or null when it has
+  // no security finding to show (the poll then reads nothing more). Malicious
+  // code counts ignored or not; an advisory counts only when shown (gc-5nok)
+  // and not ignored, which for a shop with ignores needs its filtered summary
+  // (already read when the scan is in severityScanIds).
+  const fallbackSecurityCounts = async (scanId: string) => {
+    const read = filteredSummaryByScanId?.get(scanId);
+    if (!read) {
+      const found = await getTypeCountsForScan(scanId, HOME_SECURITY_TYPES);
+      const advisories = areStoredAdvisoriesShown() ? found.APP_INCIDENT_ADVISORY : 0;
+      if (found.MALICIOUS_SCRIPT === 0 && advisories === 0) return null;
+      if (!hasIgnores || advisories === 0) {
+        return {
+          keptByType: { APP_INCIDENT_ADVISORY: advisories },
+          keptFindings: null,
+          maliciousFound: found.MALICIOUS_SCRIPT,
+        };
+      }
+    }
+    const { summary, keptFindings, ignoredMalicious } =
+      read ?? (await getFilteredFindingSummaryAndKept(scanId, ignores));
+    const maliciousFound = (summary.byType.MALICIOUS_SCRIPT ?? 0) + ignoredMalicious;
+    if (maliciousFound === 0 && (summary.byType.APP_INCIDENT_ADVISORY ?? 0) === 0) return null;
+    return { keptByType: summary.byType, keptFindings, maliciousFound };
+  };
   if (hasResults && latestScan && latestTypeCounts) {
     securityRisks = await loadHomeSecurityRisks({
       shopId: shop.id,
@@ -476,27 +516,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scanDate: latestScan.completedAt ?? latestScan.createdAt,
       earlierScan: null,
     };
-  } else if (latestScan) {
+  } else if (latestScan && completedScanCheck) {
     try {
       const fallback =
         previousScan && isSuccessfulScan(previousScan.status)
-          ? previousScan
-          : ((await getCompletedScansForShop(shop.id, { limit: 1 }))[0] ?? null);
-      if (fallback) {
-        const { summary, keptFindings, ignoredMalicious } =
-          filteredSummaryByScanId?.get(fallback.id) ??
-          (await getFilteredFindingSummaryAndKept(fallback.id, ignores));
+          ? { id: previousScan.id, date: previousScan.completedAt ?? previousScan.createdAt }
+          : await getCompletedScansForShop(shop.id, { limit: 1 }).then(([scan]) =>
+              scan ? { id: scan.id, date: scan.completedAt } : null,
+            );
+      const counts = fallback ? await fallbackSecurityCounts(fallback.id) : null;
+      if (fallback && counts) {
         securityRisks = await loadHomeSecurityRisks({
           shopId: shop.id,
           scanId: fallback.id,
-          keptByType: summary.byType,
-          keptFindings,
-          maliciousFound: (summary.byType.MALICIOUS_SCRIPT ?? 0) + ignoredMalicious,
+          ...counts,
           now,
         });
         securityRiskSource = {
           scanId: fallback.id,
-          scanDate: fallback.completedAt ?? latestScan.createdAt,
+          // The fallback scan's own date, never the running scan's.
+          scanDate: fallback.date,
           earlierScan: latestScan.status === "FAILED" ? "failed" : "running",
         };
       }
@@ -721,8 +760,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Theme health checklist (gc-i6du): what the latest successful scan checked
   // and found, by category, plus the theme's type/version and the unpublished
-  // themes. Only with results on screen, so the 3s poll while a scan runs adds
-  // nothing. Counts and fixed copy only: nothing here is plan-gated content.
+  // themes. Only with results on screen, so the 3s poll while a scan runs reads
+  // nothing here. Counts and fixed copy only: nothing here is plan-gated content.
   // The theme list is already loaded for Standard and Professional (the
   // picker); Free reads it here, through the same 60s cache, and a failed read
   // only drops the unpublished-themes row.

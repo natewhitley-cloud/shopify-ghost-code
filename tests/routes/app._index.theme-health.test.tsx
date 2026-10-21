@@ -2241,7 +2241,7 @@ describe("Home: security risks never vanish during a rescan, and count per banne
     it("a failed read never takes Home down while a scan runs", async () => {
       serve(THREE_LINES);
       mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
-      mockFiltered.mockRejectedValue(new Error("db down"));
+      mockTypeCounts.mockRejectedValue(new Error("db down"));
 
       const data = await load();
 
@@ -2263,6 +2263,143 @@ describe("Home: security risks never vanish during a rescan, and count per banne
         earlierScan: null,
       });
       expect(renderDashboard(data)).not.toContain("From your last completed scan");
+    });
+  });
+
+  // A4: the note's date is the fallback scan's own, never the running scan's.
+  it("dates the banners by the fallback scan, even one with no completedAt", async () => {
+    serve(THREE_LINES);
+    const noCompletedAt = { ...SCAN, completedAt: null };
+    mockScans.mockResolvedValue({ items: [RUNNING, noCompletedAt], hasNextPage: false });
+
+    const data = await load();
+
+    expect(data.securityRiskSource).toMatchObject({ scanId: "scan-1", scanDate: SCAN.createdAt });
+    expect(data.securityRiskSource?.scanDate).not.toEqual(RUNNING.createdAt);
+  });
+
+  // A3: the in-progress poll runs every 3 s. Count the reads the banners'
+  // fallback adds (the model and aggregation calls it can make).
+  describe("the in-progress poll's cost", () => {
+    const fallbackReads = () => ({
+      typeCounts: mockTypeCounts.mock.calls.length,
+      lookup: (getCompletedScansForShop as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([, opts]) => opts?.limit === 1,
+      ).length,
+      rows: (getFindingsForScan as ReturnType<typeof vi.fn>).mock.calls.length,
+      filtered: mockFiltered.mock.calls.length,
+      summary: (getFindingSummary as ReturnType<typeof vi.fn>).mock.calls.length,
+    });
+
+    afterEach(() => {
+      delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+    });
+
+    it("no security finding on the previous scan: ONE lean groupBy of the two security types", async () => {
+      serve([]);
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([]);
+      expect(fallbackReads()).toEqual({
+        typeCounts: 1,
+        lookup: 0,
+        rows: 0,
+        filtered: 0,
+        summary: 0,
+      });
+      expect(mockTypeCounts).toHaveBeenCalledWith("scan-1", [
+        "MALICIOUS_SCRIPT",
+        "APP_INCIDENT_ADVISORY",
+      ]);
+    });
+
+    it("a first scan (no successful scan yet): no read at all", async () => {
+      serve([]);
+      mockScans.mockResolvedValue({ items: [RUNNING], hasNextPage: false });
+      (hasCompletedScans as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([]);
+      expect(fallbackReads()).toEqual({
+        typeCounts: 0,
+        lookup: 0,
+        rows: 0,
+        filtered: 0,
+        summary: 0,
+      });
+    });
+
+    it("advisory switch off with an advisory stored: ONE lean read, no rows, no banner", async () => {
+      serve([]);
+      mockTypeCounts.mockResolvedValue({
+        ...TYPE_COUNTS,
+        MALICIOUS_SCRIPT: 0,
+        APP_INCIDENT_ADVISORY: 1,
+      });
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([]);
+      expect(data.securityRiskSource).toBeNull();
+      expect(fallbackReads()).toEqual({
+        typeCounts: 1,
+        lookup: 0,
+        rows: 0,
+        filtered: 0,
+        summary: 0,
+      });
+    });
+
+    it("advisory switch on: the stored advisory's banner still shows during a rescan", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      const SELLEASY = APP_INCIDENT_ADVISORIES.find((a) => a.appName === "Selleasy")!;
+      const advisory = {
+        ...line("adv", "scan-1", 1),
+        findingType: "APP_INCIDENT_ADVISORY",
+        filename: "config/settings_data.json",
+        codeSnippet: "shopify://apps/selleasy/blocks/app-embed\n{}",
+        description: advisoryDescription({
+          advisory: SELLEASY,
+          embedHandle: "shopify://apps/selleasy/blocks/app-embed",
+        }),
+      };
+      serve([advisory]);
+      mockTypeCounts.mockResolvedValue({
+        ...TYPE_COUNTS,
+        MALICIOUS_SCRIPT: 0,
+        APP_INCIDENT_ADVISORY: 1,
+      });
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([expect.objectContaining({ kind: "advisory" })]);
+      expect(fallbackReads()).toMatchObject({ typeCounts: 1, rows: 1, filtered: 0 });
+    });
+
+    it("previous scan failed too: one lookup for the last successful scan, then the lean read", async () => {
+      serve([]);
+      mockScans.mockResolvedValue({
+        items: [RUNNING, { ...RUNNING, id: "scan-3", status: "FAILED" }],
+        hasNextPage: false,
+      });
+      (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: "scan-1", completedAt: SCAN.completedAt, themeName: SCAN.themeName },
+      ]);
+
+      await load();
+
+      expect(fallbackReads()).toEqual({
+        typeCounts: 1,
+        lookup: 1,
+        rows: 0,
+        filtered: 0,
+        summary: 0,
+      });
     });
   });
 });

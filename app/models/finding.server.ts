@@ -230,13 +230,20 @@ export async function getMaliciousCountsForScans(scanIds: string[]): Promise<Map
  * without undefined checks. Reuses the same exhaustive zero-map pattern as
  * getFindingSummary (whose severity groupBy the dashboard already has from the
  * batch severity query, so getFindingSummary is deliberately not reused here).
+ *
+ * `onlyTypes` limits the groupBy to those types (the others stay 0): Home's
+ * in-progress poll asks only whether the last successful scan holds a
+ * security finding (gc-xtno), a far smaller aggregate than every type.
  */
-export async function getTypeCountsForScan(scanId: string): Promise<Record<FindingType, number>> {
+export async function getTypeCountsForScan(
+  scanId: string,
+  onlyTypes?: readonly FindingType[],
+): Promise<Record<FindingType, number>> {
   const typeCounts = createZeroTypeCounts();
 
   const rows = await db.finding.groupBy({
     by: ["findingType"],
-    where: { scanId },
+    where: onlyTypes ? { scanId, findingType: { in: [...onlyTypes] } } : { scanId },
     _count: { findingType: true },
   });
   for (const row of rows) {

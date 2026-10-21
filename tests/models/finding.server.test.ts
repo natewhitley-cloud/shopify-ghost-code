@@ -559,6 +559,29 @@ describe("getTypeCountsForScan", () => {
     expect(result[FindingType.ORPHAN_ASSET]).toBe(0);
   });
 
+  it("limits the groupBy to onlyTypes when given, other types stay zero", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([
+      { findingType: FindingType.MALICIOUS_SCRIPT, _count: { findingType: 3 } },
+    ]);
+
+    const result = await getTypeCountsForScan(SCAN_ID, [
+      FindingType.MALICIOUS_SCRIPT,
+      FindingType.APP_INCIDENT_ADVISORY,
+    ]);
+
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
+      by: ["findingType"],
+      where: {
+        scanId: SCAN_ID,
+        findingType: { in: [FindingType.MALICIOUS_SCRIPT, FindingType.APP_INCIDENT_ADVISORY] },
+      },
+      _count: { findingType: true },
+    });
+    expect(result[FindingType.MALICIOUS_SCRIPT]).toBe(3);
+    expect(result[FindingType.APP_INCIDENT_ADVISORY]).toBe(0);
+    expect(result[FindingType.GHOST_SCRIPT]).toBe(0);
+  });
+
   it("returns all zeros for an empty scan", async () => {
     mockDb.finding.groupBy.mockResolvedValue([]);
 
