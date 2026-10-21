@@ -429,7 +429,8 @@ describe("homepage finding copy (never sends the merchant to theme files)", () =
     expect(card.steps).toEqual(RUNTIME_MALICIOUS_STEPS);
     expect(card.stepsHeading).toBe("What to check");
     expect(card.primaryEditorButton).toBe(false);
-    expect(card.showSafetyBadge).toBe(false);
+    // gc-xtno: the security badge (its own safety level), never "likely safe".
+    expect(card.showSafetyBadge).toBe(true);
     const texts = [
       ...RUNTIME_MALICIOUS_STEPS,
       getFindingImpact(finding.findingType, finding.filename)!,

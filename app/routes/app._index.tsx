@@ -54,7 +54,9 @@ import {
   findingsTileSubtitle,
   homeRiskSummaryLine,
   securityRiskAnchorId,
+  securityRiskSourceWords,
   type SecurityRisk,
+  type SecurityRiskSource,
 } from "../lib/security-risk";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
@@ -191,6 +193,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       laneSummary: [] as LaneSummaryRow[],
       advisoryCount: 0,
       securityRisks: [] as SecurityRisk[],
+      securityRiskSource: null as SecurityRiskSource | null,
       riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
@@ -316,6 +319,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // filtered summary had to read anyway: the "Start here" ranking reuses them
   // so a shop with ignores never reads that scan's findings twice.
   let latestKeptFindings: FindingRow[] | null = null;
+  // Every scan's filtered summary read below, by id: the banners' fallback
+  // scan (gc-xtno) reuses its entry instead of reading it again.
+  let filteredSummaryByScanId: Map<
+    string,
+    Awaited<ReturnType<typeof getFilteredFindingSummaryAndKept>>
+  > | null = null;
   // The advisory kill switch (gc-5nok): with the flag off a stored advisory
   // is shown nowhere. The lean groupBys above cannot leave it out, so its scan
   // takes the same filtered path as a shop with ignores (only while such a
@@ -328,6 +337,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         async (id) => [id, await getFilteredFindingSummaryAndKept(id, ignores)] as const,
       ),
     );
+    filteredSummaryByScanId = new Map(summaries);
     filteredSeverityByScanId = new Map(
       summaries.map(([id, { summary }]) => [id, summary.bySeverity]),
     );
@@ -426,15 +436,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // difference is exactly the ignored malicious findings. No extra query.
   const maliciousCount = typeCounts?.MALICIOUS_SCRIPT ?? 0;
   const latestFilteredTotal = latestSeverity ? sumSeverity(latestSeverity) : 0;
-  const findingsTile: FindingsTile | null = latestSeverity
-    ? buildFindingsTile({
-        filteredTotal: latestFilteredTotal,
-        maliciousFound: maliciousCount,
-        maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
-        // gc-q5z8: a non-ignored advisory is a security risk too (red tile).
-        advisoryKept: advisoryCount,
-      })
-    : null;
 
   // A security risk found (gc-q5z8): one line under "Most Recent Findings"
   // that accounts for the tile, in place of the leftover-items lead. Its parts
@@ -452,19 +453,73 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Security risk banners (gc-q5z8), at the top of Home on EVERY plan: one
   // per known malicious domain (every malicious finding, ignored or not, like
   // the tile and the scan page's alert) and one per non-ignored affected-app
-  // advisory. Only for a successful latest scan; no query when the counts
-  // above say there is nothing to show.
-  const securityRisks: SecurityRisk[] =
-    hasResults && latestScan && latestTypeCounts
-      ? await loadHomeSecurityRisks({
+  // advisory. No query when the counts say there is nothing to show.
+  //
+  // gc-xtno: from the latest scan when it succeeded; while a scan runs, or
+  // after one failed, from the most recent successful scan instead, so known
+  // malicious code never vanishes from Home because a rescan is running (the
+  // page says which scan they are from). The fallback scan is usually the
+  // previous one, whose filtered summary a shop with ignores already read.
+  let securityRisks: SecurityRisk[] = [];
+  let securityRiskSource: SecurityRiskSource | null = null;
+  if (hasResults && latestScan && latestTypeCounts) {
+    securityRisks = await loadHomeSecurityRisks({
+      shopId: shop.id,
+      scanId: latestScan.id,
+      keptByType: latestTypeCounts,
+      keptFindings: latestKeptFindings,
+      maliciousFound: maliciousCount,
+      now,
+    });
+    securityRiskSource = {
+      scanId: latestScan.id,
+      scanDate: latestScan.completedAt ?? latestScan.createdAt,
+      earlierScan: null,
+    };
+  } else if (latestScan) {
+    try {
+      const fallback =
+        previousScan && isSuccessfulScan(previousScan.status)
+          ? previousScan
+          : ((await getCompletedScansForShop(shop.id, { limit: 1 }))[0] ?? null);
+      if (fallback) {
+        const { summary, keptFindings, ignoredMalicious } =
+          filteredSummaryByScanId?.get(fallback.id) ??
+          (await getFilteredFindingSummaryAndKept(fallback.id, ignores));
+        securityRisks = await loadHomeSecurityRisks({
           shopId: shop.id,
-          scanId: latestScan.id,
-          keptByType: latestTypeCounts,
-          keptFindings: latestKeptFindings,
-          maliciousFound: maliciousCount,
+          scanId: fallback.id,
+          keptByType: summary.byType,
+          keptFindings,
+          maliciousFound: (summary.byType.MALICIOUS_SCRIPT ?? 0) + ignoredMalicious,
           now,
-        })
-      : [];
+        });
+        securityRiskSource = {
+          scanId: fallback.id,
+          scanDate: fallback.completedAt ?? latestScan.createdAt,
+          earlierScan: latestScan.status === "FAILED" ? "failed" : "running",
+        };
+      }
+    } catch (err) {
+      logger.warn("security risk: last successful scan unavailable", {
+        function: "loader",
+        shopId: shop.id,
+        ...safeErrorFields(err),
+      });
+    }
+  }
+
+  const findingsTile: FindingsTile | null = latestSeverity
+    ? buildFindingsTile({
+        filteredTotal: latestFilteredTotal,
+        maliciousFound: maliciousCount,
+        maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
+        // gc-q5z8: a non-ignored advisory is a security risk too (red tile).
+        advisoryKept: advisoryCount,
+        // gc-xtno: "k security risks" counts the banners, not finding lines.
+        distinctRisks: securityRisks.length,
+      })
+    : null;
 
   // Finding-count trend: compare the latest scan's total finding count against
   // the previous successful scan's. Fewer findings = improving. Derived from the
@@ -747,6 +802,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     laneSummary,
     advisoryCount,
     securityRisks,
+    securityRiskSource,
     riskSummaryLine,
     startHere,
     dominant,
@@ -1006,6 +1062,22 @@ export function HomeScanInProgress({
   );
 }
 
+/**
+ * The line above Home's Security risk banners when they are from an earlier
+ * scan than the latest (gc-xtno): which scan, and why. Renders nothing for
+ * the latest scan.
+ */
+export function SecurityRiskSourceNote({ source }: { source: SecurityRiskSource }) {
+  const words = securityRiskSourceWords(source);
+  if (words === null) return null;
+  return (
+    <p style={{ margin: 0, fontSize: "13px", color: TEXT_SUBDUED }}>
+      {words.before} <FormattedDate value={source.scanDate} />
+      {words.after}
+    </p>
+  );
+}
+
 /** Copy for the welcome card's optional permissions line (gc-4n0y). */
 export const OPTIONAL_CHECKS_COPY = {
   lead: "Optional: ",
@@ -1144,6 +1216,7 @@ export default function Dashboard() {
     trendChartEnabled,
     laneSummary,
     securityRisks,
+    securityRiskSource,
     riskSummaryLine,
     startHere,
     dominant,
@@ -1324,14 +1397,18 @@ export default function Dashboard() {
         {/* Security risk (gc-q5z8): known malicious code, and apps named in a
           security incident, at the very top on EVERY plan. Each links to its
           banner on the scan page, where the steps are. */}
-        {hasResults &&
-          latestScan &&
+        {/* gc-xtno: while a scan runs (or after one failed) they are the most
+          recent successful scan's, and the line above them says so. */}
+        {securityRiskSource && securityRisks.length > 0 && (
+          <SecurityRiskSourceNote source={securityRiskSource} />
+        )}
+        {securityRiskSource &&
           securityRisks.map((risk) => (
             <SecurityRiskBanner
               key={securityRiskAnchorId(risk)}
               risk={risk}
-              scanDate={latestScan.completedAt ?? latestScan.createdAt}
-              checkHref={`/app/scans/${latestScan.id}#${securityRiskAnchorId(risk)}`}
+              scanDate={securityRiskSource.scanDate}
+              checkHref={`/app/scans/${securityRiskSource.scanId}#${securityRiskAnchorId(risk)}`}
             />
           ))}
 

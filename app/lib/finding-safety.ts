@@ -19,6 +19,10 @@
 
 /**
  * How safe it is for a merchant to remove the flagged code/resource themselves:
+ *   - "security-risk":  a security finding (known malicious code, an app named
+ *     in a security incident, gc-xtno). Not a removal call at all: never
+ *     "likely safe", checked before anything else (the Security risk banner
+ *     says what to check).
  *   - "safe-to-remove": the clearest orphan case — once the source app is
  *     confirmed uninstalled, deleting this is inert (nothing live depends on it).
  *   - "verify-first":   the conservative DEFAULT. Could be load-bearing, dynamic,
@@ -27,7 +31,7 @@
  *     or fix the data, not delete (sunset mechanisms, conflict/invalid data,
  *     broken references, settings mismatches).
  */
-export type RemovalSafety = "safe-to-remove" | "verify-first" | "leave-alone";
+export type RemovalSafety = "security-risk" | "safe-to-remove" | "verify-first" | "leave-alone";
 
 /**
  * Removal-safety per FindingType. EVERY enum member is listed explicitly so the
@@ -37,6 +41,17 @@ export type RemovalSafety = "safe-to-remove" | "verify-first" | "leave-alone";
  * Rationale per type / grouped block is inline. When in doubt: verify-first.
  */
 const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
+  // ---- security-risk: the two security types (gc-xtno). Their own level, so
+  // no removal-level badge ("Likely safe, confirm app removed") can ever reach
+  // them. --
+  // Known-malicious domain reference: attacker code, not from an app, so
+  // "likely safe" and "confirm app removed" are both wrong on it.
+  MALICIOUS_SCRIPT: "security-risk",
+  // Affected-app advisory (gc-14x5): the script belongs to a legitimate app that
+  // may still be installed and in use, so removing it can break product options
+  // on live products. Check first (the banner's steps); never "safe-to-remove".
+  APP_INCIDENT_ADVISORY: "security-risk",
+
   // ---- safe-to-remove: signature-matched orphan code that is inert once the
   // source app is gone. Deleting the tag/reference cannot break anything live. --
   // External app-CDN <script> — 404s / does nothing once the app is uninstalled.
@@ -49,9 +64,6 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // <link rel="preconnect"> to an app CDN — a pure network hint; removing it is
   // the most inert change of all (opens one fewer dead connection).
   GHOST_PRECONNECT: "safe-to-remove",
-  // Known-malicious domain reference — nothing legitimate depends on attacker
-  // code, so deleting the line is always correct (and urgent).
-  MALICIOUS_SCRIPT: "safe-to-remove",
 
   // ---- leave-alone: removal is the wrong action; migrate or fix the data. ----
   // Two JSON-LD blocks disagree — fix/keep the correct one, don't blindly delete.
@@ -86,10 +98,6 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // exists. Deleting the render line is the fix, but the merchant should first
   // confirm the snippet is meant to be gone (not renamed or about to return).
   LIQUID_ERROR_RENDERED: "verify-first",
-  // Affected-app advisory (gc-14x5): the script belongs to a legitimate app that
-  // may still be installed and in use, so removing it can break product options
-  // on live products. Check before removing; never "safe-to-remove".
-  APP_INCIDENT_ADVISORY: "verify-first",
   // Font tied to an app CDN — the font may still be referenced elsewhere.
   GHOST_FONT: "verify-first",
   // Section reference — may still be placed in the theme customizer; shopper-visible.
@@ -146,6 +154,8 @@ const DEFAULT_REMOVAL_SAFETY: RemovalSafety = "verify-first";
  * the label stays in sync with the level and is unit-testable.
  */
 export const REMOVAL_SAFETY_LABELS: Record<RemovalSafety, string> = {
+  // A security finding: what to do first, never a removal verdict.
+  "security-risk": "Security risk: check before anything else",
   // Deliberately conservative wording: detection is signature-based with NO
   // cross-check against the shop's currently-installed apps, so a still-installed
   // app can match. This keeps the badge consistent with the per-type howTo copy

@@ -3659,7 +3659,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     );
   });
 
-  it("known malicious code never says 'likely safe': no removal-safety badge, severity kept", () => {
+  it("known malicious code never says 'likely safe': its badge is the security one (gc-xtno)", () => {
     const malicious = renderFindingItem(
       {
         ...FINDING_ONE,
@@ -3669,13 +3669,26 @@ describe("FindingRow — list item that cannot overflow", () => {
       },
       PAID,
     );
-    expect(malicious).not.toMatch(/likely safe/i);
-    for (const label of Object.values(REMOVAL_SAFETY_LABELS)) {
-      expect(malicious).not.toContain(label);
-    }
-    // Only the severity badge is left.
-    expect(malicious.match(/<s-badge/g)).toHaveLength(1);
+    expect(malicious).not.toMatch(/likely safe|confirm app removed|verify first|leave in place/i);
+    // Severity, then the security badge in red.
+    expect(malicious.match(/<s-badge/g)).toHaveLength(2);
     expect(malicious).toContain('<s-badge tone="critical">HIGH</s-badge>');
+    expect(malicious).toContain(
+      '<s-badge tone="critical">Security risk: check before anything else</s-badge>',
+    );
+    // Seen on the homepage (gc-0htk): the same badge.
+    const homepage = renderFindingItem(
+      {
+        ...FINDING_ONE,
+        findingType: "MALICIOUS_SCRIPT",
+        appName: null,
+        filename: "storefront/homepage",
+      },
+      PAID,
+    );
+    expect(homepage).toContain("Your live homepage (not in your theme files)");
+    expect(homepage).not.toMatch(/likely safe/i);
+    expect(homepage).toContain(">Security risk: check before anything else</s-badge>");
     // Control: leftover app code keeps its badge.
     expect(renderFindingItem(FINDING_ONE, PAID)).toContain(
       '<s-badge tone="success">Likely safe, confirm app removed</s-badge>',
@@ -5935,26 +5948,39 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       },
     );
 
-    it("carries the public report's URL, resolved on the server", async () => {
+    it("the banner carries the public report's URL, resolved on the server", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
 
       const data = (await load()) as unknown as {
-        alwaysShownFindings: Array<{ advisoryReportUrl: string | null }>;
+        securityRisks: Array<{ kind: string; sourceUrl?: string | null }>;
       };
 
-      expect(data.alwaysShownFindings[0].advisoryReportUrl).toBe(
-        "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
-      );
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({
+          kind: "advisory",
+          sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
+        }),
+      ]);
     });
 
     it("an advisory whose entry can no longer be resolved carries no URL", async () => {
       scanWith([{ ...ADVISORY, description: "Loads code from an app no longer on the list" }]);
 
       const data = (await load()) as unknown as {
-        alwaysShownFindings: Array<{ advisoryReportUrl: string | null }>;
+        securityRisks: Array<{ kind: string; sourceUrl?: string | null }>;
       };
 
-      expect(data.alwaysShownFindings[0].advisoryReportUrl).toBeNull();
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({ kind: "advisory", sourceUrl: null }),
+      ]);
+    });
+
+    it("gc-xtno: the loader adds no per-finding report URL (the banner holds it)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings[0]).not.toHaveProperty("advisoryReportUrl");
     });
 
     it("Start here: the advisory leads and links to its card on the unfiltered page", async () => {
@@ -6099,6 +6125,56 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       );
       const list = html.slice(html.indexOf('<h2 class="scan-section-title">Findings</h2>'));
       expect(list.match(/<details class="finding-ignore"/g)).toHaveLength(5);
+    });
+
+    it("gc-xtno: three malicious lines on one domain are 1 security risk in the note, with their 3 findings", async () => {
+      const DESC = "Loads code from biliing.test, a known malicious source";
+      const mals = [57, 58, 59].map((n) => ({
+        ...row(`mal-${n}`, "MALICIOUS_SCRIPT", "HIGH", n),
+        description: DESC,
+      }));
+      scanWith([...SCRIPTS, ...mals]);
+      servePage([...SCRIPTS, ...mals]);
+
+      const html = await renderPage();
+
+      // One banner holding all three lines.
+      expect(html.match(/<section id="security-risk-/g)).toHaveLength(1);
+      expect(html).toContain(
+        "7 findings: 1 security risk (3 findings, above), 4 leftover items (below, with the known malicious code listed again).",
+      );
+      expect(html).not.toContain("3 security risks");
+    });
+
+    it("gc-xtno: a domain whose every line is ignored is not counted in the note, a partly ignored one is", async () => {
+      const mal = (id: string, n: number, d: string) => ({
+        ...row(id, "MALICIOUS_SCRIPT", "HIGH", n),
+        description: d,
+        // A distinct snippet per line, so each has its own ignore fingerprint.
+        codeSnippet: `<script src="https://${id}.test/x.js"></script>`,
+      });
+      const A = "Loads code from a.test, a known malicious source";
+      const B = "Loads code from b.test, a known malicious source";
+      const rows = [mal("a1", 50, A), mal("a2", 51, A), mal("b1", 52, B)];
+      scanWith([...SCRIPTS, ...rows]);
+      servePage([...SCRIPTS, ...rows]);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set(
+          [rows[0], rows[2]].map((f) =>
+            fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber),
+          ),
+        ),
+        appNames: new Set<string>(),
+      });
+
+      const html = await renderPage();
+
+      // Both banners show (malicious code is shown regardless of ignores) ...
+      expect(html.match(/<section id="security-risk-/g)).toHaveLength(2);
+      // ... but the ignore-filtered total (5) holds one line of one domain.
+      expect(html).toContain(
+        "5 findings: 1 security risk (above), 4 leftover items (below, with the known malicious code listed again).",
+      );
     });
 
     it("gc-q5z8: ignored malicious code keeps its banner but is not in the ignore-filtered note (pinned divergence from Home's tile)", async () => {
@@ -6354,83 +6430,8 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
     });
   });
 
-  describe("the advisory card's wording (this type only)", () => {
-    const REPORT = "https://romanzipp.com/blog/shopify-hit-with-phishing-attack";
-    const html = (extra: Record<string, unknown> = {}) =>
-      renderFindingItem({ ...ADVISORY, advisoryReportUrl: REPORT, ...extra }, { scanId: "scan-1" });
-    /** Visible text of the card, tags stripped, entities decoded. */
-    const text = (markup: string) =>
-      markup
-        .replace(/<[^>]+>/g, "\n")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#x27;/g, "'")
-        .replace(/&amp;/g, "&")
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
-
-    it("renders exactly these strings, in this order", () => {
-      expect(text(html())).toEqual([
-        "An app in your theme was named in a security incident report",
-        "Severity:",
-        "HIGH",
-        "File:",
-        "layout/theme.liquid",
-        ", line 42",
-        // The description, then the report it cites, as one sentence.
-        `${ADVISORY_DESCRIPTION}.`,
-        "Read the report",
-        "Matched a script address from a public incident report.",
-        ADVISORY_SNIPPET,
-        "Copy",
-        "Why it matters",
-        "Your theme loads a script from this app. A security incident report names this app. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
-        "What to check",
-        "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
-        "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
-        "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
-        "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
-        "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
-        "Copy steps",
-        "Ignore",
-        "Ignore this finding",
-      ]);
-    });
-
-    it("the title is the advisory headline, not the type label, with no app suffix", () => {
-      expect(html()).toMatch(
-        /<h3 style="[^"]*">An app in your theme was named in a security incident report<\/h3>/,
-      );
-      expect(html()).not.toContain(", app: ");
-    });
-
-    it("the steps are a real ordered list of five items (numbers come from the list)", () => {
-      const markup = html();
-      const list = markup.match(/<ol style="[^"]*">(.*?)<\/ol>/)?.[1] ?? "";
-      expect(list.match(/<li>/g)).toHaveLength(5);
-      expect(list).toMatch(/^<li>Open your store in a private \(incognito\) window/);
-      expect(list).not.toMatch(/<li>\d\. /);
-      expect(markup).not.toContain("1. Open your store");
-    });
-
-    it("the report link opens in a new tab with rel=noopener noreferrer", () => {
-      expect(html()).toContain(
-        `<a href="${REPORT}" target="_blank" rel="noopener noreferrer">Read the report</a>`,
-      );
-    });
-
-    it.each([[null], [undefined], [""]])("no link when the report URL is %j", (url) => {
-      const markup = html({ advisoryReportUrl: url });
-      expect(markup).not.toContain("Read the report");
-      expect(markup).not.toContain("<a href");
-    });
-
-    it("the copy action is 'Copy steps' with a matching accessible name", () => {
-      expect(html()).toContain(
-        '<s-button variant="secondary" accessibilityLabel="Copy steps for this finding">Copy steps</s-button>',
-      );
+  describe("finding cards (gc-xtno: advisories render only as their banner)", () => {
+    it("the advisory's copy action is 'Copy steps' (used by its banner)", () => {
       expect(copyRemovalStepsLabels(false, "APP_INCIDENT_ADVISORY")).toEqual({
         text: "Copy steps",
         accessibilityLabel: "Copy steps for this finding",
@@ -6441,88 +6442,10 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       });
     });
 
-    it("badges: HIGH only. No 'Verify first' (it means 'review before removing' elsewhere), no tooltip", () => {
-      const markup = html();
-      expect(markup.match(/<s-badge /g)).toHaveLength(1);
-      expect(markup).toContain('<s-badge tone="critical">HIGH</s-badge>');
-      for (const label of Object.values(REMOVAL_SAFETY_LABELS)) expect(markup).not.toContain(label);
-      expect(markup).toContain("Matched a script address from a public incident report.");
-      expect(markup).not.toMatch(/<s-badge[^>]*title=/);
-      expect(markup).not.toMatch(/TRACKING|VISUAL|>NEW</);
-    });
-
-    it("the report link sits directly after the description sentence, in the same line", () => {
-      expect(html()).toContain(
-        `${ADVISORY_DESCRIPTION}. <a href="${REPORT}" target="_blank" rel="noopener noreferrer">Read the report</a></div>`,
-      );
-      // And nowhere else on the card.
-      expect(html().match(/Read the report/g)).toHaveLength(1);
-    });
-
-    it("without a report URL the description stands alone, with no added full stop", () => {
-      expect(html({ advisoryReportUrl: null })).toContain(`>${ADVISORY_DESCRIPTION}</div>`);
-    });
-
-    it("the snippet is shown whole (it wraps), not cut to 80 characters", () => {
-      const long = `<div class="product-form__buttons wrapper"><script async defer src="https://productoption.hulkapps.com/hulkcode.js?shop=example.myshopify.com"></script></div>`;
-      expect(long.length).toBeGreaterThan(80);
-      const markup = html({ codeSnippet: long });
-      expect(markup).toContain(
-        long.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
-      );
-      expect(markup).not.toContain("…");
-      // Control: any other type is still cut at 80 with an ellipsis.
-      const other = renderFindingItem({
-        ...FINDING_ONE,
-        findingType: "MALICIOUS_SCRIPT",
-        codeSnippet: long,
-      });
-      expect(other).toContain("…");
-    });
-
-    it("never says remove-heading, signature, malicious, compromised, hijacked, leftover or safe to remove", () => {
-      const markup = html();
-      expect(markup).not.toContain("How to remove");
-      expect(markup).not.toContain("Copy removal steps");
-      expect(markup).not.toContain("Matched a known app signature.");
-      expect(markup).not.toMatch(/malicious|compromised|hijack|infected|skimmer/i);
-      expect(markup).not.toMatch(/leftover|left behind|uninstalled/i);
-      expect(markup).not.toMatch(/likely safe|safe to remove/i);
-      expect(markup).not.toMatch(/Still tracking you|removed app/);
-      expect(markup).not.toMatch(/[—–]/);
-    });
-
-    it("links to the theme file in the code editor (it is a theme-file finding)", () => {
-      const markup = renderFindingItem(ADVISORY, {
-        scanId: "scan-1",
-        shopDomain: "test-shop.myshopify.com",
-        themeId: "123456789",
-      });
-      expect(markup).toMatch(
-        /<s-button variant="secondary" href="[^"]*layout(%2F|\/)theme\.liquid[^"]*" target="_top">Open in code editor<\/s-button>/,
-      );
-      // No primary button anywhere on the card.
-      expect(markup).not.toContain('variant="primary"');
-      // Control: every other type keeps its primary editor button.
-      expect(
-        renderFindingItem(FINDING_ONE, {
-          scanId: "scan-1",
-          shopDomain: "test-shop.myshopify.com",
-          themeId: "123456789",
-        }),
-      ).toContain('<s-button variant="primary" href=');
-    });
-
-    it("an advisory without a description renders no empty line", () => {
-      const without = html({ description: "" });
-      expect(without).toContain("An app in your theme was named in a security incident report");
-      expect(without).not.toContain("Loads code from");
-    });
-
     describe("no other type's card changes", () => {
       it("a ghost script keeps its title, 'How to remove', 'Copy removal steps', its sentence and no list or link", () => {
         const other = renderFindingItem(
-          { ...FINDING_ONE, description: "UNIQUE-DESCRIPTION-TEXT", advisoryReportUrl: REPORT },
+          { ...FINDING_ONE, description: "UNIQUE-DESCRIPTION-TEXT" },
           { scanId: "scan-1" },
         );
         expect(other).toMatch(/<h3 style="[^"]*">Scripts<span aria-hidden="true"> · <\/span>/);
@@ -6543,7 +6466,6 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
           ...FINDING_ONE,
           findingType: "MALICIOUS_SCRIPT",
           description: "UNIQUE-DESCRIPTION-TEXT",
-          advisoryReportUrl: REPORT,
         });
         expect(mal).toContain("Malicious Scripts");
         expect(mal).toContain(">How to remove</strong>");
@@ -6580,12 +6502,13 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       scanWith([...SCRIPTS, ADVISORY]);
 
       const data = (await load()) as unknown as Data & {
-        alwaysShownFindings: Array<{ id: string; advisoryReportUrl: string | null }>;
+        securityRisks: Array<{ kind: string; sourceUrl?: string | null }>;
       };
       const html = await renderPage();
 
-      expect(data.alwaysShownFindings).toEqual([
-        expect.objectContaining({ id: "adv", advisoryReportUrl: null }),
+      expect(data.alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({ kind: "advisory", sourceUrl: null }),
       ]);
       const advisory = card(html, "adv");
       // The entry's wording still applies (gc-q5z8); only the link is withheld.

@@ -21,9 +21,10 @@ export interface FindingsTile {
   total: number;
   tone: FindingsTileTone;
   /**
-   * Security risks in `total` (gc-q5z8): every malicious finding the scan
-   * found (ignored or not, like the total) plus the non-ignored affected-app
-   * advisories. The subtitle names them ("13 findings, 1 security risk").
+   * Distinct security risks (gc-xtno): the number of Security risk banners,
+   * one per known malicious domain (ignored or not, like the total) and one
+   * per non-ignored affected-app advisory. The subtitle names them ("13
+   * findings, 1 security risk"); three lines on one domain are 1 risk.
    */
   securityRisks: number;
 }
@@ -41,6 +42,13 @@ export interface FindingsTileInput {
    * counts nor turns the tile red. Omitted = 0.
    */
   advisoryKept?: number;
+  /**
+   * The distinct security risks (the banners the caller built), gc-xtno.
+   * Omitted or 0 while the counts above say there is a risk (the banners
+   * could not be read) = the finding count, so the subtitle never reads 0
+   * risks on a red tile.
+   */
+  distinctRisks?: number;
 }
 
 export function buildFindingsTile({
@@ -48,15 +56,17 @@ export function buildFindingsTile({
   maliciousFound,
   maliciousKept,
   advisoryKept = 0,
+  distinctRisks = 0,
 }: FindingsTileInput): FindingsTile {
   // Clamped: the two counts come from separate reads, and a stale one must
   // never pull the number below the ignore-filtered total.
   const maliciousIgnored = Math.max(0, maliciousFound - maliciousKept);
   const total = filteredTotal + maliciousIgnored;
-  const securityRisks = maliciousFound + Math.max(0, advisoryKept);
+  const riskFindings = maliciousFound + Math.max(0, advisoryKept);
   // A security risk (malicious code, or an app named in a security incident,
   // gc-q5z8) turns the tile red.
   const tone: FindingsTileTone =
-    securityRisks > 0 ? "critical" : total === 0 ? "success" : "warning";
+    riskFindings > 0 ? "critical" : total === 0 ? "success" : "warning";
+  const securityRisks = riskFindings > 0 && distinctRisks > 0 ? distinctRisks : riskFindings;
   return { total, tone, securityRisks };
 }

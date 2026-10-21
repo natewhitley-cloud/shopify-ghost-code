@@ -21,10 +21,7 @@ import {
 import { APP_SIGNATURES } from "../../app/data/app-signatures.server";
 import { matchMaliciousDomain } from "../../app/data/malicious-domains.server";
 import { getFindingConfidence } from "../../app/lib/finding-classification";
-import {
-  advisoryReportUrlForFinding,
-  dropAdvisoryUnknownScripts,
-} from "../../app/services/app-incident-advisory.server";
+import { dropAdvisoryUnknownScripts } from "../../app/services/app-incident-advisory.server";
 import {
   ACTIVE_APP_OWN_FILE_TYPES,
   detectAppIncidentAdvisories,
@@ -35,6 +32,7 @@ import {
   ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
 } from "../../app/services/scan-engine.server";
+import { bannerSourceUrl } from "../test-utils/advisory-banner";
 
 const HULK = APP_INCIDENT_ADVISORIES[0];
 const HOST = "productoption.hulkapps.com";
@@ -1372,18 +1370,18 @@ describe("activeAdvisories", () => {
   });
 });
 
-describe("advisoryReportUrlForFinding (the card's 'Read the report' link)", () => {
+describe("the banner's report link for a stored advisory (buildSecurityRisks)", () => {
   const stored = { findingType: "APP_INCIDENT_ADVISORY", description: DESCRIPTION };
 
   it("resolves a stored finding to its entry's public report", () => {
-    expect(advisoryReportUrlForFinding(stored, ACTIVE)).toBe(
+    expect(bannerSourceUrl(stored, ACTIVE)).toBe(
       "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
     );
   });
 
   it("resolves the finding the detector actually emits (round trip)", () => {
     const [finding] = detect([file("layout/theme.liquid", TAG)]);
-    expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBe(HULK.sourceUrl);
+    expect(bannerSourceUrl(finding, ACTIVE)).toBe(HULK.sourceUrl);
   });
 
   it("picks the right entry among several, by any of its script hosts", () => {
@@ -1392,25 +1390,23 @@ describe("advisoryReportUrlForFinding (the card's 'Read the report' link)", () =
       ACTIVE,
       [HULK, OTHER],
     );
-    expect(advisoryReportUrlForFinding(finding, ACTIVE, [HULK, OTHER])).toBe(OTHER.sourceUrl);
-    expect(advisoryReportUrlForFinding(stored, ACTIVE, [OTHER, HULK])).toBe(HULK.sourceUrl);
+    expect(bannerSourceUrl(finding, ACTIVE, [HULK, OTHER])).toBe(OTHER.sourceUrl);
+    expect(bannerSourceUrl(stored, ACTIVE, [OTHER, HULK])).toBe(HULK.sourceUrl);
   });
 
   it("no link once the entry has passed its review date", () => {
-    expect(advisoryReportUrlForFinding(stored, new Date("2027-01-08T23:59:59Z"))).toBe(
-      HULK.sourceUrl,
-    );
-    expect(advisoryReportUrlForFinding(stored, new Date("2027-01-09T00:00:00Z"))).toBeNull();
+    expect(bannerSourceUrl(stored, new Date("2027-01-08T23:59:59Z"))).toBe(HULK.sourceUrl);
+    expect(bannerSourceUrl(stored, new Date("2027-01-09T00:00:00Z"))).toBeNull();
   });
 
   it("no link when the entry was removed from the list", () => {
-    expect(advisoryReportUrlForFinding(stored, ACTIVE, [])).toBeNull();
-    expect(advisoryReportUrlForFinding(stored, ACTIVE, [OTHER])).toBeNull();
+    expect(bannerSourceUrl(stored, ACTIVE, [])).toBeNull();
+    expect(bannerSourceUrl(stored, ACTIVE, [OTHER])).toBeNull();
   });
 
   it("no link when the entry was reworded since the scan (it can no longer be matched for certain)", () => {
     const reworded = { ...HULK, summary: "named in a different report" };
-    expect(advisoryReportUrlForFinding(stored, ACTIVE, [reworded])).toBeNull();
+    expect(bannerSourceUrl(stored, ACTIVE, [reworded])).toBeNull();
   });
 
   it.each([
@@ -1428,16 +1424,16 @@ describe("advisoryReportUrlForFinding (the card's 'Read the report' link)", () =
       { findingType: "APP_INCIDENT_ADVISORY", description: DESCRIPTION.toLowerCase() },
     ],
   ])("no link for %s", (_label, finding) => {
-    expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBeNull();
+    expect(bannerSourceUrl(finding, ACTIVE)).toBeNull();
   });
 
   it("uses the real list and the current date by default (clock pinned)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(ACTIVE);
-      expect(advisoryReportUrlForFinding(stored)).toBe(HULK.sourceUrl);
+      expect(bannerSourceUrl(stored)).toBe(HULK.sourceUrl);
       vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
-      expect(advisoryReportUrlForFinding(stored)).toBeNull();
+      expect(bannerSourceUrl(stored)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

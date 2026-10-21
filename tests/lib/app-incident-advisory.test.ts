@@ -695,9 +695,11 @@ describe("classification", () => {
     });
   });
 
-  it("is 'Verify first', never 'safe to remove': the script may belong to an app still in use", () => {
-    expect(getRemovalSafety(ADVISORY)).toBe("verify-first");
-    expect(REMOVAL_SAFETY_LABELS[getRemovalSafety(ADVISORY)]).toBe("Verify first");
+  it("is a security risk, never 'safe to remove': the script may belong to an app still in use", () => {
+    expect(getRemovalSafety(ADVISORY)).toBe("security-risk");
+    expect(REMOVAL_SAFETY_LABELS[getRemovalSafety(ADVISORY)]).toBe(
+      "Security risk: check before anything else",
+    );
   });
 });
 
@@ -819,7 +821,6 @@ describe("getFindingCardCopy", () => {
     steps: null,
     copyStepsLabel: "Copy removal steps",
     copyStepsAccessibilityLabel: "Copy removal steps for this finding",
-    reportLinkLabel: null,
     showSafetyBadge: true,
     primaryEditorButton: true,
     truncateSnippet: true,
@@ -840,7 +841,6 @@ describe("getFindingCardCopy", () => {
       ],
       copyStepsLabel: "Copy steps",
       copyStepsAccessibilityLabel: "Copy steps for this finding",
-      reportLinkLabel: "Read the report",
       showSafetyBadge: false,
       primaryEditorButton: false,
       truncateSnippet: false,
@@ -848,17 +848,12 @@ describe("getFindingCardCopy", () => {
     });
   });
 
-  it.each([
-    ...ALL_TYPES.filter((t) => t !== ADVISORY && t !== "MALICIOUS_SCRIPT"),
-    "SOME_FUTURE_TYPE",
-    "",
-  ])("%s keeps the default card presentation", (type) => {
-    expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
-  });
-
-  it("MALICIOUS_SCRIPT: the default card without the removal-safety badge (never 'likely safe')", () => {
-    expect(getFindingCardCopy("MALICIOUS_SCRIPT")).toEqual({ ...DEFAULTS, showSafetyBadge: false });
-  });
+  it.each([...ALL_TYPES.filter((t) => t !== ADVISORY), "SOME_FUTURE_TYPE", ""])(
+    "%s keeps the default card presentation",
+    (type) => {
+      expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
+    },
+  );
 
   it("the advisory wording has no dashes and none of the words the card must not say", () => {
     const { steps, ...rest } = getFindingCardCopy(ADVISORY);

@@ -388,8 +388,6 @@ export interface FindingCardCopy {
   /** The copy action's visible text and accessible name. */
   copyStepsLabel: string;
   copyStepsAccessibilityLabel: string;
-  /** Text of the link to the finding's public source, or null when it has none. */
-  reportLinkLabel: string | null;
   /** Whether the card shows the removal-safety badge ("Verify first" and so on). */
   showSafetyBadge: boolean;
   /** Whether "Open in code editor" is the card's primary button. */
@@ -407,7 +405,6 @@ const DEFAULT_CARD_COPY: FindingCardCopy = {
   steps: null,
   copyStepsLabel: "Copy removal steps",
   copyStepsAccessibilityLabel: "Copy removal steps for this finding",
-  reportLinkLabel: null,
   showSafetyBadge: true,
   primaryEditorButton: true,
   truncateSnippet: true,
@@ -433,18 +430,11 @@ const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
     steps: ADVISORY_STEPS,
     copyStepsLabel: "Copy steps",
     copyStepsAccessibilityLabel: "Copy steps for this finding",
-    reportLinkLabel: "Read the report",
     showSafetyBadge: false,
     primaryEditorButton: false,
     truncateSnippet: false,
     startHereLinkLabel: "See what to check",
   },
-  // Known malicious code: the default card, but never the removal-safety
-  // badge. Its level is "safe-to-remove" (nothing legitimate depends on it),
-  // whose badge reads "Likely safe, confirm app removed": wrong on attacker
-  // code, which is not from an app and must never be called "safe". The card
-  // already carries the critical severity badge, so no badge replaces it.
-  MALICIOUS_SCRIPT: { ...DEFAULT_CARD_COPY, showSafetyBadge: false },
 };
 
 /**
@@ -463,7 +453,7 @@ const ADVISORY_EMBED_CARD_COPY: FindingCardCopy = {
  * no code editor link to lead with, and the snippet is shown whole.
  */
 const HOMEPAGE_MALICIOUS_CARD_COPY: FindingCardCopy = {
-  ...CARD_COPY_OVERRIDES.MALICIOUS_SCRIPT,
+  ...DEFAULT_CARD_COPY,
   confidence: "Seen on your live homepage, not in your theme files.",
   stepsHeading: "What to check",
   steps: RUNTIME_MALICIOUS_STEPS,

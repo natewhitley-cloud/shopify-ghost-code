@@ -64,6 +64,7 @@ import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-reque
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
   advisoryCheckSteps,
+  countKeptSecurityRisks,
   securityRiskAnchorId,
   totalFindingsNote,
   type AdvisoryRisk,
@@ -112,7 +113,6 @@ import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
-import { advisoryReportUrlForFinding } from "../services/app-incident-advisory.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import { appLeftoverFindings } from "../services/app-removal.server";
 import {
@@ -181,12 +181,15 @@ function severityTone(severity: string): "critical" | "warning" | "info" {
 }
 
 /**
- * Maps a removal-safety level to an s-badge tone. Green = safe to delete, amber
+ * Maps a removal-safety level to an s-badge tone. Red critical = a security
+ * risk (check it before anything else, gc-xtno), green = safe to delete, amber
  * caution = check first, neutral grey = don't delete (migrate/fix instead), so
  * the color reads as "how freely can I act", not severity.
  */
-function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
+function safetyTone(safety: RemovalSafety): "critical" | "success" | "caution" | "neutral" {
   switch (safety) {
+    case "security-risk":
+      return "critical";
     case "safe-to-remove":
       return "success";
     case "leave-alone":
@@ -578,10 +581,8 @@ interface FindingLike {
   lineNumber: number;
   appName: string | null;
   codeSnippet: string;
-  /** The stored description. Rendered only for an affected-app advisory. */
+  /** The stored description. Copied only for an affected-app advisory. */
   description?: string;
-  /** An advisory's public report (loader-resolved); null or absent = no link. */
-  advisoryReportUrl?: string | null;
   isTracker?: boolean;
   isVisual?: boolean;
   isIgnored?: boolean;
@@ -902,28 +903,6 @@ export function FindingRow({
         )}
         {finding.lineNumber > 0 && `, line ${finding.lineNumber}`}
       </div>
-
-      {/* Affected-app advisory (gc-14x5): the stored description is the only
-          place that names the app and the report's date (the finding carries
-          no appName on purpose, and the per-type copy below is static), so
-          this card shows it. No other finding type renders its description. */}
-      {finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description && (
-        <div style={findingNote}>
-          {/* The report the sentence cites, right after it, in a new tab. A
-              plain anchor like the page's other links (react-router's Link
-              renders one); it carries `rel` because it leaves the admin. */}
-          {cardCopy.reportLinkLabel && finding.advisoryReportUrl ? (
-            <>
-              {`${finding.description}. `}
-              <a href={finding.advisoryReportUrl} target="_blank" rel="noopener noreferrer">
-                {cardCopy.reportLinkLabel}
-              </a>
-            </>
-          ) : (
-            finding.description
-          )}
-        </div>
-      )}
 
       {/* How freely the merchant can act (one coloured badge), and how the
           finding was detected (a plain sentence, not a second chip). */}
@@ -1468,11 +1447,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // are never counted as hidden. Unlike malicious code they honour ignores.
   // No query for a shop with ignores (the summary's kept rows) or a scan with
   // none; otherwise one small read (at most one finding per list entry).
-  // Each carries its public report's URL, resolved here because the list is
-  // server-only (null when the entry was removed or has expired: no link).
-  const alwaysShownFindings = (
-    scanSuccessful ? await getOwnSectionFindings(scanId, findingSummary.byType, keptFindings) : []
-  ).map((f) => ({ ...f, advisoryReportUrl: advisoryReportUrlForFinding(f, now) }));
+  // The banner resolves each one's public report (buildSecurityRisks below).
+  const alwaysShownFindings = scanSuccessful
+    ? await getOwnSectionFindings(scanId, findingSummary.byType, keptFindings)
+    : [];
 
   // "Start here" block (gc-bn0x): the scan's top 3 findings, on the
   // unfiltered results view of a successful scan only (a filtered list is
@@ -2146,13 +2124,18 @@ export default function ScanDetail() {
 
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
   // Security risks in the (ignore-filtered) total: non-ignored malicious code
-  // and the non-ignored advisories (gc-q5z8).
+  // and the non-ignored advisories (gc-q5z8), as findings (so the leftover
+  // count adds up) and as distinct risks, the banners (gc-xtno).
   const keptMalicious = findingSummary.byType.MALICIOUS_SCRIPT ?? 0;
   const riskNote = totalFindingsNote(
     totalFindings,
     keptMalicious + alwaysShownFindings.length,
     // The paid list shows kept malicious findings again (Free never previews them).
     canViewDetails ? keptMalicious : 0,
+    countKeptSecurityRisks(
+      securityRisks,
+      new Set(maliciousFindings.filter((f) => f.isIgnored).map((f) => f.id)),
+    ),
   );
   // Findings the LIST can hold: everything but the advisories shown above it.
   const listTotal = findingSummary.total - alwaysShownFindings.length;

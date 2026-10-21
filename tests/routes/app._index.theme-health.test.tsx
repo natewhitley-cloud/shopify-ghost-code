@@ -2038,3 +2038,231 @@ describe("Home: known malicious code seen on the live homepage (gc-0htk, gc-3y89
     expect(html).not.toContain("on your live homepage. It can steal");
   });
 });
+
+// gc-xtno items 2 and 3: Home's security risks during a rescan, and their unit.
+describe("Home: security risks never vanish during a rescan, and count per banner (gc-xtno)", () => {
+  const BILIING = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "biliing.top")!;
+  const POLYFILL = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "polyfill.io")!;
+  const line = (id: string, scanId: string, n: number, domain = BILIING) => ({
+    id,
+    scanId,
+    findingType: "MALICIOUS_SCRIPT",
+    severity: "HIGH",
+    filename: "layout/theme.liquid",
+    lineNumber: n,
+    appName: null,
+    codeSnippet: `<script src="https://${domain.domain}/x.js"></script>`,
+    description: maliciousDescription(domain),
+    createdAt: new Date("2026-10-11T10:00:00Z"),
+  });
+  /** Three lines on one domain in scan-1. */
+  const THREE_LINES = [
+    line("m1", "scan-1", 10),
+    line("m2", "scan-1", 20),
+    line("m3", "scan-1", 30),
+  ];
+  const RUNNING = {
+    ...SCAN,
+    id: "scan-2",
+    status: "IN_PROGRESS",
+    completedAt: null,
+    createdAt: new Date("2026-10-19T09:00:00Z"),
+    viewedOnHomeAt: null,
+  };
+  type Rows = ReturnType<typeof line>[];
+
+  /** Serve `rows` per scan; `ignoredMalicious` lines of scan-1 are ignored. */
+  function serve(rows: Rows, ignoredMalicious = 0) {
+    const malicious = rows.filter((r) => r.scanId === "scan-1").length;
+    const found = { ...TYPE_COUNTS, MALICIOUS_SCRIPT: malicious };
+    const kept = { ...found, MALICIOUS_SCRIPT: malicious - ignoredMalicious };
+    mockTypeCounts.mockResolvedValue(found);
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map([["scan-1", { HIGH: 3 + malicious, MEDIUM: 3, LOW: 1 }]]),
+    );
+    (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fingerprints: new Set(ignoredMalicious > 0 ? ["fp-ignored"] : []),
+      appNames: new Set(),
+    });
+    mockFiltered.mockImplementation(async (id: string) => ({
+      summary: {
+        total: id === "scan-1" ? 7 + malicious - ignoredMalicious : 0,
+        bySeverity: { HIGH: 3 + malicious - ignoredMalicious, MEDIUM: 3, LOW: 1 },
+        byType: id === "scan-1" ? kept : {},
+      },
+      keptFindings: ignoredMalicious > 0 ? [] : null,
+      ignoredMalicious: id === "scan-1" ? ignoredMalicious : 0,
+    }));
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+      async (id: string, f?: { findingType?: string }) =>
+        rows.filter((r) => r.scanId === id && (!f?.findingType || r.findingType === f.findingType)),
+    );
+  }
+
+  type Data = {
+    securityRisks: Array<{ kind: string; domain?: string; findings?: unknown[] }>;
+    securityRiskSource: { scanId: string; scanDate: Date; earlierScan: string | null } | null;
+    findingsTile: { total: number; tone: string; securityRisks: number } | null;
+  };
+  const load = async () => (await runLoader()) as unknown as Data;
+
+  describe("item 3: 'k security risks' counts banners, not lines", () => {
+    it.each(["free", "Standard", "Professional"])(
+      "%s: three lines on one domain are 1 banner and '1 security risk'",
+      async (plan) => {
+        setPlan(plan);
+        serve(THREE_LINES);
+
+        const data = await load();
+        const html = renderDashboard(data);
+
+        expect(data.securityRisks).toHaveLength(1);
+        expect(data.securityRisks[0].findings).toHaveLength(3);
+        expect(data.findingsTile).toMatchObject({ tone: "critical", securityRisks: 1 });
+        expect(html).toContain('class="health-score-subtitle">findings, 1 security risk<');
+        expect(html).not.toContain("3 security risks");
+        // The per-line detail stays inside the banner.
+        expect(html).toContain("on 3 lines of your theme");
+      },
+    );
+
+    it("two domains are 2 security risks", async () => {
+      serve([...THREE_LINES, line("p1", "scan-1", 40, POLYFILL)]);
+
+      const data = await load();
+
+      expect(data.securityRisks).toHaveLength(2);
+      expect(data.findingsTile).toMatchObject({ securityRisks: 2 });
+      expect(renderDashboard(data)).toContain("findings, 2 security risks<");
+    });
+  });
+
+  describe("item 2: a rescan never hides them", () => {
+    it.each(["free", "Standard", "Professional"])(
+      "%s: while a scan runs, the banners are the last completed scan's, dated and linked to it",
+      async (plan) => {
+        setPlan(plan);
+        serve(THREE_LINES);
+        mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+        const data = await load();
+        const html = renderDashboard(data);
+
+        expect(data.securityRisks).toEqual([
+          expect.objectContaining({ kind: "malicious", domain: "biliing.top" }),
+        ]);
+        expect(data.securityRiskSource).toEqual({
+          scanId: "scan-1",
+          scanDate: SCAN.completedAt,
+          earlierScan: "running",
+        });
+        // The previous scan is the fallback: no extra scan read.
+        expect(getCompletedScansForShop).not.toHaveBeenCalledWith(SHOP.id, { limit: 1 });
+        expect(html).toContain("Scanning your theme...");
+        expect(html).toContain(
+          "Your theme references biliing.top, a domain linked to malicious code",
+        );
+        expect(html).toContain("From your last completed scan on");
+        expect(html).toContain(", while the new scan runs.");
+        expect(html).toMatch(/href="\/app\/scans\/scan-1#security-risk-m1"/);
+        expect(html).not.toContain("/app/scans/scan-2#");
+      },
+    );
+
+    it("after a failed scan: the last completed scan's banners, saying the latest did not complete", async () => {
+      serve(THREE_LINES);
+      mockScans.mockResolvedValue({
+        items: [{ ...RUNNING, status: "FAILED" }, SCAN],
+        hasNextPage: false,
+      });
+
+      const data = await load();
+      const html = renderDashboard(data);
+
+      expect(data.securityRisks).toHaveLength(1);
+      expect(data.securityRiskSource?.earlierScan).toBe("failed");
+      expect(html).toContain(". Your latest scan did not complete.");
+    });
+
+    it("the two latest scans unsuccessful: reads the most recent successful scan", async () => {
+      serve(THREE_LINES);
+      mockScans.mockResolvedValue({
+        items: [RUNNING, { ...RUNNING, id: "scan-3", status: "FAILED" }],
+        hasNextPage: false,
+      });
+      (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_shopId: string, opts?: { limit?: number }) =>
+          opts?.limit === 1
+            ? [{ id: "scan-1", completedAt: SCAN.completedAt, themeName: SCAN.themeName }]
+            : [],
+      );
+
+      const data = await load();
+
+      expect(getCompletedScansForShop).toHaveBeenCalledWith(SHOP.id, { limit: 1 });
+      expect(data.securityRisks).toHaveLength(1);
+      expect(data.securityRiskSource).toMatchObject({ scanId: "scan-1", earlierScan: "running" });
+    });
+
+    it("ignored malicious code in the last completed scan still shows during a rescan", async () => {
+      serve(THREE_LINES, 3);
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({ kind: "malicious", domain: "biliing.top" }),
+      ]);
+      // The filtered summary the shop's ignores already read is reused.
+      expect(mockFiltered.mock.calls.filter(([id]) => id === "scan-1")).toHaveLength(1);
+    });
+
+    it("the first scan running (nothing completed yet): no banner, no note", async () => {
+      serve([]);
+      mockScans.mockResolvedValue({ items: [RUNNING], hasNextPage: false });
+
+      const data = await load();
+      const html = renderDashboard(data);
+
+      expect(data.securityRisks).toEqual([]);
+      expect(html).not.toContain("From your last completed scan");
+    });
+
+    it("a clean last scan during a rescan: no banner, no note", async () => {
+      serve([]);
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([]);
+      expect(renderDashboard(data)).not.toContain("From your last completed scan");
+    });
+
+    it("a failed read never takes Home down while a scan runs", async () => {
+      serve(THREE_LINES);
+      mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+      mockFiltered.mockRejectedValue(new Error("db down"));
+
+      const data = await load();
+
+      expect(data.securityRisks).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "security risk: last successful scan unavailable",
+        expect.objectContaining({ shopId: SHOP.id }),
+      );
+    });
+
+    it("the latest scan succeeded: its own banners, and no note", async () => {
+      serve(THREE_LINES);
+
+      const data = await load();
+
+      expect(data.securityRiskSource).toEqual({
+        scanId: "scan-1",
+        scanDate: SCAN.completedAt,
+        earlierScan: null,
+      });
+      expect(renderDashboard(data)).not.toContain("From your last completed scan");
+    });
+  });
+});

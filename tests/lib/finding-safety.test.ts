@@ -38,8 +38,10 @@ describe("REMOVAL_SAFETY — coverage", () => {
     }
   });
 
-  it.each(ALL_TYPES)("returns one of the three valid levels for %s", (type) => {
-    expect(["safe-to-remove", "verify-first", "leave-alone"]).toContain(getRemovalSafety(type));
+  it.each(ALL_TYPES)("returns one of the four valid levels for %s", (type) => {
+    expect(["security-risk", "safe-to-remove", "verify-first", "leave-alone"]).toContain(
+      getRemovalSafety(type),
+    );
   });
 });
 
@@ -50,14 +52,7 @@ describe("REMOVAL_SAFETY — coverage", () => {
 describe("getRemovalSafety — representative mappings", () => {
   // The only four types allowed to be marked safe-to-remove: signature-matched
   // orphan code that is inert once the source app is gone.
-  const SAFE_TO_REMOVE = [
-    "GHOST_SCRIPT",
-    "GHOST_STYLE",
-    "GHOST_SNIPPET",
-    "GHOST_PRECONNECT",
-    // Known-malicious domain: nothing legitimate depends on attacker code.
-    "MALICIOUS_SCRIPT",
-  ];
+  const SAFE_TO_REMOVE = ["GHOST_SCRIPT", "GHOST_STYLE", "GHOST_SNIPPET", "GHOST_PRECONNECT"];
 
   it.each(SAFE_TO_REMOVE)('classifies %s as "safe-to-remove"', (type) => {
     expect(getRemovalSafety(type)).toBe("safe-to-remove");
@@ -68,6 +63,21 @@ describe("getRemovalSafety — representative mappings", () => {
       (t) => getRemovalSafety(t) === "safe-to-remove",
     );
     expect(actualSafe.sort()).toEqual([...SAFE_TO_REMOVE].sort());
+  });
+
+  // gc-xtno: the security types have their own level, so no removal-level
+  // badge ("Likely safe, confirm app removed") can ever reach them.
+  const SECURITY_RISK = ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"];
+
+  it.each(SECURITY_RISK)('classifies %s as "security-risk", never "safe-to-remove"', (type) => {
+    expect(getRemovalSafety(type)).toBe("security-risk");
+  });
+
+  it("marks exactly the security types security-risk", () => {
+    const actual = Object.values(FindingType).filter(
+      (t) => getRemovalSafety(t) === "security-risk",
+    );
+    expect(actual.sort()).toEqual([...SECURITY_RISK].sort());
   });
 
   // Types where removal is the WRONG action — migrate or fix the data instead.
@@ -129,6 +139,9 @@ describe("getRemovalSafety — fallback", () => {
 
 describe("REMOVAL_SAFETY_LABELS", () => {
   it("has a short, non-empty label for each level", () => {
+    expect(REMOVAL_SAFETY_LABELS["security-risk"]).toBe(
+      "Security risk: check before anything else",
+    );
     expect(REMOVAL_SAFETY_LABELS["safe-to-remove"]).toBe("Likely safe, confirm app removed");
     expect(REMOVAL_SAFETY_LABELS["verify-first"]).toBe("Verify first");
     expect(REMOVAL_SAFETY_LABELS["leave-alone"]).toBe("Leave in place");

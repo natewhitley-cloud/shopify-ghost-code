@@ -99,4 +99,47 @@ describe("buildFindingsTile (gc-j8xq)", () => {
       buildFindingsTile({ filteredTotal: 5, maliciousFound: 2, maliciousKept: 1, advisoryKept: 2 }),
     ).toEqual({ total: 6, tone: "critical", securityRisks: 4 });
   });
+
+  // gc-xtno: "k security risks" is the number of banners, not finding lines.
+  it("counts distinct risks (the banners) when given: 3 lines on one domain = 1 risk", () => {
+    expect(
+      buildFindingsTile({
+        filteredTotal: 5,
+        maliciousFound: 3,
+        maliciousKept: 3,
+        distinctRisks: 1,
+      }),
+    ).toEqual({ total: 5, tone: "critical", securityRisks: 1 });
+    expect(
+      buildFindingsTile({
+        filteredTotal: 6,
+        maliciousFound: 3,
+        maliciousKept: 3,
+        advisoryKept: 1,
+        distinctRisks: 2,
+      }),
+    ).toEqual({ total: 6, tone: "critical", securityRisks: 2 });
+  });
+
+  it("banners unreadable (distinctRisks 0) on a red tile: falls back to the finding count, never 0", () => {
+    expect(
+      buildFindingsTile({
+        filteredTotal: 3,
+        maliciousFound: 3,
+        maliciousKept: 3,
+        distinctRisks: 0,
+      }),
+    ).toEqual({ total: 3, tone: "critical", securityRisks: 3 });
+  });
+
+  it("no risk in the counts: distinctRisks cannot make the tile red or count a risk", () => {
+    expect(
+      buildFindingsTile({
+        filteredTotal: 4,
+        maliciousFound: 0,
+        maliciousKept: 0,
+        distinctRisks: 2,
+      }),
+    ).toEqual({ total: 4, tone: "warning", securityRisks: 0 });
+  });
 });

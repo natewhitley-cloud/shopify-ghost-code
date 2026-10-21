@@ -28,11 +28,9 @@ import {
   getFindingRemediation,
   isAdvisoryEmbedFinding,
 } from "../../app/lib/finding-remediation";
-import {
-  advisoryReportUrlForFinding,
-  dropAdvisoryUnknownScripts,
-} from "../../app/services/app-incident-advisory.server";
+import { dropAdvisoryUnknownScripts } from "../../app/services/app-incident-advisory.server";
 import { detectAppIncidentAdvisories, scanThemeFiles } from "../../app/services/scan-engine.server";
+import { bannerSourceUrl } from "../test-utils/advisory-banner";
 
 const byName = (name: string): AppIncidentAdvisory => {
   const entry = APP_INCIDENT_ADVISORIES.find((a) => a.appName === name);
@@ -418,25 +416,19 @@ describe("stored embed findings", () => {
   });
 
   it("resolve to their entry's source link", () => {
-    expect(advisoryReportUrlForFinding(stored(SWYM_EMBED_DESCRIPTION), ACTIVE)).toBe(
-      SWYM.sourceUrl,
-    );
-    expect(advisoryReportUrlForFinding(stored(SELLEASY_EMBED_DESCRIPTION), ACTIVE)).toBe(
-      SELLEASY.sourceUrl,
-    );
-    expect(advisoryReportUrlForFinding(stored(SELLEASY_HOST_DESCRIPTION), ACTIVE)).toBe(
-      SELLEASY.sourceUrl,
-    );
+    expect(bannerSourceUrl(stored(SWYM_EMBED_DESCRIPTION), ACTIVE)).toBe(SWYM.sourceUrl);
+    expect(bannerSourceUrl(stored(SELLEASY_EMBED_DESCRIPTION), ACTIVE)).toBe(SELLEASY.sourceUrl);
+    expect(bannerSourceUrl(stored(SELLEASY_HOST_DESCRIPTION), ACTIVE)).toBe(SELLEASY.sourceUrl);
   });
 
   it("round trip: the finding the detector emits resolves", () => {
     const [finding] = detect([settingsFile({ a: { type: SWYM_TYPE } })]);
-    expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBe(SWYM.sourceUrl);
+    expect(bannerSourceUrl(finding, ACTIVE)).toBe(SWYM.sourceUrl);
   });
 
   it("no link once the entry has expired", () => {
     expect(
-      advisoryReportUrlForFinding(stored(SWYM_EMBED_DESCRIPTION), new Date("2027-01-13T00:00:00Z")),
+      bannerSourceUrl(stored(SWYM_EMBED_DESCRIPTION), new Date("2027-01-13T00:00:00Z")),
     ).toBeNull();
   });
 

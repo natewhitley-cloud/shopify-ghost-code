@@ -1,37 +1,15 @@
 /**
- * Affected-app advisory (gc-14x5): what the scan page needs from the curated
- * list for a STORED finding. The list is server-only, so the loader resolves
- * it here and passes plain values to the card.
+ * Affected-app advisory (gc-14x5): what the server needs from the curated
+ * list for a STORED finding (the Security risk banner resolves its entry
+ * through advisoryForFinding, see security-risk.server.ts).
  */
 import {
-  activeAdvisories,
   advisoryDescriptions,
   APP_INCIDENT_ADVISORIES,
   matchAdvisoryScriptHost,
   type AppIncidentAdvisory,
 } from "../data/app-incident-advisories.server";
 import { hostnameFromUrl } from "../lib/url.server";
-
-/**
- * The public report behind a stored APP_INCIDENT_ADVISORY finding, or null.
- *
- * A finding stores no reference to its list entry, so the entry is resolved
- * by rebuilding each entry's description (advisoryDescription, the detector's
- * own builder) and comparing it with the stored one. That is exact: the
- * description holds the entry's app name, the matched signal (host, or app
- * embed), summary and date.
- *
- * Null (the card then shows no link) when the finding is another type, when
- * the entry was removed or reworded since the scan, or when it has passed its
- * review date at `now`: an expired entry is no longer vouched for.
- */
-export function advisoryReportUrlForFinding(
-  finding: { findingType: string; description: string },
-  now: Date = new Date(),
-  advisories: ReadonlyArray<AppIncidentAdvisory> = APP_INCIDENT_ADVISORIES,
-): string | null {
-  return advisoryForFinding(finding, activeAdvisories(now, advisories))?.sourceUrl ?? null;
-}
 
 /**
  * The entry of `advisories` an APP_INCIDENT_ADVISORY finding was emitted for,

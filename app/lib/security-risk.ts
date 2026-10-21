@@ -240,12 +240,57 @@ export function securityRiskDateWords(risk: SecurityRisk): { before: string; aft
   return { before: "Found in your", after: "scan" };
 }
 
+/**
+ * Which scan Home's banners are from (gc-xtno). The latest scan when it
+ * succeeded; while a scan runs, or after one failed, the most recent
+ * successful scan, so known malicious code never vanishes during a rescan.
+ */
+export interface SecurityRiskSource {
+  scanId: string;
+  scanDate: Date | string;
+  /** Null: the latest scan. Otherwise why the latest scan has no results yet. */
+  earlierScan: "running" | "failed" | null;
+}
+
+/**
+ * Home's line above banners from an earlier scan, around its date, or null
+ * for the latest scan: "From your last completed scan on {date}, while the
+ * new scan runs."
+ */
+export function securityRiskSourceWords(
+  source: Pick<SecurityRiskSource, "earlierScan">,
+): { before: string; after: string } | null {
+  if (source.earlierScan === null) return null;
+  return {
+    before: "From your last completed scan on",
+    after:
+      source.earlierScan === "running"
+        ? ", while the new scan runs."
+        : ". Your latest scan did not complete.",
+  };
+}
+
 /** The plan line under the actions (the date is rendered beside it). */
 export const SECURITY_RISK_PLAN_NOTE = "shown on every plan";
 
 // ---------------------------------------------------------------------------
 // Counts (Home's tile, the scan page's "Total findings" note)
 // ---------------------------------------------------------------------------
+
+/**
+ * The distinct security risks a set of banners makes once ignored findings
+ * are left out (gc-xtno): every advisory banner (only non-ignored advisories
+ * get one) and every malicious banner with at least one finding not in
+ * `ignoredFindingIds`. The scan page's ignore-filtered total counts these.
+ */
+export function countKeptSecurityRisks(
+  risks: readonly SecurityRisk[],
+  ignoredFindingIds: ReadonlySet<string>,
+): number {
+  return risks.filter(
+    (risk) => risk.kind === "advisory" || risk.findings.some((f) => !ignoredFindingIds.has(f.id)),
+  ).length;
+}
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -263,6 +308,12 @@ export function findingsTileSubtitle(total: number, securityRisks: number): stri
  * The scan page's note under "Total findings", or null when there is no
  * security risk: "13 findings: 1 security risk (above), 12 leftover items (below)."
  *
+ * `riskFindings` is the security findings in `total` (lines, so the leftover
+ * count adds up); `distinctRisks` is how many banners they make (gc-xtno: one
+ * per malicious domain, one per advisory), the "security risks" number. When
+ * they differ the findings are named too: "13 findings: 1 security risk (3
+ * findings, above), 10 leftover items (below)."
+ *
  * Both numbers are from the scan page's ignore-filtered total, so ignored
  * malicious code (still shown in its banner, as the security alert always
  * was) is not counted here, while Home's tile adds it back: the scan page's
@@ -275,12 +326,21 @@ export function findingsTileSubtitle(total: number, securityRisks: number): stri
  */
 export function totalFindingsNote(
   total: number,
-  securityRisks: number,
+  riskFindings: number,
   maliciousAlsoListed = 0,
+  distinctRisks = riskFindings,
 ): string | null {
-  if (securityRisks <= 0) return null;
-  const leftover = Math.max(0, total - securityRisks);
-  const risks = `${plural(securityRisks, "security risk", "security risks")} (above)`;
+  if (riskFindings <= 0) return null;
+  const leftover = Math.max(0, total - riskFindings);
+  const named = plural(
+    distinctRisks > 0 ? distinctRisks : riskFindings,
+    "security risk",
+    "security risks",
+  );
+  const risks =
+    distinctRisks > 0 && distinctRisks !== riskFindings
+      ? `${named} (${plural(riskFindings, "finding", "findings")}, above)`
+      : `${named} (above)`;
   const where =
     maliciousAlsoListed > 0 ? "below, with the known malicious code listed again" : "below";
   const rest =
