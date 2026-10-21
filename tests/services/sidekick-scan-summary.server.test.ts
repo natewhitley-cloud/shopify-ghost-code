@@ -6,7 +6,10 @@
  * Free preview, top-findings ranking and theme health checklist all run. No
  * database is touched.
  */
-import type { FindingType, Severity } from "@prisma/client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { FindingType, type Severity } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => {
@@ -37,7 +40,9 @@ vi.mock("../../app/services/theme-cache.server", () => ({
 }));
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
+import { LANES } from "../../app/lib/finding-consequence";
 import { findingTypesWithheldByPlan } from "../../app/lib/plan-finding-types";
+import { toTopFindingViews } from "../../app/lib/top-findings";
 import * as findingModel from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
@@ -58,6 +63,8 @@ import {
   NO_COMPLETED_SCAN_MESSAGE,
   NO_SCANS_MESSAGE,
   PLAN_GAP_REASON,
+  SIDEKICK_ADVISORY_IMPACT,
+  sidekickTopFindingImpact,
 } from "../../app/services/sidekick-scan-summary.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../../app/services/theme-cache.server";
 
@@ -354,15 +361,32 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
     expect(r.topFindings.map((t) => t.app)).toEqual(["KeptApp"]);
   });
 
-  it("labels an affected-app advisory (in no impact area) a security risk, as Start here does (gc-n3in)", async () => {
+  // instructions.md keys its "never say the store was hacked" guidance on the
+  // advisory's "Security advisory" impact: it must not become "Security risk"
+  // here even though the in-app Start here card shows it as one.
+  it("labels an affected-app advisory (in no impact area) a security advisory, never a security risk", async () => {
     const advisory = selleasyAdvisory("v1");
     // A real stored advisory carries no appName: the entry must supply it.
     expect(advisory.appName).toBeNull();
     serveScan([advisory, f("a2", "GHOST_STYLE", "LOW")]);
     const r = await okSummary();
     expect(r.appSecurityAdvisories).toBe(1);
-    expect(r.topFindings[0]).toMatchObject({ impact: "Security risk", app: "Selleasy" });
+    expect(r.topFindings[0]).toMatchObject({ impact: "Security advisory", app: "Selleasy" });
+    expect(r.topFindings.map((t) => t.impact)).not.toContain("Security risk");
     expect(r.byImpact.map((i) => i.area)).toEqual(["Speed"]);
+  });
+
+  it("with malicious code and an advisory, says 'Security risk' only for the malicious row", async () => {
+    serveScan([
+      selleasyAdvisory("v1"),
+      f("m1", "MALICIOUS_SCRIPT", "HIGH"),
+      f("a2", "GHOST_STYLE", "LOW"),
+    ]);
+    const r = await okSummary();
+    const byType = Object.fromEntries(r.topFindings.map((t) => [t.app ?? t.type, t.impact]));
+    expect(byType.Selleasy).toBe("Security advisory");
+    expect(r.topFindings.filter((t) => t.impact === "Security risk")).toHaveLength(1);
+    expect(r.topFindings.map((t) => t.impact)).toContain("Speed");
   });
 
   // gc-n3in: Sidekick said "Still tracking you" (the lane) for malicious code
@@ -644,4 +668,51 @@ describe("getSidekickScanSummary: response size", () => {
       expect(Math.ceil(json.length / 4)).toBeLessThan(2500);
     },
   );
+});
+
+/**
+ * The Sidekick contract (A8): every `impact` a top finding can carry is either
+ * a consequence lane's label (the `byImpact` areas instructions.md explains)
+ * or a string instructions.md names literally, so the extension's guidance
+ * (e.g. "never say the store was hacked" for "Security advisory") applies.
+ */
+describe("sidekickTopFindingImpact: the extension's impact contract", () => {
+  const INSTRUCTIONS = readFileSync(
+    join(__dirname, "..", "..", "extensions/sidekick-tools/instructions.md"),
+    "utf8",
+  );
+  const LANE_LABELS = new Set(LANES.map((l) => l.label));
+  // Known malicious code's label (gc-n3in). instructions.md covers malicious
+  // code through `maliciousCode` ("say so first and plainly") but does not
+  // name this label yet; release 2 slice 6 owns that file. Nothing else may
+  // be added here without a matching instructions.md line.
+  const NAMED_ELSEWHERE = new Set(["Security risk"]);
+
+  const allImpacts = () =>
+    toTopFindingViews(
+      "scan_1",
+      Object.values(FindingType).map((type, i) => f(`t${i}`, type, "HIGH")),
+      true,
+    ).map((v, i) => [Object.values(FindingType)[i], sidekickTopFindingImpact(v)] as const);
+
+  it("every impact is a lane label or named in instructions.md", () => {
+    for (const [type, impact] of allImpacts()) {
+      const covered =
+        LANE_LABELS.has(impact) ||
+        INSTRUCTIONS.includes(`"${impact}"`) ||
+        NAMED_ELSEWHERE.has(impact);
+      expect(covered, `${type} -> ${impact}`).toBe(true);
+    }
+  });
+
+  it("the advisory label is the one instructions.md names, and only an advisory carries it", () => {
+    expect(INSTRUCTIONS).toContain(`\`impact\` "${SIDEKICK_ADVISORY_IMPACT}"`);
+    const advisoryOnly = allImpacts().filter(([, impact]) => impact === SIDEKICK_ADVISORY_IMPACT);
+    expect(advisoryOnly.map(([type]) => type)).toEqual(["APP_INCIDENT_ADVISORY"]);
+  });
+
+  it("only known malicious code is a security risk", () => {
+    const risky = allImpacts().filter(([, impact]) => impact === "Security risk");
+    expect(risky.map(([type]) => type)).toEqual(["MALICIOUS_SCRIPT"]);
+  });
 });

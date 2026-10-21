@@ -158,8 +158,9 @@ export function pickTopFindings<T extends RankableFinding>(
 /**
  * Whether a "Start here" row is a security risk: a security type (malicious
  * code, an affected-app advisory, gc-g034) or a finding in no lane. The card
- * shows it in the critical red tokens, and the card and Sidekick both label
- * it "Security risk" (gc-n3in).
+ * shows it in the critical red tokens and labels it "Security risk" (gc-n3in).
+ * Sidekick says "Security risk" only for malicious code: an advisory stays
+ * "Security advisory" there (sidekickTopFindingImpact).
  */
 export function isSecurityRiskRow(f: Pick<TopFindingView, "securityRisk" | "lane">): boolean {
   return f.securityRisk || f.lane === null;

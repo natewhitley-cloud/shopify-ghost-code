@@ -46,7 +46,12 @@ import {
   maliciousHealthRow,
   themeHealthVerdict,
 } from "../lib/theme-health";
-import { findingLocation, toTopFindingViews, topFindingLabel } from "../lib/top-findings";
+import {
+  findingLocation,
+  toTopFindingViews,
+  topFindingLabel,
+  type TopFindingView,
+} from "../lib/top-findings";
 import { getTopFindingsInGroup, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getCompletedScansForShop, getScanById, getScansForShop } from "../models/scan.server";
@@ -58,11 +63,7 @@ export type SidekickImpactArea = { area: string; count: number; meaning: string 
 
 export type SidekickTopFinding = {
   type: string;
-  /**
-   * The finding's impact area (e.g. "Speed"), or "Security risk" for every row
-   * the app's "Start here" card shows as one (gc-n3in: malicious code and
-   * affected-app advisories alike, never their lane's label).
-   */
+  /** The finding's impact area (e.g. "Speed"): see sidekickTopFindingImpact. */
   impact: string;
   app: string | null;
   location: string;
@@ -230,7 +231,7 @@ export async function getSidekickScanSummary(
     appSecurityAdvisories: summary.byType.APP_INCIDENT_ADVISORY ?? 0,
     topFindings: toTopFindingViews(scan.id, topFindingRows, fullList, advisoryCopy).map((f) => ({
       type: f.title ?? f.typeLabel,
-      impact: topFindingLabel(f),
+      impact: sidekickTopFindingImpact(f),
       app: f.appName ?? advisoryCopy[f.id]?.appName ?? null,
       location: f.location,
       description: f.cost,
@@ -248,6 +249,21 @@ export async function getSidekickScanSummary(
     newerScanInProgress: latestIsRunning && latestScan.id !== scan.id,
     url: `app://app/scans/${scan.id}`,
   };
+}
+
+/**
+ * The `impact` Sidekick gives a top finding: the Start here card's label
+ * (topFindingLabel: "Security risk" for known malicious code, else the lane),
+ * except an affected-app advisory, which stays "Security advisory". The
+ * extension's instructions.md keys its "never say the store was hacked"
+ * guidance on that exact label, so it must not become "Security risk" here
+ * even though the in-app card shows it as one. An advisory is the only
+ * finding in no lane (CONSEQUENCE_MAP, APP_INCIDENT_ADVISORY).
+ */
+export const SIDEKICK_ADVISORY_IMPACT = "Security advisory";
+
+export function sidekickTopFindingImpact(f: Pick<TopFindingView, "securityRisk" | "lane">): string {
+  return f.lane === null ? SIDEKICK_ADVISORY_IMPACT : topFindingLabel(f);
 }
 
 type ScanRow = NonNullable<Awaited<ReturnType<typeof getScanById>>>;

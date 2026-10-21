@@ -21,24 +21,13 @@
  *   - Read-only and side-effect free: no nudge telemetry, no run trigger.
  *   - SMALL: at most MAX_SPEED_APPS apps per page, no history, no other
  *     third parties, no first-party totals.
- *   - SECURITY RISKS AS THE PAGE SHOWS THEM (gc-3y89 item 9): known malicious
- *     domains the speed test requested, from the page's own read, on EVERY
- *     plan and whatever the report status (never paywalled), with the test's
- *     date. Absent when there are none (or the runtime check is off).
+ *   - NO SPEED-TEST SECURITY RISKS YET: the Store speed page's "Security risk"
+ *     banners are not in this output. gc-3y89 item 9 is deferred to release 2
+ *     slice 6, which owns extensions/sidekick-tools/instructions.md and must
+ *     add the "never say the store was hacked" guidance for them first.
  */
-import {
-  readSpeedPageData,
-  type SpeedPageReport,
-  type SpeedSecurity,
-} from "./speed-page-data.server";
+import { readSpeedPageReport } from "./speed-page-data.server";
 import { isSpeedReportLive } from "./speed-report-config.server";
-import { RUNTIME_MALICIOUS_STEPS } from "../lib/finding-remediation";
-import {
-  securityRiskBody,
-  securityRiskDateWords,
-  securityRiskTitle,
-  SECURITY_RISK_LABEL,
-} from "../lib/security-risk";
 import {
   FREE_TEST_EXHAUSTED,
   FREE_TEST_NO_APP,
@@ -102,37 +91,22 @@ export type SidekickSpeedPage =
     }
   | { page: string; path: string | null; tested: false; note: string };
 
-/** A speed-test Security risk banner, in the Store speed page's words. */
-export type SidekickSpeedSecurityRisk = {
-  label: string;
-  title: string;
-  details: string;
-  /** When it was seen, e.g. "Found in the speed test on 2026-10-03". */
-  seen: string;
-  whatToCheck: readonly string[];
-};
-
-/** Present only when the speed test requested a known malicious domain. */
-type WithSecurityRisks = { securityRisks?: SidekickSpeedSecurityRisk[] };
-
-export type SidekickSpeedSummary = WithSecurityRisks &
-  (
-    | { status: "not_available_on_plan"; message: string }
-    | { status: "no_data"; reason: SpeedNoDataReason; message: string; url?: string }
-    | {
-        status: "ok";
-        reportDate: string;
-        /** "speed_report" (the weekly or monthly report, or Run now) or "free_test" (the one free homepage test). */
-        reportType: "speed_report" | "free_test";
-        pages: SidekickSpeedPage[];
-        /** What the result covers on this plan. */
-        scope: string;
-        /** A newer run with no results yet (running, failed, password page). */
-        latestRun: { date: string; reason: SpeedNoDataReason; message: string } | null;
-        caveat: string;
-        url: string;
-      }
-  );
+export type SidekickSpeedSummary =
+  | { status: "not_available_on_plan"; message: string }
+  | { status: "no_data"; reason: SpeedNoDataReason; message: string; url?: string }
+  | {
+      status: "ok";
+      reportDate: string;
+      /** "speed_report" (the weekly or monthly report, or Run now) or "free_test" (the one free homepage test). */
+      reportType: "speed_report" | "free_test";
+      pages: SidekickSpeedPage[];
+      /** What the result covers on this plan. */
+      scope: string;
+      /** A newer run with no results yet (running, failed, password page). */
+      latestRun: { date: string; reason: SpeedNoDataReason; message: string } | null;
+      caveat: string;
+      url: string;
+    };
 
 export const SPEED_NOT_LIVE_MESSAGE =
   "The GhostCode store speed report is not available right now.";
@@ -270,30 +244,8 @@ export async function getSidekickSpeedSummary(shopDomain: string): Promise<Sidek
   if (!shop) return noData("not_run", SPEED_NO_RESULT_MESSAGE);
 
   const now = new Date();
-  const { report, security } = await readSpeedPageData(shop, now);
-  const risks = sidekickSecurityRisks(security);
-  const summary = reportSummary(report, now);
-  return risks.length > 0 ? { ...summary, securityRisks: risks } : summary;
-}
+  const report = await readSpeedPageReport(shop, now);
 
-/** The page's speed-test banners for Sidekick (same title, body and date words). */
-function sidekickSecurityRisks(security: SpeedSecurity): SidekickSpeedSecurityRisk[] {
-  const testedAt = security.testedAt;
-  if (!testedAt) return [];
-  return security.risks.map((risk) => {
-    const words = securityRiskDateWords(risk);
-    return {
-      label: SECURITY_RISK_LABEL,
-      title: securityRiskTitle(risk),
-      details: securityRiskBody(risk),
-      seen: [words.before, day(testedAt), words.after].filter(Boolean).join(" "),
-      whatToCheck: RUNTIME_MALICIOUS_STEPS,
-    };
-  });
-}
-
-/** The plan-gated report part of the summary (the page's own states). */
-function reportSummary(report: SpeedPageReport, now: Date): SidekickSpeedSummary {
   if (report.access === "locked") {
     return { status: "not_available_on_plan", message: SPEED_NOT_ON_PLAN_MESSAGE };
   }
