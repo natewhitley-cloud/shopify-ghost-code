@@ -77,6 +77,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { blankNonExecutingLiquid } from "./liquid-error-detector.server";
 import { classifySeverity } from "./severity-classifier.server";
+import { isSuspiciousCodeSignalEnabled } from "./soft-launch-flags.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import {
   activeAdvisories,
@@ -93,6 +94,13 @@ import {
 } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
+import {
+  detectSuspiciousCode,
+  isSuspiciousCodeCandidate,
+  summarizeSuspiciousCode,
+  type SuspiciousCodeReason,
+  type SuspiciousCodeSummary,
+} from "../lib/suspicious-code";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 import type { ThirdPartyDomainRef } from "../models/scan-domain.server";
@@ -191,6 +199,11 @@ export type ScanResult = {
   // Optional for backward compatibility with ScanResult literals in tests;
   // scanThemeFiles always populates it (possibly empty).
   findingCapHits?: Partial<Record<FindingType, number>>;
+  // Suspicious-code aggregate (gc-dcyh Phase 0, dark): obfuscated or
+  // pirated-marker asset JS, for the scan_signal OpsEvent only, never a
+  // Finding. Present ONLY while SUSPICIOUS_CODE_SIGNAL_ENABLED is on, so a
+  // flag-off ScanResult is exactly as before. Bounded (20 file entries).
+  suspiciousCode?: SuspiciousCodeSummary;
 };
 
 // ---------------------------------------------------------------------------
@@ -5944,6 +5957,11 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
   // Apps whose generic snippet names may be attributed in this theme (gc-c4k).
   const corroboratedApps = findCorroboratedApps(files);
 
+  // Suspicious-code signal (gc-dcyh Phase 0): null while the flag is off, so
+  // the detector does no work at all and the result carries no key.
+  const suspiciousHits: Array<{ path: string; reasons: SuspiciousCodeReason[] }> | null =
+    isSuspiciousCodeSignalEnabled() ? [] : null;
+
   // Pass 1: per-file ghost code detection
   for (const file of files) {
     const scannable = isScannableFile(file.filename);
@@ -5971,6 +5989,12 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     // (SIZE_SKIP_STILL_SCANNED_FINDING_TYPES in finding-classification).
     if (oversized || isMaliciousScanOnlyFile(file.filename)) {
       findings.push(...detectMaliciousScripts(file));
+      // Same asset JS the malicious pass just read. Asset files are never
+      // size-skipped (`oversized` is Liquid-only), so >1 MB assets are checked.
+      if (suspiciousHits && isSuspiciousCodeCandidate(file.filename)) {
+        const { suspicious, reasons } = detectSuspiciousCode(file.filename, file.content);
+        if (suspicious) suspiciousHits.push({ path: file.filename, reasons });
+      }
       continue;
     }
     if (!scannable) continue;
@@ -6122,5 +6146,6 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     benignLibrarySkips: benignSkips.count,
     thirdPartyDomains,
     findingCapHits,
+    ...(suspiciousHits ? { suspiciousCode: summarizeSuspiciousCode(suspiciousHits) } : {}),
   };
 }

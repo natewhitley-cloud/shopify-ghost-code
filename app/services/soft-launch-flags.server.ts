@@ -85,3 +85,15 @@ export function isScriptTagSunsetLive(): boolean {
 export function isRuntimeMaliciousCheckLive(): boolean {
   return process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED === "true";
 }
+
+/**
+ * Whether the suspicious-code detector runs (gc-dcyh Phase 0): obfuscated or
+ * pirated-marker asset JavaScript, counted into the scan_signal OpsEvent only.
+ * Deliberately NOT in SOFT_LAUNCH_FLAGS: it has no FindingType and creates no
+ * Finding rows, nothing a merchant can see. Off (unset or anything but "true")
+ * = the detector does not run at all and scan_signal is unchanged. Read in the
+ * scan worker thread, whose env is a copy of the process env taken at spawn.
+ */
+export function isSuspiciousCodeSignalEnabled(): boolean {
+  return process.env.SUSPICIOUS_CODE_SIGNAL_ENABLED === "true";
+}

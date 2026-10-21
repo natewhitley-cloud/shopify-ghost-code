@@ -1143,6 +1143,7 @@ export const scanTheme = inngest.createFunction(
         skippedFileCount,
         benignLibrarySkips,
         findingCapHits,
+        suspiciousCode,
         suppressedDetectorHits,
         liveFindingTypes: persistedLiveFindingTypes,
         unknownScriptCount,
@@ -1251,6 +1252,7 @@ export const scanTheme = inngest.createFunction(
           benignLibrarySkips,
           thirdPartyDomains,
           findingCapHits,
+          suspiciousCode,
         } = await scanThemeFilesInPool(files);
         const themeScanMs = Date.now() - themeScanStart;
 
@@ -1449,6 +1451,8 @@ export const scanTheme = inngest.createFunction(
           // Per type: files that hit MAX_FINDINGS_PER_FILE_PER_TYPE (gc-ypk). At
           // most one key per finding type — safe across the step boundary.
           findingCapHits: findingCapHits ?? {},
+          // gc-dcyh Phase 0 (dark): present only while its flag is on.
+          ...(suspiciousCode ? { suspiciousCode } : {}),
           suppressedDetectorHits,
           // Recorded on the scan by finalize-scan (gc-rvo0); computed from the
           // same flag reads as the persistence filter above. Small string[].
@@ -2676,6 +2680,9 @@ export const scanTheme = inngest.createFunction(
               // Per type: files that hit the per-file finding cap (gc-ypk).
               // Telemetry only; {} on every real theme.
               findingCapHits,
+              // Obfuscated / pirated-marker asset JS (gc-dcyh Phase 0, dark,
+              // FP measurement). Absent while SUSPICIOUS_CODE_SIGNAL_ENABLED is off.
+              ...(suspiciousCode ? { suspiciousCode } : {}),
               unknownScriptCount,
               thirdPartyDomainCount,
               detectorHits,

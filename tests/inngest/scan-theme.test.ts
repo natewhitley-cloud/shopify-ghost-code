@@ -2767,6 +2767,35 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
     warnSpy.mockRestore();
   });
 
+  it("threads the suspicious-code summary into the scan_signal metadata (gc-dcyh)", async () => {
+    const suspiciousCode = {
+      fileCount: 1,
+      files: [{ path: "assets/shrine.null.js", reasons: ["filename_marker", "packer"] }],
+      reasonCounts: { filename_marker: 1, packer: 1 },
+    };
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      suspiciousCode,
+    });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata.suspiciousCode).toEqual(suspiciousCode);
+    // Telemetry only: no Finding rows come from it.
+    expect(arg.metadata.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("omits suspiciousCode from the scan_signal when the scan result has none (gc-dcyh, flag off)", async () => {
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect("suspiciousCode" in arg.metadata).toBe(false);
+  });
+
   it("computes totalTextBytes/largestFileBytes/scannableTextBytes over mixed file types (gc-d4e)", async () => {
     // Mixed fixture: one scannable liquid template, one non-scannable asset JS
     // file (the largest), and one non-scannable JSON file — so
