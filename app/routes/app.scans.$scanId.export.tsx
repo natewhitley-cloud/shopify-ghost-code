@@ -11,6 +11,7 @@
 
 import type { LoaderFunctionArgs } from "react-router";
 
+import { exportLocation } from "../lib/finding-classification";
 import { canExportPdf, canViewFindingDetails } from "../lib/plan-gating.server";
 import { renderScanReportPdf } from "../lib/scan-report-pdf.server";
 import { getFindingsForScan } from "../models/finding.server";
@@ -155,8 +156,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         findings: shown.map((f) => ({
           severity: f.severity,
           type: f.findingType,
-          file: f.filename,
-          line: f.lineNumber,
+          ...exportLocation(f),
           app: f.appName ?? null,
           description: f.description,
           codeSnippet: f.codeSnippet,
@@ -185,17 +185,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     "Code Snippet",
     "Description",
   ]);
-  const dataRows = shown.map((f) =>
-    toCsvRow([
+  const dataRows = shown.map((f) => {
+    const { file, line } = exportLocation(f);
+    return toCsvRow([
       f.severity,
       f.findingType,
-      f.filename,
-      f.lineNumber,
+      file,
+      line,
       f.appName,
       f.codeSnippet,
       f.description,
-    ]),
-  );
+    ]);
+  });
   const csvBody = [headerRow, ...dataRows].join("\r\n");
 
   return new Response(csvBody, {

@@ -15,6 +15,8 @@ import path from "node:path";
 
 import { Document, Page, View, Text, StyleSheet, Font, renderToBuffer } from "@react-pdf/renderer";
 
+import { exportLocation } from "./finding-classification";
+
 // Register Noto Sans (committed under app/assets/fonts) so the PDF can render
 // Latin-ext/Cyrillic/Greek/Vietnamese theme content instead of tofu. The built-in
 // Helvetica/Courier fonts are Latin-1 only. Path is process.cwd()-absolute so it
@@ -47,6 +49,12 @@ export type ScanReportInput = {
   findings: ReportFinding[];
   exportedAt: string; // ISO
 };
+
+/** "file:line", or "Your live homepage" for a homepage hit (gc-3y89 item 2). */
+function pdfLocation(f: ReportFinding): string {
+  const { file, line } = exportLocation(f);
+  return line === null ? file : `${file}:${line}`;
+}
 
 // Sort order: HIGH → MEDIUM → LOW.
 const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
@@ -233,7 +241,7 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
                 {f.ignoredByMerchant ? " · Ignored by you" : ""}
               </Text>
               <Text style={styles.findingMeta}>
-                {f.filename}:{f.lineNumber} · App: {f.appName ?? "—"}
+                {pdfLocation(f)} · App: {f.appName ?? "—"}
               </Text>
               <Text style={styles.findingDescription}>{f.description}</Text>
               <Text style={styles.code}>{truncateSnippet(f.codeSnippet)}</Text>

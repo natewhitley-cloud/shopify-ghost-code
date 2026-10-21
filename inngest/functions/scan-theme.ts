@@ -140,7 +140,6 @@ import {
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import {
   isAdvisoryCheckLive,
-  isRuntimeMaliciousCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
 } from "../../app/services/soft-launch-flags.server";
@@ -2122,6 +2121,18 @@ export const scanTheme = inngest.createFunction(
               });
               storefront = { status: "unreachable", reason: "network" };
             }
+            // gc-0htk / gc-3y89 item 1: clear an earlier attempt's homepage
+            // rows on EVERY attempt, whatever the runtime flag says now and
+            // before any early return: a flag turned off between a failed
+            // attempt and its retry must not leave those rows behind. Only the
+            // homepage rows, never the theme's MALICIOUS_SCRIPT.
+            await db.finding.deleteMany({
+              where: {
+                scanId,
+                findingType: FindingType.MALICIOUS_SCRIPT,
+                filename: HOMEPAGE_MALICIOUS_FILENAME,
+              },
+            });
             // Flag flipped off mid-scan, or not the published theme: nothing
             // was requested and nothing is recorded.
             if (storefront.status === "disabled" || storefront.status === "not_published") {
@@ -2135,16 +2146,6 @@ export const scanTheme = inngest.createFunction(
             await db.finding.deleteMany({
               where: { scanId, findingType: FindingType.LIQUID_ERROR_RENDERED },
             });
-            // gc-0htk: only the homepage rows, never the theme's MALICIOUS_SCRIPT.
-            if (isRuntimeMaliciousCheckLive()) {
-              await db.finding.deleteMany({
-                where: {
-                  scanId,
-                  findingType: FindingType.MALICIOUS_SCRIPT,
-                  filename: HOMEPAGE_MALICIOUS_FILENAME,
-                },
-              });
-            }
             if (storefront.status === "unreachable") {
               return { findingCount: 0, unreachable: true, audited: true, liquidErrorCount: 0 };
             }

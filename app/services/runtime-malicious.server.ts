@@ -16,10 +16,14 @@
  *
  * Precision over recall, same as the theme detector:
  *   - Host matching is matchMaliciousDomain (exact or dot-boundary).
- *   - Homepage: only places that make the browser fetch or run something are
- *     read: a `<script src>`, a `<link href>`, an app's script tag (Shopify's
- *     asyncLoad list, already parsed by the fetcher) and a URL inside inline
- *     JavaScript (a `<script>` with no src and a JavaScript type). A URL in
+ *   - Homepage: only places that make the browser fetch, run or send
+ *     something are read: a `<script src>`, a `<link href>`, an app's script
+ *     tag (Shopify's asyncLoad list, already parsed by the fetcher), an
+ *     `<iframe src>`, a `<form action>`, a URL in an import map and a URL
+ *     inside inline JavaScript (a `<script>` with no src and a JavaScript
+ *     type). A `<link>` that is only a connection hint (`preconnect`,
+ *     `dns-prefetch`) is still reported, but labelled as named, not loaded
+ *     (gc-3y89 item 3). A URL in
  *     page text, a link (`<a href>`), an image, or a JSON data block is not
  *     read: it does not load code, and merchant or shopper text (a blog post,
  *     a review) can mention any domain. Bodies of inert or text-only elements
@@ -55,13 +59,25 @@ import { HOMEPAGE_MALICIOUS_FILENAME } from "../lib/finding-classification";
 import type { CreateFindingInput } from "../models/finding.server";
 
 /** Where on the homepage a listed domain was seen, most specific first. */
-export type HomepageSource = "script_tag" | "script" | "link" | "inline_script";
+export type HomepageSource =
+  | "script_tag"
+  | "script"
+  | "link"
+  | "iframe"
+  | "importmap"
+  | "inline_script"
+  | "form"
+  | "hint";
 
 const SOURCE_RANK: Record<HomepageSource, number> = {
   script_tag: 0,
   script: 1,
   link: 2,
-  inline_script: 3,
+  iframe: 3,
+  importmap: 4,
+  inline_script: 5,
+  form: 6,
+  hint: 7,
 };
 
 /** Merchant-facing: how the page used the domain (the stored snippet's second line). */
@@ -69,8 +85,21 @@ export const HOMEPAGE_SOURCE_LABELS: Record<HomepageSource, string> = {
   script_tag: "Loaded by a script tag an app added",
   script: "Loaded by a script tag in the page",
   link: "Loaded by a link tag in the page",
+  iframe: "Loaded in a frame in the page",
+  importmap: "Named in an import map in the page",
   inline_script: "Named in JavaScript in the page",
+  form: "Named as where a form in the page sends its data",
+  hint: "Named in a connection hint in the page",
 };
+
+/** `<link rel>` values that only warm up a connection: nothing is loaded. */
+const HINT_RELS: ReadonlySet<string> = new Set(["preconnect", "dns-prefetch"]);
+
+/** Whether a `<link>`'s rel is only connection hints (an empty rel is not). */
+function isConnectionHint(rel: string | undefined): boolean {
+  const tokens = (rel ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((t) => HINT_RELS.has(t));
+}
 
 /** One listed domain seen on the homepage: the entry, the host as seen, and where. */
 export type HomepageMaliciousHit = { domain: string; host: string; source: HomepageSource };
@@ -110,7 +139,7 @@ const JS_SCRIPT_TYPES: ReadonlySet<string> = new Set([
  * text or inert). Followed by whitespace, `>` or `/`.
  */
 const TAG_START_RE =
-  /<(script|link|textarea|title|template|noscript|xmp|noembed|noframes|style)(?=[\s>/])/gi;
+  /<(script|link|iframe|form|textarea|title|template|noscript|xmp|noembed|noframes|style)(?=[\s>/])/gi;
 
 /** Whether a `type` attribute is run as JavaScript (MIME parameters such as `; charset=` ignored). */
 function isJavaScriptType(type: string | undefined): boolean {
@@ -157,6 +186,22 @@ export function findMaliciousInHomepage(
   while ((found = TAG_START_RE.exec(live)) !== null) {
     const at = found.index;
     const element = found[1].toLowerCase();
+    if (element === "iframe" || element === "form") {
+      const attr = element === "iframe" ? "src" : "action";
+      const tag = parseOpenTagAttributes(live, at, found[0].length, [attr]);
+      if (!tag) break;
+      add(tag.attributes[attr] ? scriptUrlHost(tag.attributes[attr].value) : null, element);
+      if (element === "form") {
+        // A form's body is ordinary markup: keep reading its tags.
+        TAG_START_RE.lastIndex = tag.end;
+        continue;
+      }
+      // An iframe's body is fallback text the browser never parses as tags.
+      const close = indexOfIgnoreCase(live, "</iframe", tag.end);
+      if (close === -1) break;
+      TAG_START_RE.lastIndex = close;
+      continue;
+    }
     if (element !== "script" && element !== "link") {
       // An inert or text-only element: skip to its closing tag.
       const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
@@ -169,12 +214,15 @@ export function findMaliciousInHomepage(
       live,
       at,
       found[0].length,
-      isScript ? ["src", "type"] : ["href"],
+      isScript ? ["src", "type"] : ["href", "rel"],
     );
     // A tag that never closes: the browser reads the rest as that tag.
     if (!tag) break;
     if (!isScript) {
-      add(tag.attributes.href ? scriptUrlHost(tag.attributes.href.value) : null, "link");
+      add(
+        tag.attributes.href ? scriptUrlHost(tag.attributes.href.value) : null,
+        isConnectionHint(tag.attributes.rel?.value) ? "hint" : "link",
+      );
       TAG_START_RE.lastIndex = tag.end;
       continue;
     }
@@ -184,6 +232,9 @@ export function findMaliciousInHomepage(
       add(scriptUrlHost(tag.attributes.src.value), "script");
     } else if (isJavaScriptType(tag.attributes.type?.value)) {
       for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) add(host, "inline_script");
+    } else if (tag.attributes.type?.value.trim().toLowerCase() === "importmap") {
+      // The module URLs an import map lets the page load (JSON, read as text).
+      for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) add(host, "importmap");
     }
     if (close === -1) break;
     TAG_START_RE.lastIndex = close;

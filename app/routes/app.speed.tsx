@@ -80,7 +80,7 @@ import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
-import { readSpeedPageReport, readSpeedSecurityRisks } from "../services/speed-page-data.server";
+import { readSpeedPageData } from "../services/speed-page-data.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { requestFreeSpeedTest, requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -108,7 +108,7 @@ type UpgradeAsk = { pricingPlansUrl: string; trialEligible: boolean };
 
 /**
  * gc-0htk: known malicious domains the latest speed test requested, on EVERY
- * plan (never paywalled, see readSpeedSecurityRisks), with that test's date.
+ * plan (never paywalled, see readSpeedPageData), with that test's date.
  * Present only when there is one, so the loader's data is unchanged while the
  * runtime check is off or finds nothing.
  */
@@ -146,10 +146,8 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   // test view (ONLY FREE_TEST reports), a plan with neither reads no report
   // data at all. No upgrade ask on the full view.
   const now = new Date();
-  const [report, speedRisks] = await Promise.all([
-    readSpeedPageReport(shop, now),
-    readSpeedSecurityRisks(shop.id, now),
-  ]);
+  // One read of the speed reports on paid plans (gc-3y89 item 4).
+  const { report, security: speedRisks } = await readSpeedPageData(shop, now);
   const security: SpeedSecurityRisks =
     speedRisks.testedAt && speedRisks.risks.length > 0
       ? { securityRisks: speedRisks.risks, securityRisksTestedAt: speedRisks.testedAt }

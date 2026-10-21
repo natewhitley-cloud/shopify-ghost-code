@@ -103,6 +103,11 @@ import {
   advisoryDescription,
   APP_INCIDENT_ADVISORIES,
 } from "../../app/data/app-incident-advisories.server";
+import {
+  homepageMaliciousDescription,
+  KNOWN_MALICIOUS_DOMAINS,
+  maliciousDescription,
+} from "../../app/data/malicious-domains.server";
 import { logger } from "../../app/lib/logger.server";
 import {
   canUseMultipleThemes,
@@ -1951,5 +1956,85 @@ describe("Home scan control: manual-scan limit copy (gc-d0ui)", () => {
 
     expect(card).toContain("1 of 1 used this month");
     expect(card).toContain("Upgrade for more scans");
+  });
+});
+
+// gc-3y89 item 10: Home's homepage-aware wording, through the real loader and
+// the rendered Dashboard (the lib tests cover the copy; this pins the wiring).
+describe("Home: known malicious code seen on the live homepage (gc-0htk, gc-3y89 #10)", () => {
+  const BILIING = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "biliing.top")!;
+  const HOMEPAGE_ROW = {
+    id: "mal-home",
+    scanId: "scan-1",
+    findingType: "MALICIOUS_SCRIPT",
+    severity: "HIGH",
+    filename: "storefront/homepage",
+    lineNumber: 0,
+    appName: null,
+    codeSnippet: "biliing.top\nLoaded by a script tag an app added: www.biliing.top",
+    description: homepageMaliciousDescription(BILIING),
+    createdAt: new Date("2026-10-11T10:00:00Z"),
+  };
+  const THEME_ROW = {
+    ...HOMEPAGE_ROW,
+    id: "mal-theme",
+    filename: "layout/theme.liquid",
+    lineNumber: 12,
+    codeSnippet: '<script src="https://biliing.top/x.js"></script>',
+    description: maliciousDescription(BILIING),
+  };
+  const HOMEPAGE_DETAIL =
+    "1 piece of code from a known malicious source was found in your theme or on your live homepage. It can steal shopper data or send your customers to other sites.";
+  const THEME_DETAIL =
+    "1 piece of code from a known malicious source is in your theme. It can steal shopper data or send your customers to other sites.";
+
+  function serveMalicious(rows: Array<typeof HOMEPAGE_ROW>) {
+    const found = { ...TYPE_COUNTS, MALICIOUS_SCRIPT: rows.length };
+    mockTypeCounts.mockResolvedValue(found);
+    (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fingerprints: new Set(),
+      appNames: new Set(),
+    });
+    mockFiltered.mockResolvedValue({
+      summary: {
+        total: 7 + rows.length,
+        bySeverity: { HIGH: 3, MEDIUM: 3, LOW: 1 },
+        byType: found,
+      },
+      keptFindings: [],
+      ignoredMalicious: 0,
+    });
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_id: string, f?: { findingType?: string }) =>
+        rows.filter((r) => !f?.findingType || r.findingType === f.findingType),
+    );
+  }
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: a homepage hit never reads as 'in your theme', in the loader and on the page",
+    async (plan) => {
+      setPlan(plan);
+      serveMalicious([HOMEPAGE_ROW]);
+      const data = await runLoader();
+      expect(data.maliciousHealth?.detail).toBe(HOMEPAGE_DETAIL);
+      const html = renderDashboard(data);
+      expect(sectionOf(html)).toContain(HOMEPAGE_DETAIL);
+      expect(html).toContain(
+        "Your live homepage uses biliing.top, a domain linked to malicious code",
+      );
+      expect(html).not.toContain("Your theme references biliing.top");
+      expect(html).not.toContain("is in your theme. It can steal");
+    },
+  );
+
+  it("a theme-file hit keeps the theme wording", async () => {
+    setPlan("Standard");
+    serveMalicious([THEME_ROW]);
+    const data = await runLoader();
+    expect(data.maliciousHealth?.detail).toBe(THEME_DETAIL);
+    const html = renderDashboard(data);
+    expect(sectionOf(html)).toContain(THEME_DETAIL);
+    expect(html).toContain("Your theme references biliing.top, a domain linked to malicious code");
+    expect(html).not.toContain("on your live homepage. It can steal");
   });
 });

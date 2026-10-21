@@ -15,9 +15,14 @@ import { FindingType } from "@prisma/client";
 
 import { parseLiveFindingTypes } from "./scan-differ.server";
 import { SCRIPT_TAG_SUNSET_AT_MS } from "./script-tag-sunset-detector.server";
-import { isSoftLaunchLive } from "./soft-launch-flags.server";
+import {
+  isRuntimeMaliciousCheckLive,
+  isScriptTagSunsetLive,
+  isSoftLaunchLive,
+} from "./soft-launch-flags.server";
 import type { ThemeSummary } from "./theme-fetcher.server";
 import { getPlanFeatures } from "../lib/billing.server";
+import { HOMEPAGE_MALICIOUS_COVERAGE_KEY } from "../lib/finding-classification";
 import { logger } from "../lib/logger.server";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import { safeErrorFields } from "../lib/safe-error";
@@ -111,7 +116,13 @@ async function buildRows(input: LoadThemeHealthInput): Promise<HealthRow[]> {
     cappedCategories: scan.cappedCategories,
     unreachableCategories: scan.unreachableCategories,
     liveTypes: parseLiveFindingTypes(scan.liveFindingTypes),
-    liveNow: new Set<string>(Object.values(FindingType).filter(isSoftLaunchLive)),
+    liveNow: new Set<string>([
+      ...Object.values(FindingType).filter(isSoftLaunchLive),
+      // gc-3y89 item 6: the homepage part of the malicious row, while it runs.
+      ...(isRuntimeMaliciousCheckLive() && isScriptTagSunsetLive()
+        ? [HOMEPAGE_MALICIOUS_COVERAGE_KEY]
+        : []),
+    ]),
     planWithheld: findingTypesWithheldByPlan(features),
     isPublishedTheme: input.mainThemeId === null ? null : scan.themeId === input.mainThemeId,
   };

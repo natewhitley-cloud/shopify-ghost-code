@@ -297,3 +297,40 @@ describe("loadThemeHealth", () => {
     );
   });
 });
+
+// gc-3y89 item 6: the homepage part of the malicious row is live only while
+// both the runtime check and the storefront read are on.
+describe("loadThemeHealth: malicious row and the homepage check (gc-3y89 #6)", () => {
+  afterEach(() => {
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  const unreadable = {
+    ...SCAN,
+    unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"],
+    liveFindingTypes: ALL_TYPES.filter(
+      (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED",
+    ),
+  };
+
+  it("check on, homepage unreadable: the row is not Clean", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    const row = rowOf(await load({ scan: unreadable }), "malicious")!;
+    expect(row.status).toBe("partial");
+    expect(row.statusLabel).toBe("None found");
+    expect(row.detail).toContain("We couldn't read your storefront homepage");
+  });
+
+  it("check on, homepage read: Clean", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    const scan = { ...SCAN, liveFindingTypes: [...ALL_TYPES, "MALICIOUS_SCRIPT:homepage"] };
+    expect(rowOf(await load({ scan }), "malicious")!.statusLabel).toBe("Clean");
+  });
+
+  it("check off (or the storefront read off): unchanged, Clean", async () => {
+    expect(rowOf(await load({ scan: unreadable }), "malicious")!.statusLabel).toBe("Clean");
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+    expect(rowOf(await load({ scan: unreadable }), "malicious")!.statusLabel).toBe("Clean");
+  });
+});

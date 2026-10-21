@@ -927,3 +927,49 @@ describe("affected-app advisory in the export (gc-14x5)", () => {
     expect(mockGetFindingsForScan).not.toHaveBeenCalled();
   });
 });
+
+// gc-3y89 item 2: a homepage hit has no theme file; exports name the place in
+// merchant words instead of the internal storefront/homepage:0 locator.
+describe("homepage malicious hits in exports (gc-3y89 #2)", () => {
+  const HOMEPAGE_HIT = {
+    id: "finding-home",
+    scanId: "scan-abc",
+    severity: "HIGH",
+    findingType: "MALICIOUS_SCRIPT",
+    filename: "storefront/homepage",
+    lineNumber: 0,
+    appName: null,
+    codeSnippet: "biliing.top\nLoaded by a script tag an app added: www.biliing.top",
+    description: "Your live homepage contains code that uses known-malicious domain biliing.top",
+    createdAt: new Date("2026-01-15T10:05:00Z"),
+  };
+
+  beforeEach(() => {
+    mockGetFindingsForScan.mockResolvedValue([...FINDINGS, HOMEPAGE_HIT]);
+  });
+
+  it("CSV: File is 'Your live homepage' and Line is empty", async () => {
+    const text = await (await callLoader("scan-abc", "csv")).text();
+    expect(text).not.toContain("storefront/homepage");
+    const row = text.split("\r\n").find((r) => r.includes("MALICIOUS_SCRIPT"))!;
+    expect(row.startsWith('"HIGH","MALICIOUS_SCRIPT","Your live homepage","",')).toBe(true);
+  });
+
+  it("JSON: file is 'Your live homepage' and line is null; theme rows unchanged", async () => {
+    const body = await (await callLoader("scan-abc", "json")).json();
+    const home = body.findings.find((f: { type: string }) => f.type === "MALICIOUS_SCRIPT");
+    expect(home.file).toBe("Your live homepage");
+    expect(home.line).toBeNull();
+    expect(body.findings[0].file).toBe("layout/theme.liquid");
+    expect(body.findings[0].line).toBe(42);
+    expect(JSON.stringify(body)).not.toContain("storefront/homepage");
+  });
+
+  it("a theme-file MALICIOUS_SCRIPT keeps its file and line", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      { ...HOMEPAGE_HIT, filename: "assets/theme.js", lineNumber: 7 },
+    ]);
+    const body = await (await callLoader("scan-abc", "json")).json();
+    expect(body.findings[0]).toMatchObject({ file: "assets/theme.js", line: 7 });
+  });
+});

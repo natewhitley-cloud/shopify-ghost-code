@@ -26,7 +26,7 @@
 
 import type { FindingType } from "@prisma/client";
 
-import { isStorefrontFinding } from "./finding-classification";
+import { HOMEPAGE_MALICIOUS_COVERAGE_KEY, isStorefrontFinding } from "./finding-classification";
 import type { ThemeInfo } from "./theme-info";
 
 // ---------------------------------------------------------------------------
@@ -222,7 +222,9 @@ export interface HealthCoverageInput {
   /**
    * The finding types switched on RIGHT NOW (not suppressed by a soft-launch
    * flag). A type absent from here is dark for everyone; a type here that the
-   * scan did not run is `not_run`, never "Clean".
+   * scan did not run is `not_run`, never "Clean". Also holds
+   * HOMEPAGE_MALICIOUS_COVERAGE_KEY while the homepage malicious check
+   * (gc-0htk) is on (see homepageMaliciousCoverage).
    */
   liveNow: ReadonlySet<string>;
   /** Finding types the shop's PLAN does not run (findingTypesWithheldByPlan). */
@@ -246,6 +248,21 @@ export function coverageForType(type: FindingType, scan: HealthCoverageInput): T
   }
   if (scan.cappedCategories.includes(type)) return "capped";
   return "checked";
+}
+
+/**
+ * How the served-homepage part of the malicious check (gc-0htk) was covered
+ * (gc-3y89 item 6): MALICIOUS_SCRIPT itself is always live (the theme files),
+ * so the homepage read has its own coverage key. Dark while the check is off
+ * now; otherwise checked only when the scan recorded the key, so a homepage
+ * that could not be read never lets the row say "Clean".
+ */
+export function homepageMaliciousCoverage(scan: HealthCoverageInput): TypeCoverage {
+  if (!scan.liveNow.has(HOMEPAGE_MALICIOUS_COVERAGE_KEY)) return "dark";
+  if (scan.liveTypes?.has(HOMEPAGE_MALICIOUS_COVERAGE_KEY)) return "checked";
+  if (scan.unreachableCategories.some((c) => isStorefrontFinding(c))) return "unreachable";
+  if (scan.isPublishedTheme === false) return "unpublished";
+  return "not_run";
 }
 
 /** Why part of a row was not checked, most useful to act on first. */
@@ -693,6 +710,7 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
     const count = types.reduce((sum, t) => sum + (input.typeCounts[t] ?? 0), 0);
     const covered = types
       .map((t) => coverageForType(t, input.coverage))
+      .concat(category.key === "malicious" ? [homepageMaliciousCoverage(input.coverage)] : [])
       .filter((c): c is Exclude<TypeCoverage, "dark"> => c !== "dark");
     const base = { key: category.key, label: category.label, checks: category.checks };
 

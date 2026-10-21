@@ -18,6 +18,7 @@ import {
   groupGapsByReason,
   groupHealthRows,
   healthCostLine,
+  homepageMaliciousCoverage,
   maliciousHealthRow,
   type HealthRow,
   MAX_NAMED_UNPUBLISHED_THEMES,
@@ -1620,5 +1621,73 @@ describe("malicious row wording when code was seen on the live homepage (gc-0htk
     expect(maliciousHealthRow("scan-1", 2)?.detail).toBe(
       "2 pieces of code from a known malicious source are in your theme. It can steal shopper data or send your customers to other sites.",
     );
+  });
+});
+
+// gc-3y89 item 6: with the homepage check on, the malicious row is "Clean"
+// only when the scan actually read the homepage too.
+describe("malicious row when the homepage could not be read (gc-3y89 #6)", () => {
+  const KEY = "MALICIOUS_SCRIPT:homepage";
+  const LIVE_WITH_HOMEPAGE = new Set<string>([...ALL_TYPES, KEY]);
+  const coverage = (over: Partial<HealthCoverageInput>): HealthCoverageInput => ({
+    ...FULL_COVERAGE,
+    liveNow: LIVE_WITH_HOMEPAGE,
+    ...over,
+  });
+  const maliciousRow = (c: HealthCoverageInput) =>
+    rowOf(buildThemeHealthChecklist(input({ coverage: c })), "malicious");
+
+  it("homepage read: Clean", () => {
+    const c = coverage({ liveTypes: LIVE_WITH_HOMEPAGE });
+    expect(homepageMaliciousCoverage(c)).toBe("checked");
+    expect(maliciousRow(c)).toMatchObject({ status: "clean", statusLabel: "Clean" });
+  });
+
+  it("homepage unreachable: never Clean, the homepage part reads as not checked", () => {
+    const c = coverage({
+      liveTypes: ALL_LIVE,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"],
+    });
+    expect(homepageMaliciousCoverage(c)).toBe("unreachable");
+    const row = maliciousRow(c)!;
+    expect(row.status).toBe("partial");
+    expect(row.statusLabel).toBe("None found");
+    expect(row.statusLabel).not.toBe("Clean");
+    expect(row.detail).toContain("We couldn't read your storefront homepage");
+    const groups = groupHealthRows([row]);
+    expect(groups.clean).toEqual([]);
+    expect(groups.gaps).toEqual([row]);
+  });
+
+  it("a scan that did not record the homepage check (older, or it failed): partly checked", () => {
+    const row = maliciousRow(coverage({ liveTypes: ALL_LIVE }))!;
+    expect(row).toMatchObject({ status: "partial", statusLabel: "None found" });
+    expect(row.detail).toBe("Partly checked on your last scan. Run a new scan to try again.");
+  });
+
+  it("an unpublished theme: the homepage part is only checked on the published theme", () => {
+    const row = maliciousRow(coverage({ liveTypes: ALL_LIVE, isPublishedTheme: false }))!;
+    expect(row).toMatchObject({
+      status: "partial",
+      detail: "Only checked on your published theme.",
+    });
+  });
+
+  it("homepage check off now: the row is exactly as before (theme files only)", () => {
+    expect(homepageMaliciousCoverage(FULL_COVERAGE)).toBe("dark");
+    expect(maliciousRow(FULL_COVERAGE)).toMatchObject({ status: "clean", statusLabel: "Clean" });
+  });
+
+  it("a finding still wins: the row shows its issues whatever the homepage coverage", () => {
+    const row = rowOf(
+      buildThemeHealthChecklist(
+        input({
+          typeCounts: { MALICIOUS_SCRIPT: 1 },
+          coverage: coverage({ liveTypes: ALL_LIVE, unreachableCategories: ["SCRIPT_TAG_SUNSET"] }),
+        }),
+      ),
+      "malicious",
+    );
+    expect(row?.status).toBe("issues");
   });
 });

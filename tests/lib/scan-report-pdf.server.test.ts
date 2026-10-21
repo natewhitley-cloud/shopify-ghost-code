@@ -317,3 +317,34 @@ describe("ScanReportDocument: ignored malicious findings (gc-j8xq)", () => {
     });
   });
 });
+
+describe("ScanReportDocument: homepage malicious hits (gc-3y89 #2)", () => {
+  const base = {
+    scan: { id: "scan-xyz", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+    exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+  };
+
+  it("names the place 'Your live homepage', never storefront/homepage:0", () => {
+    const text = reportText(
+      ScanReportDocument({
+        ...base,
+        findings: [
+          {
+            ...FINDING,
+            findingType: "MALICIOUS_SCRIPT",
+            filename: "storefront/homepage",
+            lineNumber: 0,
+            appName: null,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("Your live homepage · App: —\n");
+    expect(text).not.toContain("storefront/homepage");
+  });
+
+  it("keeps file:line for theme-file findings", () => {
+    const text = reportText(ScanReportDocument({ ...base, findings: [FINDING] }));
+    expect(text).toContain("layout/theme.liquid:42 · App: Klaviyo\n");
+  });
+});

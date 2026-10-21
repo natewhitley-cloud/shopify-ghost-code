@@ -1319,6 +1319,8 @@ describe("Security risk from the speed test (gc-0htk)", () => {
 
   it("a failed read shows nothing and never breaks the page", async () => {
     process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    // Free: the security read is separate from the plan's own (FREE_TEST) read.
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
     let calls = 0;
     mockReports.mockImplementation(async () => {
       calls += 1;
@@ -1327,7 +1329,53 @@ describe("Security risk from the speed test (gc-0htk)", () => {
       return [];
     });
     const data = await loader(loaderArgs());
-    expect(data.access).toBe("report");
+    expect(calls).toBe(2);
+    expect(data.access).toBe("free");
     expect(data).not.toHaveProperty("securityRisks");
+  });
+
+  it("paid plans read the speed reports ONCE with the check on (gc-3y89 #4)", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    for (const plan of ["Professional", "Standard"]) {
+      mockReports.mockReset();
+      mockReports.mockResolvedValue([row("SCHEDULED", "COMPLETED", [BAD_HOME], { id: "r1" })]);
+      mockShop.mockResolvedValue({ ...PRO, plan });
+      const data = await loader(loaderArgs());
+      expect(mockReports, plan).toHaveBeenCalledTimes(1);
+      expect(
+        data.securityRisks?.map((r) => r.domain),
+        plan,
+      ).toEqual(["biliing.top"]);
+    }
+  });
+
+  it("the recurring report reads as the latest test, never as a frozen one", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockReports.mockResolvedValue([row("SCHEDULED", "COMPLETED", [BAD_HOME], { id: "r1" })]);
+    const data = await loader(loaderArgs());
+    expect(data.securityRisks?.[0]).not.toHaveProperty("speedTestRepeats");
+    const html = render(data);
+    expect(html).toContain("In your latest store speed test");
+    expect(html).not.toContain("Found in the speed test on");
+  });
+
+  it("Free: the one free test's hit is dated, not shown as current (gc-3y89 #10)", async () => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockReports.mockResolvedValue([row("FREE_TEST", "COMPLETED", [BAD_HOME])]);
+    const data = await loader(loaderArgs());
+    expect(data.securityRisks?.map((r) => [r.domain, r.speedTestRepeats])).toEqual([
+      ["biliing.top", false],
+    ]);
+    expect(data.securityRisksTestedAt).toBe("2026-10-11T08:12:00.000Z");
+    const html = render(data);
+    // Still shown in full (never hidden or paywalled), with its date.
+    expect(html).toContain("Security risk");
+    expect(html).toContain("Found in the speed test on");
+    expect(html).toContain("<time");
+    expect(html).toContain("In your store&#x27;s last speed test");
+    expect(html).toContain("this may no longer be current");
+    expect(html).not.toContain("In your latest store speed test");
+    expect(html).not.toContain("\u2014");
   });
 });

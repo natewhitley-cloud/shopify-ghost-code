@@ -574,3 +574,83 @@ describe("getSidekickSpeedSummary: response size", () => {
     expect(Math.ceil(json.length / 4)).toBeLessThan(1500);
   });
 });
+
+// gc-3y89 item 9: the speed tool carries the Store speed page's speed-test
+// Security risk banners, on every plan and whatever the report status.
+describe("getSidekickSpeedSummary: speed-test security risks (gc-3y89 #9)", () => {
+  const BAD_HOME: SpeedPageResult = { ...HOME, maliciousDomains: ["biliing.top"] };
+
+  beforeEach(() => {
+    process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  it("Professional: lists each hit as the page shows it, reading the reports once", async () => {
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [BAD_HOME])] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r.status).toBe("ok");
+    expect(r.securityRisks).toEqual([
+      {
+        label: "Security risk",
+        title: "Your store's speed test loaded biliing.top, a domain linked to malicious code",
+        details: expect.stringContaining(
+          "In your latest store speed test, Google's test browser requested biliing.top while loading your homepage.",
+        ),
+        seen: "Seen in your 2026-10-11 speed test",
+        whatToCheck: expect.arrayContaining([
+          expect.stringContaining("review your installed apps"),
+        ]),
+      },
+    ]);
+    expect(mockReports).toHaveBeenCalledTimes(1);
+  });
+
+  it("Free: the one free test's hit is dated and says it may no longer be current", async () => {
+    setPlan("free");
+    mockUsedAt.mockResolvedValue(new Date("2026-10-11T08:10:00.000Z"));
+    mockReports.mockResolvedValue([
+      report("f1", "COMPLETED", [BAD_HOME], "2026-10-11T08:10:00.000Z", { origin: "FREE_TEST" }),
+    ] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r.securityRisks?.[0].seen).toBe("Found in the speed test on 2026-10-11");
+    expect(r.securityRisks?.[0].details).toContain("this may no longer be current");
+  });
+
+  it("a plan without the speed report still gets the risk (never paywalled)", async () => {
+    setPlan("free");
+    const actual = await vi.importActual<typeof import("../../app/lib/billing.server")>(
+      "../../app/lib/billing.server",
+    );
+    mockFeatures.mockImplementation((p: string) =>
+      p === "free"
+        ? { ...actual.getPlanFeatures(p), freeSpeedTest: false }
+        : actual.getPlanFeatures(p),
+    );
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [BAD_HOME])] as never);
+    const r = await getSidekickSpeedSummary(DOMAIN);
+    expect(r).toMatchObject({
+      status: "not_available_on_plan",
+      message: SPEED_NOT_ON_PLAN_MESSAGE,
+    });
+    expect(r.securityRisks?.map((x) => x.title)).toEqual([
+      "Your store's speed test loaded biliing.top, a domain linked to malicious code",
+    ]);
+  });
+
+  it("a clean test, or the check off, adds no key", async () => {
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [HOME])] as never);
+    expect(await getSidekickSpeedSummary(DOMAIN)).not.toHaveProperty("securityRisks");
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [BAD_HOME])] as never);
+    expect(await getSidekickSpeedSummary(DOMAIN)).not.toHaveProperty("securityRisks");
+  });
+
+  it("the speed report not live: no key (the page 404s)", async () => {
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    mockReports.mockResolvedValue([report("r1", "COMPLETED", [BAD_HOME])] as never);
+    expect(await getSidekickSpeedSummary(DOMAIN)).not.toHaveProperty("securityRisks");
+  });
+});

@@ -477,6 +477,23 @@ export function isHomepageMaliciousFinding(finding: {
   );
 }
 
+/** Where a homepage hit was seen, in merchant words (exports, gc-3y89 item 2). */
+export const HOMEPAGE_MALICIOUS_LOCATION = "Your live homepage";
+
+/**
+ * A finding's location for the PDF/CSV/JSON exports: its theme file and line,
+ * or for a homepage hit "Your live homepage" with no line (it has no file; the
+ * stored `storefront/homepage` and line 0 are internal locators).
+ */
+export function exportLocation(finding: {
+  findingType: string;
+  filename: string;
+  lineNumber: number;
+}): { file: string; line: number | null } {
+  if (isHomepageMaliciousFinding(finding)) return { file: HOMEPAGE_MALICIOUS_LOCATION, line: null };
+  return { file: finding.filename, line: finding.lineNumber };
+}
+
 // ---------------------------------------------------------------------------
 // Never-paywalled finding types (gc-14x5)
 // ---------------------------------------------------------------------------

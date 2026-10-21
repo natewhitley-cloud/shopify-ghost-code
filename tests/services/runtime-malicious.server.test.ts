@@ -33,6 +33,7 @@ import { getTopFindingsOfTypes } from "../../app/models/finding.server";
 import { getFreePreviewFindings } from "../../app/services/free-preview.server";
 import {
   findMaliciousInHomepage,
+  HOMEPAGE_SOURCE_LABELS,
   homepageMaliciousFindings,
   maliciousDomainsInUrls,
   MAX_HOMEPAGE_MALICIOUS_FINDINGS,
@@ -219,6 +220,108 @@ describe("findMaliciousInHomepage: audit fixes (gc-0htk)", () => {
     expect(
       findMaliciousInHomepage(page(`<script src="https://${long}/x.js"></script>`), []),
     ).toEqual([]);
+  });
+});
+
+// gc-3y89 item 3: a connection hint is named, not loaded; frames, forms and
+// import maps are read too. A URL in a JS string still counts (recall over
+// precision for this curated list); the label says "Named in JavaScript".
+describe("findMaliciousInHomepage: hints, frames, forms, import maps (gc-3y89 #3)", () => {
+  it.each([
+    '<link rel="preconnect" href="https://order-confirm.top">',
+    '<link rel="dns-prefetch" href="//order-confirm.top">',
+    '<link rel="preconnect dns-prefetch" href="https://order-confirm.top" crossorigin>',
+    '<link href="https://order-confirm.top" REL="DNS-Prefetch">',
+  ])("reports a connection hint as a hint, not a load: %s", (tag) => {
+    expect(findMaliciousInHomepage(page(tag), [])).toEqual([
+      { domain: "order-confirm.top", host: "order-confirm.top", source: "hint" },
+    ]);
+  });
+
+  it("a link that loads (stylesheet, preload, no rel) stays a load", () => {
+    for (const tag of [
+      '<link rel="stylesheet" href="https://order-confirm.top/a.css">',
+      '<link rel="preconnect stylesheet" href="https://order-confirm.top/a.css">',
+      '<link href="https://order-confirm.top/a.css">',
+    ]) {
+      expect(findMaliciousInHomepage(page(tag), [])[0].source, tag).toBe("link");
+    }
+  });
+
+  it("a load outranks a hint for the same domain", () => {
+    const html = page(
+      '<link rel="preconnect" href="https://order-confirm.top"><script src="https://order-confirm.top/x.js"></script>',
+    );
+    expect(findMaliciousInHomepage(html, [])).toEqual([
+      { domain: "order-confirm.top", host: "order-confirm.top", source: "script" },
+    ]);
+  });
+
+  it("reads an iframe src and skips the iframe's fallback text", () => {
+    const html = page(
+      "",
+      '<iframe src="https://pay.checkout-guard.top/frame"><script src="https://biliing.top/x.js"></script></iframe>',
+    );
+    expect(findMaliciousInHomepage(html, [])).toEqual([
+      { domain: "checkout-guard.top", host: "pay.checkout-guard.top", source: "iframe" },
+    ]);
+  });
+
+  it("reads a form action and keeps reading the form's own tags", () => {
+    const html = page(
+      "",
+      '<form method="post" action="https://account-confirm.top/collect"><input name="card"><script src="https://biliing.top/x.js"></script></form>',
+    );
+    expect(findMaliciousInHomepage(html, [])).toEqual([
+      { domain: "account-confirm.top", host: "account-confirm.top", source: "form" },
+      { domain: "biliing.top", host: "biliing.top", source: "script" },
+    ]);
+  });
+
+  it("a relative form action or iframe src names no host", () => {
+    const html = page("", '<form action="/cart/add"></form><iframe src="/pages/x"></iframe>');
+    expect(findMaliciousInHomepage(html, [])).toEqual([]);
+  });
+
+  it("reads the URLs in an import map", () => {
+    const html = page(
+      '<script type="importmap">{"imports":{"lib":"https:\\/\\/cdn.jsdeliver.cloud\\/lib.js"}}</script>',
+    );
+    expect(findMaliciousInHomepage(html, [])).toEqual([
+      { domain: "jsdeliver.cloud", host: "cdn.jsdeliver.cloud", source: "importmap" },
+    ]);
+  });
+
+  it("does not read a <formula> look-alike tag as a form", () => {
+    const html = page("", '<formula action="https://biliing.top/x"></formula>');
+    expect(findMaliciousInHomepage(html, [])).toEqual([]);
+  });
+
+  it("still reports a URL inside a JavaScript string, labelled as named in JavaScript", () => {
+    const html = page('<script>var msg = "see https://biliing.top/help";</script>');
+    const hits = findMaliciousInHomepage(html, []);
+    expect(hits).toEqual([{ domain: "biliing.top", host: "biliing.top", source: "inline_script" }]);
+    expect(homepageMaliciousFindings(hits, new Set())[0].codeSnippet).toBe(
+      "biliing.top\nNamed in JavaScript in the page: biliing.top",
+    );
+  });
+
+  it("labels a hint as named, never as loaded", () => {
+    const hits = findMaliciousInHomepage(
+      page('<link rel="dns-prefetch" href="https://order-confirm.top">'),
+      [],
+    );
+    const snippet = homepageMaliciousFindings(hits, new Set())[0].codeSnippet;
+    expect(snippet).toBe(
+      "order-confirm.top\nNamed in a connection hint in the page: order-confirm.top",
+    );
+    expect(snippet).not.toContain("Loaded");
+  });
+
+  it("every source has a label with no em dash", () => {
+    for (const label of Object.values(HOMEPAGE_SOURCE_LABELS)) {
+      expect(label).not.toContain("\u2014");
+    }
   });
 });
 

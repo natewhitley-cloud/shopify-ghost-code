@@ -73,6 +73,13 @@ export interface MaliciousRisk {
   seenIn: MaliciousSeenIn;
   /** speed_test only: the tested pages whose load requested the domain. */
   speedPages?: Array<"home" | "product">;
+  /**
+   * speed_test only: false when no newer speed test will replace this one on
+   * the shop's plan (the one free test, or the last report before a
+   * downgrade), so the copy is dated instead of reading as current
+   * (gc-3y89 item 10). Absent = the recurring report (Standard/Professional).
+   */
+  speedTestRepeats?: boolean;
   /** The listed domain, or null when the stored finding no longer matches an entry. */
   domain: string | null;
   /** What the domain is, from the curated list (e.g. "lookalike of the jsDelivr CDN"), or null. */
@@ -149,7 +156,11 @@ export function securityRiskFound(risk: SecurityRisk): string {
       return `GhostCode saw ${what} on your live homepage, but not in your theme files, so it is most likely added by an app.`;
     }
     if (risk.seenIn === "speed_test") {
-      return `In your latest store speed test, Google's test browser requested ${what} while loading your ${speedPagesLabel(risk.speedPages ?? [])}.`;
+      const pages = speedPagesLabel(risk.speedPages ?? []);
+      if (risk.speedTestRepeats === false) {
+        return `In your store's last speed test, Google's test browser requested ${what} while loading your ${pages}. No newer speed test runs on your plan, so this may no longer be current.`;
+      }
+      return `In your latest store speed test, Google's test browser requested ${what} while loading your ${pages}.`;
     }
     const n = risk.findings.length;
     const places = risk.findings.slice(0, 3).map(where).join("; ");
@@ -220,9 +231,13 @@ export function advisoryCheckSteps(risk: AdvisoryRisk): string[] {
 
 /** The date line's words around the date: "Found in your {date} scan" or "Seen in your {date} speed test". */
 export function securityRiskDateWords(risk: SecurityRisk): { before: string; after: string } {
-  return risk.kind === "malicious" && risk.seenIn === "speed_test"
-    ? { before: "Seen in your", after: "speed test" }
-    : { before: "Found in your", after: "scan" };
+  if (risk.kind === "malicious" && risk.seenIn === "speed_test") {
+    // A test no newer one replaces: say plainly when it was (gc-3y89 item 10).
+    return risk.speedTestRepeats === false
+      ? { before: "Found in the speed test on", after: "" }
+      : { before: "Seen in your", after: "speed test" };
+  }
+  return { before: "Found in your", after: "scan" };
 }
 
 /** The plan line under the actions (the date is rendered beside it). */

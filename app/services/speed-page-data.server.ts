@@ -47,12 +47,19 @@ export type SpeedPageReport =
       requestedAt: Date | null;
     };
 
+/** Standard / Professional: the full, recurring speed report. */
+function hasFullSpeedReport(plan: string): boolean {
+  const features = getPlanFeatures(plan);
+  return features.speedReport && features.speedReportCadence !== "none";
+}
+
 export async function readSpeedPageReport(
   shop: { id: string; plan: string },
   now: Date,
 ): Promise<SpeedPageReport> {
   const features = getPlanFeatures(shop.plan);
-  if (features.speedReport && features.speedReportCadence !== "none") {
+  // The cadence check again only narrows its type for `cadence` below.
+  if (hasFullSpeedReport(shop.plan) && features.speedReportCadence !== "none") {
     const [rows, requestedAt] = await Promise.all([
       getRecentSpeedReports(shop.id),
       getSpeedReportRequestedAt(shop.id),
@@ -129,23 +136,69 @@ export function speedSecurityRisks(
  * Off (RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED not "true"): nothing is read and
  * nothing is shown. Never throws: a failed read is logged and shows nothing.
  */
-export async function readSpeedSecurityRisks(
-  shopId: string,
-  now: Date,
-): Promise<{ risks: MaliciousRisk[]; testedAt: string | null }> {
-  const none = { risks: [], testedAt: null };
-  if (!isRuntimeMaliciousCheckLive()) return none;
+export type SpeedSecurity = { risks: MaliciousRisk[]; testedAt: string | null };
+
+const NO_SPEED_RISKS: SpeedSecurity = { risks: [], testedAt: null };
+
+/** The banners for a built view's latest report with results (pure). */
+function securityFromView(view: SpeedReportView): SpeedSecurity {
+  const latest = view.lastResults;
+  if (!latest) return NO_SPEED_RISKS;
+  const risks = speedSecurityRisks(latest.pages);
+  return risks.length > 0 ? { risks, testedAt: latest.createdAt } : NO_SPEED_RISKS;
+}
+
+export async function readSpeedSecurityRisks(shopId: string, now: Date): Promise<SpeedSecurity> {
+  if (!isRuntimeMaliciousCheckLive()) return NO_SPEED_RISKS;
   try {
-    const latest = buildSpeedReportView(await getRecentSpeedReports(shopId), now).lastResults;
-    if (!latest) return none;
-    const risks = speedSecurityRisks(latest.pages);
-    return risks.length > 0 ? { risks, testedAt: latest.createdAt } : none;
+    return securityFromView(buildSpeedReportView(await getRecentSpeedReports(shopId), now));
   } catch (err) {
     logger.warn("speed security risks unavailable", {
       function: "readSpeedSecurityRisks",
       shopId,
       errorName: err instanceof Error ? err.name : typeof err,
     });
-    return none;
+    return NO_SPEED_RISKS;
   }
+}
+
+/**
+ * Everything the Store speed page and the Sidekick speed tool show, read
+ * once (gc-3y89 items 4 and 9): the plan-gated report and the speed-test
+ * Security risk banners.
+ *
+ * On Standard / Professional the report view already holds the latest report
+ * with results of any origin (the same rows readSpeedSecurityRisks reads), so
+ * the banners come from it and the speed reports are read ONCE. On other
+ * plans the two reads differ (Free sees only FREE_TEST rows; the banners
+ * still come from the latest report of any origin) and run in parallel.
+ *
+ * `speedTestRepeats` (gc-3y89 item 10): on a plan without the recurring
+ * report no newer speed test will replace this one (the one free test, or a
+ * downgraded shop's last paid report), so the banner is dated rather than
+ * reading as current.
+ */
+export async function readSpeedPageData(
+  shop: { id: string; plan: string },
+  now: Date,
+): Promise<{ report: SpeedPageReport; security: SpeedSecurity }> {
+  if (hasFullSpeedReport(shop.plan)) {
+    const report = await readSpeedPageReport(shop, now);
+    const security =
+      report.access === "report" && isRuntimeMaliciousCheckLive()
+        ? securityFromView(report.view)
+        : NO_SPEED_RISKS;
+    return { report, security };
+  }
+  const [report, security] = await Promise.all([
+    readSpeedPageReport(shop, now),
+    readSpeedSecurityRisks(shop.id, now),
+  ]);
+  return {
+    report,
+    security: {
+      ...security,
+      risks: security.risks.map((risk) => ({ ...risk, speedTestRepeats: false })),
+    },
+  };
 }

@@ -5813,16 +5813,29 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
     });
 
-    it("runtime flag off: no matching, no homepage rows or delete, no coverage key, same step result", async () => {
+    it("runtime flag off: no matching, no homepage rows, no coverage key, same step result", async () => {
       readable();
       const { results } = await run();
       expect(mockFindMalicious).not.toHaveBeenCalled();
       expect(homepagePersistCall()).toBeUndefined();
-      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith(homepageDelete);
       expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
       expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
         HOMEPAGE_MALICIOUS_COVERAGE_KEY,
       );
+    });
+
+    it("flag turned off before a retry: the retry still clears the first attempt's homepage rows (gc-3y89 #1)", async () => {
+      // The first attempt ran with the flag on and wrote homepage rows, then
+      // the step failed; the flag is off when Inngest retries it.
+      readable();
+      const { results } = await run();
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith(homepageDelete);
+      // Scoped: never the theme detector's MALICIOUS_SCRIPT rows.
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.MALICIOUS_SCRIPT },
+      });
+      expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
     });
 
     it("on: one MALICIOUS_SCRIPT per domain filed under the homepage, counted, coverage recorded", async () => {

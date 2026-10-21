@@ -156,8 +156,8 @@ export function SecurityRiskBanner({
           </div>
         )}
         <div style={{ ...textSubduedSm, overflowWrap: "anywhere" }}>
-          {dateWords.before} <FormattedDate value={scanDate} /> {dateWords.after} ·{" "}
-          {SECURITY_RISK_PLAN_NOTE}
+          {dateWords.before} <FormattedDate value={scanDate} />
+          {dateWords.after ? ` ${dateWords.after}` : ""} · {SECURITY_RISK_PLAN_NOTE}
         </div>
         {footer}
       </div>
