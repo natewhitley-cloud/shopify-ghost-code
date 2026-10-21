@@ -1,9 +1,7 @@
 import { Link } from "react-router";
 
 import { newlyInactiveBadge } from "../lib/app-removal-notice";
-import { laneLabelForLane } from "../lib/finding-consequence";
-import { SECURITY_RISK_LABEL } from "../lib/security-risk";
-import { TOP_FINDINGS_MAX } from "../lib/top-findings";
+import { isSecurityRiskRow, TOP_FINDINGS_MAX, topFindingLabel } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { LANE_COLOR, SECURITY_RISK_COLOR } from "../styles/lane-colors";
 import type { LanePalette } from "../styles/lane-colors";
@@ -50,10 +48,9 @@ export function topFindingsIntro(severities: readonly Severity[]): string {
 
 /** A finding's card colours and chip text: its primary lane, or a security risk. */
 function cardTheme(f: TopFindingView): { palette: LanePalette; label: string } {
-  if (f.securityRisk || f.lane === null) {
-    return { palette: SECURITY_RISK_COLOR, label: SECURITY_RISK_LABEL };
-  }
-  return { palette: LANE_COLOR[f.lane], label: laneLabelForLane(f.lane) };
+  const label = topFindingLabel(f);
+  if (isSecurityRiskRow(f) || f.lane === null) return { palette: SECURITY_RISK_COLOR, label };
+  return { palette: LANE_COLOR[f.lane], label };
 }
 
 // Grid columns = number of cards; one column at phone width (the design

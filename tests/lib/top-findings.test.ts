@@ -19,7 +19,9 @@ import {
   findingLocation,
   pickTopFindings,
   TOP_FINDINGS_MAX,
+  isSecurityRiskRow,
   topFindingHref,
+  topFindingLabel,
   toTopFindingViews,
 } from "../../app/lib/top-findings";
 
@@ -273,5 +275,60 @@ describe("presentation helpers", () => {
     // Home's lanes "Start here" chip still reads malicious code's primary lane.
     expect(views[0].lane).toBe("privacy");
     expect(views[1].lane).toBeNull();
+  });
+});
+
+// gc-n3in: one label for the Start here card and Sidekick's top findings.
+describe("isSecurityRiskRow / topFindingLabel", () => {
+  it("a security type is a security risk, whatever its lane", () => {
+    const row = { securityRisk: true, lane: "privacy" as const };
+    expect(isSecurityRiskRow(row)).toBe(true);
+    expect(topFindingLabel(row)).toBe("Security risk");
+  });
+
+  it("a finding in no lane (an affected-app advisory) is a security risk", () => {
+    const row = { securityRisk: false, lane: null };
+    expect(isSecurityRiskRow(row)).toBe(true);
+    expect(topFindingLabel(row)).toBe("Security risk");
+  });
+
+  it("any other row keeps its lane's label", () => {
+    const row = { securityRisk: false, lane: "speed" as const };
+    expect(isSecurityRiskRow(row)).toBe(false);
+    expect(topFindingLabel(row)).toBe("Speed");
+  });
+
+  it("the real views: malicious code and an advisory are security risks, a script is not", () => {
+    const views = toTopFindingViews(
+      "scan-1",
+      [
+        {
+          id: "m",
+          findingType: "MALICIOUS_SCRIPT",
+          severity: "HIGH",
+          filename: "layout/theme.liquid",
+          lineNumber: 1,
+          appName: null,
+        },
+        {
+          id: "a",
+          findingType: "APP_INCIDENT_ADVISORY",
+          severity: "HIGH",
+          filename: "layout/theme.liquid",
+          lineNumber: 2,
+          appName: null,
+        },
+        {
+          id: "s",
+          findingType: "GHOST_SCRIPT",
+          severity: "HIGH",
+          filename: "layout/theme.liquid",
+          lineNumber: 3,
+          appName: "X",
+        },
+      ] as never,
+      true,
+    );
+    expect(views.map(topFindingLabel)).toEqual(["Security risk", "Security risk", "Speed"]);
   });
 });

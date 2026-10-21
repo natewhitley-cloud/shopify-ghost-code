@@ -36,7 +36,7 @@ import { loadThemeHealth } from "./theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { isHomepageMaliciousFinding } from "../lib/finding-classification";
-import { computeLaneSummary, laneLabelForLane, soWhatForLane } from "../lib/finding-consequence";
+import { computeLaneSummary, soWhatForLane } from "../lib/finding-consequence";
 import { buildFindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
@@ -46,7 +46,7 @@ import {
   maliciousHealthRow,
   themeHealthVerdict,
 } from "../lib/theme-health";
-import { findingLocation, toTopFindingViews } from "../lib/top-findings";
+import { findingLocation, toTopFindingViews, topFindingLabel } from "../lib/top-findings";
 import { getTopFindingsInGroup, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getCompletedScansForShop, getScanById, getScansForShop } from "../models/scan.server";
@@ -58,7 +58,11 @@ export type SidekickImpactArea = { area: string; count: number; meaning: string 
 
 export type SidekickTopFinding = {
   type: string;
-  /** The finding's impact area (e.g. "Speed"), or "Security advisory". */
+  /**
+   * The finding's impact area (e.g. "Speed"), or "Security risk" for every row
+   * the app's "Start here" card shows as one (gc-n3in: malicious code and
+   * affected-app advisories alike, never their lane's label).
+   */
   impact: string;
   app: string | null;
   location: string;
@@ -226,7 +230,7 @@ export async function getSidekickScanSummary(
     appSecurityAdvisories: summary.byType.APP_INCIDENT_ADVISORY ?? 0,
     topFindings: toTopFindingViews(scan.id, topFindingRows, fullList, advisoryCopy).map((f) => ({
       type: f.title ?? f.typeLabel,
-      impact: f.lane ? laneLabelForLane(f.lane) : "Security advisory",
+      impact: topFindingLabel(f),
       app: f.appName ?? advisoryCopy[f.id]?.appName ?? null,
       location: f.location,
       description: f.cost,

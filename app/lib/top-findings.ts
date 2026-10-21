@@ -39,10 +39,17 @@ import {
   isOwnSectionFindingType,
   isStorefrontFinding,
 } from "./finding-classification";
-import { CONSEQUENCE_MAP, LANES, soWhatForLane, URGENCY_RANK } from "./finding-consequence";
+import {
+  CONSEQUENCE_MAP,
+  laneLabelForLane,
+  LANES,
+  soWhatForLane,
+  URGENCY_RANK,
+} from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
 import { getFindingCardCopy, isAdvisoryEmbedFinding } from "./finding-remediation";
 import { findingTypeLabel } from "./finding-type-labels";
+import { SECURITY_RISK_LABEL } from "./security-risk";
 
 /** How many findings the "Start here" block shows at most. */
 export const TOP_FINDINGS_MAX = 3;
@@ -147,6 +154,22 @@ export function pickTopFindings<T extends RankableFinding>(
 // ---------------------------------------------------------------------------
 // Presentation (shared by the scan page and Home)
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether a "Start here" row is a security risk: a security type (malicious
+ * code, an affected-app advisory, gc-g034) or a finding in no lane. The card
+ * shows it in the critical red tokens, and the card and Sidekick both label
+ * it "Security risk" (gc-n3in).
+ */
+export function isSecurityRiskRow(f: Pick<TopFindingView, "securityRisk" | "lane">): boolean {
+  return f.securityRisk || f.lane === null;
+}
+
+/** A "Start here" row's chip text: "Security risk", or its primary lane's label. */
+export function topFindingLabel(f: Pick<TopFindingView, "securityRisk" | "lane">): string {
+  // `f.lane === null` is in the predicate too; repeated here to narrow the type.
+  return isSecurityRiskRow(f) || f.lane === null ? SECURITY_RISK_LABEL : laneLabelForLane(f.lane);
+}
 
 /** The serializable row the "Start here" block renders. */
 export type TopFindingView = {

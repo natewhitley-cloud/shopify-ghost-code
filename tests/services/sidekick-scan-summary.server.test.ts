@@ -354,15 +354,24 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
     expect(r.topFindings.map((t) => t.app)).toEqual(["KeptApp"]);
   });
 
-  it("labels an affected-app advisory (in no impact area) as a security advisory", async () => {
+  it("labels an affected-app advisory (in no impact area) a security risk, as Start here does (gc-n3in)", async () => {
     const advisory = selleasyAdvisory("v1");
     // A real stored advisory carries no appName: the entry must supply it.
     expect(advisory.appName).toBeNull();
     serveScan([advisory, f("a2", "GHOST_STYLE", "LOW")]);
     const r = await okSummary();
     expect(r.appSecurityAdvisories).toBe(1);
-    expect(r.topFindings[0]).toMatchObject({ impact: "Security advisory", app: "Selleasy" });
+    expect(r.topFindings[0]).toMatchObject({ impact: "Security risk", app: "Selleasy" });
     expect(r.byImpact.map((i) => i.area)).toEqual(["Speed"]);
+  });
+
+  // gc-n3in: Sidekick said "Still tracking you" (the lane) for malicious code
+  // while the in-app Start here card said "Security risk".
+  it("labels known malicious code a security risk, never its lane's 'Still tracking you'", async () => {
+    serveScan([f("m1", "MALICIOUS_SCRIPT", "HIGH"), f("a2", "GHOST_STYLE", "LOW")]);
+    const r = await okSummary();
+    expect(r.topFindings.map((t) => t.impact)).toEqual(["Security risk", "Speed"]);
+    expect(JSON.stringify(r.topFindings)).not.toContain("Still tracking you");
   });
 
   it("names the advisory's app and uses the entry's own report wording, as Home does (gc-q5z8)", async () => {
@@ -384,7 +393,8 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
     ]);
     const r = await okSummary();
     expect(r.appSecurityAdvisories).toBe(0);
-    expect(r.topFindings.map((t) => t.impact)).not.toContain("Security advisory");
+    // Only the malicious row is a security risk: no advisory row.
+    expect(r.topFindings.map((t) => t.impact)).toEqual(["Security risk", "Speed"]);
     // Nothing anywhere in the result names the app (the flag-on case above does).
     expect(JSON.stringify(r)).not.toContain("Selleasy");
     // The advisory is out of the total; malicious code is untouched.
