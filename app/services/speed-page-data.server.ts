@@ -20,7 +20,7 @@
  */
 import { isRuntimeMaliciousCheckLive } from "./soft-launch-flags.server";
 import { KNOWN_MALICIOUS_DOMAINS, type MaliciousDomain } from "../data/malicious-domains.server";
-import { getPlanFeatures } from "../lib/billing.server";
+import { getPlanFeatures, type PlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import type { MaliciousRisk } from "../lib/security-risk";
 import {
@@ -47,9 +47,10 @@ export type SpeedPageReport =
       requestedAt: Date | null;
     };
 
-/** Standard / Professional: the full, recurring speed report. */
-function hasFullSpeedReport(plan: string): boolean {
-  const features = getPlanFeatures(plan);
+/** Standard / Professional: the full, recurring speed report (narrows the cadence). */
+function hasFullSpeedReport(
+  features: PlanFeatures,
+): features is PlanFeatures & { speedReportCadence: "weekly" | "monthly" } {
   return features.speedReport && features.speedReportCadence !== "none";
 }
 
@@ -58,8 +59,7 @@ export async function readSpeedPageReport(
   now: Date,
 ): Promise<SpeedPageReport> {
   const features = getPlanFeatures(shop.plan);
-  // The cadence check again only narrows its type for `cadence` below.
-  if (hasFullSpeedReport(shop.plan) && features.speedReportCadence !== "none") {
+  if (hasFullSpeedReport(features)) {
     const [rows, requestedAt] = await Promise.all([
       getRecentSpeedReports(shop.id),
       getSpeedReportRequestedAt(shop.id),
@@ -126,17 +126,7 @@ export function speedSecurityRisks(
   return risks;
 }
 
-/**
- * The Store speed page's Security risk banners (gc-0htk): known malicious
- * domains the shop's LATEST speed report with results requested, of ANY
- * origin and on EVERY plan. Deliberately outside readSpeedPageReport's plan
- * gate: a security finding is never paywalled, so a downgraded shop still
- * sees what its last paid report found. `testedAt` = that report's date.
- *
- * Off (RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED not "true"): nothing is read and
- * nothing is shown. Never throws: a failed read is logged and shows nothing.
- */
-export type SpeedSecurity = { risks: MaliciousRisk[]; testedAt: string | null };
+type SpeedSecurity = { risks: MaliciousRisk[]; testedAt: string | null };
 
 const NO_SPEED_RISKS: SpeedSecurity = { risks: [], testedAt: null };
 
@@ -148,7 +138,17 @@ function securityFromView(view: SpeedReportView): SpeedSecurity {
   return risks.length > 0 ? { risks, testedAt: latest.createdAt } : NO_SPEED_RISKS;
 }
 
-export async function readSpeedSecurityRisks(shopId: string, now: Date): Promise<SpeedSecurity> {
+/**
+ * The Store speed page's Security risk banners (gc-0htk): known malicious
+ * domains the shop's LATEST speed report with results requested, of ANY
+ * origin and on EVERY plan. Deliberately outside readSpeedPageReport's plan
+ * gate: a security finding is never paywalled, so a downgraded shop still
+ * sees what its last paid report found. `testedAt` = that report's date.
+ *
+ * Off (RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED not "true"): nothing is read and
+ * nothing is shown. Never throws: a failed read is logged and shows nothing.
+ */
+async function readSpeedSecurityRisks(shopId: string, now: Date): Promise<SpeedSecurity> {
   if (!isRuntimeMaliciousCheckLive()) return NO_SPEED_RISKS;
   try {
     return securityFromView(buildSpeedReportView(await getRecentSpeedReports(shopId), now));
@@ -163,9 +163,9 @@ export async function readSpeedSecurityRisks(shopId: string, now: Date): Promise
 }
 
 /**
- * Everything the Store speed page and the Sidekick speed tool show, read
- * once (gc-3y89 items 4 and 9): the plan-gated report and the speed-test
- * Security risk banners.
+ * Everything the Store speed page shows, read once (gc-3y89 item 4): the
+ * plan-gated report and the speed-test Security risk banners. (The Sidekick
+ * speed tool reads only readSpeedPageReport: item 9 is deferred.)
  *
  * On Standard / Professional the report view already holds the latest report
  * with results of any origin (the same rows readSpeedSecurityRisks reads), so
@@ -182,7 +182,7 @@ export async function readSpeedPageData(
   shop: { id: string; plan: string },
   now: Date,
 ): Promise<{ report: SpeedPageReport; security: SpeedSecurity }> {
-  if (hasFullSpeedReport(shop.plan)) {
+  if (hasFullSpeedReport(getPlanFeatures(shop.plan))) {
     const report = await readSpeedPageReport(shop, now);
     const security =
       report.access === "report" && isRuntimeMaliciousCheckLive()

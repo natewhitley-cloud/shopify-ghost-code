@@ -136,21 +136,26 @@ describe("hasFilenameMarker", () => {
     "assets/SHRINE.NULL.JS",
     "assets/theme-nulled.js",
     "assets/nulled_theme.js",
-    "assets/app.crack.js",
-    "assets/cracked-bundle.js",
     "assets/warez_loader.js",
   ])("flags %s", (path) => {
     expect(hasFilenameMarker(path)).toBe(true);
   });
 
-  // Decision: "null" counts only as a dot-delimited token, the pirated-build
-  // form; whole words that merely contain a marker never count.
+  // Decision: "null" counts only as a dot-separated segment after a non-empty
+  // name, the pirated-build form; whole words that merely contain a marker
+  // never count, and crack / cracked are theme-effect words, not markers.
   it.each([
     "assets/nullable-helper.js",
     "assets/annulled.js",
     "assets/null-safe.js",
     "assets/is_null.js",
+    "assets/null.js",
+    "assets/.null.js",
     "assets/crackle-effect.js",
+    "assets/crack-effect.js",
+    "assets/cracked_slider.js",
+    "assets/no-crack.js",
+    "assets/app.crack.js",
     "assets/global.js",
   ])("does not flag %s", (path) => {
     expect(hasFilenameMarker(path)).toBe(false);

@@ -87,6 +87,17 @@ export function isRuntimeMaliciousCheckLive(): boolean {
 }
 
 /**
+ * Whether a scan checks the served homepage for known malicious code
+ * (gc-0htk): the homepage is read only by the storefront step, which runs
+ * only while the script-tag audit is live, and matched only while the runtime
+ * check is live. Theme health counts the homepage part of the malicious row
+ * as "on now" exactly then (gc-3y89 item 6).
+ */
+export function isHomepageMaliciousCheckLive(): boolean {
+  return isRuntimeMaliciousCheckLive() && isScriptTagSunsetLive();
+}
+
+/**
  * Whether the suspicious-code detector runs (gc-dcyh Phase 0): obfuscated or
  * pirated-marker asset JavaScript, counted into the scan_signal OpsEvent only.
  * Deliberately NOT in SOFT_LAUNCH_FLAGS: it has no FindingType and creates no

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   isAdvisoryCheckLive,
+  isHomepageMaliciousCheckLive,
   isRuntimeMaliciousCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
@@ -153,5 +154,22 @@ describe("isRuntimeMaliciousCheckLive (gc-0htk)", () => {
   it("never soft-launches MALICIOUS_SCRIPT itself: the theme detector stays live with the flag off", () => {
     expect(SOFT_LAUNCH_FLAGS).not.toHaveProperty(FindingType.MALICIOUS_SCRIPT);
     expect(isSoftLaunchLive(FindingType.MALICIOUS_SCRIPT)).toBe(true);
+  });
+});
+
+describe("isHomepageMaliciousCheckLive (gc-0htk, gc-3y89 #6)", () => {
+  afterEach(() => {
+    delete process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED;
+  });
+
+  it.each([
+    [false, false, false],
+    [true, false, false],
+    [false, true, false],
+    [true, true, true],
+  ])("runtime %s, script-tag audit %s: %s", (runtime, scriptTags, expected) => {
+    if (runtime) process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+    if (scriptTags) process.env[FLAG] = "true";
+    expect(isHomepageMaliciousCheckLive()).toBe(expected);
   });
 });

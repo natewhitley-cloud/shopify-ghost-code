@@ -50,19 +50,22 @@ export const HEX_ESCAPE_MIN_COUNT = 20;
 /**
  * Filename markers. Rule: take the LAST path segment (the file name), lower-case
  * it and split it into tokens on `.`, `-` and `_`.
- *   - `null` counts only as a dot-delimited token (`shrine.null.js`,
- *     `theme.null.min.js`), the form pirated builds use. `null-safe.js` and
- *     `is_null.js` are ordinary names and are NOT flagged.
- *   - `nulled`, `crack`, `cracked` and `warez` count as any whole token
- *     (`theme-nulled.js`, `warez_loader.js`).
- * Substrings of ordinary words never count: `nullable-helper.js`,
- * `annulled.js` and `crackle-effect.js` are single tokens that are not markers.
+ *   - `null` counts only as a dot-separated segment with a non-empty name
+ *     before it (`shrine.null.js`, `theme.null.min.js`), the form pirated
+ *     builds use. A bare `null.js`, `null-safe.js` and `is_null.js` are
+ *     ordinary names and are NOT flagged.
+ *   - `nulled` and `warez` count as any whole token (`theme-nulled.js`,
+ *     `warez_loader.js`).
+ * `crack` / `cracked` are not markers: theme effects use them (`crack-effect.js`,
+ * `cracked_slider.js`, `no-crack.js`). Substrings of ordinary words never
+ * count: `nullable-helper.js` and `annulled.js` are single tokens.
  */
-const MARKER_TOKENS = new Set(["nulled", "crack", "cracked", "warez"]);
+const MARKER_TOKENS = new Set(["nulled", "warez"]);
 
 export function hasFilenameMarker(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  if (name.split(".").includes("null")) return true;
+  const segments = name.split(".");
+  if (segments.some((seg, i) => seg === "null" && segments.slice(0, i).some(Boolean))) return true;
   return name.split(/[.\-_]/).some((token) => MARKER_TOKENS.has(token));
 }
 

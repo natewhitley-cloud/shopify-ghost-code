@@ -4582,12 +4582,13 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
   }
 
   /** Run the scan, capturing each step's return value by name. */
-  async function run() {
+  async function run(onStep?: (name: string) => void) {
     const results: Record<string, unknown> = {};
     const base = createMockInngestStep();
     const step = {
       ...base,
       run: vi.fn(async (name: string, fn: () => unknown) => {
+        onStep?.(name);
         results[name] = await fn();
         return results[name];
       }),
@@ -5836,6 +5837,34 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         where: { scanId: SCAN_ID, findingType: FindingType.MALICIOUS_SCRIPT },
       });
       expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
+    });
+
+    // gc-3y89 item 1 (A7): the delete runs before EVERY early return, so a
+    // retry that stops early still clears the first attempt's homepage rows.
+    it("not the published theme: the retry still clears the homepage rows, nothing requested", async () => {
+      process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse("UNPUBLISHED"));
+      const { results } = await run();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith(homepageDelete);
+      expect(homepagePersistCall()).toBeUndefined();
+      expect(results["storefront-script-tags"]).not.toHaveProperty("homepageMaliciousCount");
+    });
+
+    it("storefront check switched off before the retry: the retry still clears the homepage rows", async () => {
+      readable();
+      process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
+      // Flag flipped off after fetch-and-scan scheduled the step: "disabled".
+      const { results } = await run((name) => {
+        if (name === "storefront-script-tags") delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(mockFindMalicious).not.toHaveBeenCalled();
+      expect(results).toHaveProperty("storefront-script-tags");
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith(homepageDelete);
+      expect(homepagePersistCall()).toBeUndefined();
     });
 
     it("on: one MALICIOUS_SCRIPT per domain filed under the homepage, counted, coverage recorded", async () => {
