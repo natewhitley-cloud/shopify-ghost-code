@@ -10,6 +10,13 @@
   92d0700 with .deploy-sha; smoke pins EXPECTED_SHA). Only if it STILL says invalid token with Railway
   green, create a new project token (production) and `gh secret set RAILWAY_TOKEN`. If smoke fails on a
   SHA mismatch right after deploy, it is usually Railway swap lag: wait 1-2 min, `gh run rerun --failed <run-id>`.
+- **SECURITY (Railway, 10-21 ~21:30Z):** Railway disclosed that an unauthorized party may have accessed (and for some
+  decrypted) customer environment variables (https://blog.railway.com/p/security-disclosure-wednesday-october-21st).
+  Recommendation: rotate ALL Railway env vars (Shopify API secret, DATABASE_URL, Inngest keys, Resend, IPQS,
+  Google Ads, TOKEN_ENCRYPTION_KEY, any AI provider keys) across GhostCode, ClearSignal, FraudPilot, TaxDelta, NOD,
+  and review logs. Builds still paused at 7 pm MT 10-21 (last checked 01:00Z 10-22). The deploy of 92d0700 is ON HOLD
+  for Nathan's call: rotate GhostCode secrets first and deploy once (recommended), or deploy as soon as builds return.
+  Open offer: a per-app rotation runbook (Nathan does dashboard steps; Claude never rotates/revokes).
 - **After green:** close gc-dcyh (Phase 0 shipped dark), gc-3y89 (1-4, 6, 10 shipped; 9 -> gc-s6p2;
   5, 7, 8 -> gc-e3zo), gc-xtno (1, 2, 3, 4a shipped; 4b -> gc-o7y7; 5 deferred: remaining 3 Hulk
   files are store theme repos, fixture bar already met), gc-n3in. Then decide on turning on
