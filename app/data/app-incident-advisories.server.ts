@@ -186,6 +186,8 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     // thread (2026-10-20) describes the payload in navigation menu labels and
     // the checkout button. No vendor statement found. Added on Nathan's call
     // 2026-10-26 with the weaker source, so the copy says "unconfirmed".
+    // incidentDate is the list's 2026-10-22 update, the first date the report
+    // itself shows 17TRACK (the banner says the report listed it on that day).
     //   - Embed handle only. `www.17track.net` (externalcall.js, the 17TRACK
     //     signature host) is NOT a match key: it is 17TRACK's general website
     //     tracking widget, and nothing ties it to the Shopify app.
@@ -198,14 +200,14 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     appName: "17TRACK",
     scriptHosts: [],
     embedHandles: ["shopify://apps/17track/blocks/app-embed"],
-    incidentDate: "2026-10-21",
+    incidentDate: "2026-10-22",
     sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
     summary:
-      "listed as unconfirmed in a public report of shoppers being sent to fake checkout pages",
+      "listed as an unconfirmed affected app in a public report of shoppers being sent to fake checkout pages",
     report:
       "a public report of shoppers being sent to fake checkout pages listed 17TRACK as an unconfirmed affected app that had been removed from the Shopify App Store",
     reportedByDeveloper: false,
-    reviewBy: "2027-01-19",
+    reviewBy: "2027-01-20",
   },
 ];
 

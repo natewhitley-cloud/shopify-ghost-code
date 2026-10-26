@@ -111,14 +111,14 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
         appName: "17TRACK",
         scriptHosts: [],
         embedHandles: ["shopify://apps/17track/blocks/app-embed"],
-        incidentDate: "2026-10-21",
+        incidentDate: "2026-10-22",
         sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
         summary:
-          "listed as unconfirmed in a public report of shoppers being sent to fake checkout pages",
+          "listed as an unconfirmed affected app in a public report of shoppers being sent to fake checkout pages",
         report:
           "a public report of shoppers being sent to fake checkout pages listed 17TRACK as an unconfirmed affected app that had been removed from the Shopify App Store",
         reportedByDeveloper: false,
-        reviewBy: "2027-01-19",
+        reviewBy: "2027-01-20",
       },
     ]);
   });

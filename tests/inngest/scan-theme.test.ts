@@ -3853,8 +3853,8 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
 
   it("flag on but every list entry EXPIRED: not persisted, and the type is not recorded as live", async () => {
     process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
-    // The day after the LAST reviewBy in the list (17TRACK, 2027-01-19).
-    vi.setSystemTime(new Date("2027-01-20T00:00:00Z"));
+    // The day after the LAST reviewBy in the list (17TRACK, 2027-01-20).
+    vi.setSystemTime(new Date("2027-01-21T00:00:00Z"));
     arrange();
 
     await runScanTheme();

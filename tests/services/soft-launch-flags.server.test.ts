@@ -59,12 +59,12 @@ describe("soft-launch flags", () => {
 
     describe("expiry: live needs an unexpired list entry as well as the flag", () => {
       // Live while ANY entry is unexpired: the list's last review date is
-      // 17TRACK, 2027-01-19 (Hulk's 2027-01-08 alone is not enough).
+      // 17TRACK, 2027-01-20 (Hulk's 2027-01-08 alone is not enough).
       it.each([
         ["after the first entry expired (Hulk, 2027-01-08)", "2027-01-09T00:00:00Z", true],
-        ["the day before the last review date", "2027-01-18T12:00:00Z", true],
-        ["on the last review date", "2027-01-19T23:59:59Z", true],
-        ["the day after", "2027-01-20T00:00:00Z", false],
+        ["the day before the last review date", "2027-01-19T12:00:00Z", true],
+        ["on the last review date", "2027-01-20T23:59:59Z", true],
+        ["the day after", "2027-01-21T00:00:00Z", false],
         ["long after", "2028-06-01T00:00:00Z", false],
       ])("flag on, %s: live is %s", (_label, iso, expected) => {
         process.env[ADVISORY_FLAG] = "true";
@@ -83,7 +83,7 @@ describe("soft-launch flags", () => {
         process.env[ADVISORY_FLAG] = "true";
         const live = () => Object.values(FindingType).filter((t) => isSoftLaunchLive(t));
         const before = live();
-        vi.setSystemTime(new Date("2027-01-20T00:00:00Z"));
+        vi.setSystemTime(new Date("2027-01-21T00:00:00Z"));
         const after = live();
         expect(before).toContain(FindingType.APP_INCIDENT_ADVISORY);
         expect(after).toEqual(before.filter((t) => t !== FindingType.APP_INCIDENT_ADVISORY));
