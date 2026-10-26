@@ -39,9 +39,7 @@ import {
   type StorefrontUnreachableReason,
 } from "./storefront-fetcher.server";
 import { logger } from "../lib/logger.server";
-
-/** Which page a signal was seen on. */
-export type GuardPage = "home" | "cart";
+import type { GuardPage } from "../lib/storefront-guard-state";
 
 const PAGE_PATHS: ReadonlyArray<{ page: GuardPage; path: StorefrontPagePath }> = [
   { page: "home", path: "/" },
