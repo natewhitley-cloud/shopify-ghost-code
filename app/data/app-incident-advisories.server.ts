@@ -176,6 +176,37 @@ export const APP_INCIDENT_ADVISORIES: ReadonlyArray<AppIncidentAdvisory> = [
     reportedByDeveloper: true,
     reviewBy: "2027-01-11",
   },
+  {
+    // Source: romanzipp.com/blog/shopify-hit-with-phishing-attack, read at
+    // source 2026-10-26. Its "Infected Shopify Apps" list (last update
+    // 2026-10-22) has 17TRACK as "unconfirmed but de-listed", and the author
+    // notes de-listing can happen for several reasons. Merchant comments there
+    // (2026-10-21, 2026-10-22) report the attack via 17Track; one names
+    // www.cartassure.top (on the malicious list, gc-dr7a). An r/shopifyDev
+    // thread (2026-10-20) describes the payload in navigation menu labels and
+    // the checkout button. No vendor statement found. Added on Nathan's call
+    // 2026-10-26 with the weaker source, so the copy says "unconfirmed".
+    //   - Embed handle only. `www.17track.net` (externalcall.js, the 17TRACK
+    //     signature host) is NOT a match key: it is 17TRACK's general website
+    //     tracking widget, and nothing ties it to the Shopify app.
+    //   - Handle seen ENABLED in 5 unrelated public settings_data.json files
+    //     (GitHub code search 2026-10-26: andrejulio072/Shopify,
+    //     Nasir-zero/Luxebrims, henryleestudio/dearly-beloved-shopify-theme,
+    //     tech-and-avinash/thegentlegrid, Neilcn/dyus), all
+    //     shopify://apps/17track/blocks/app-embed/1519e068-e330-4e0b-92dd-0a3263bfceda.
+    //     Fixtures: tests/fixtures/advisory-embeds/17track--*.json.
+    appName: "17TRACK",
+    scriptHosts: [],
+    embedHandles: ["shopify://apps/17track/blocks/app-embed"],
+    incidentDate: "2026-10-21",
+    sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
+    summary:
+      "listed as unconfirmed in a public report of shoppers being sent to fake checkout pages",
+    report:
+      "a public report of shoppers being sent to fake checkout pages listed 17TRACK as an unconfirmed affected app that had been removed from the Shopify App Store",
+    reportedByDeveloper: false,
+    reviewBy: "2027-01-19",
+  },
 ];
 
 /**

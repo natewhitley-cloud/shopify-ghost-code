@@ -107,6 +107,19 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
         reportedByDeveloper: true,
         reviewBy: "2027-01-11",
       },
+      {
+        appName: "17TRACK",
+        scriptHosts: [],
+        embedHandles: ["shopify://apps/17track/blocks/app-embed"],
+        incidentDate: "2026-10-21",
+        sourceUrl: "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
+        summary:
+          "listed as unconfirmed in a public report of shoppers being sent to fake checkout pages",
+        report:
+          "a public report of shoppers being sent to fake checkout pages listed 17TRACK as an unconfirmed affected app that had been removed from the Shopify App Store",
+        reportedByDeveloper: false,
+        reviewBy: "2027-01-19",
+      },
     ]);
   });
 
@@ -182,8 +195,10 @@ describe("APP_INCIDENT_ADVISORIES (list-level pins)", () => {
     // and this keeps the two lists from being confused for one another.
     // Allowlisted: "Selleasy" is both the app's public name (merchant-facing,
     // so the advisory keeps it) and a leftover-code signature. Harmless while
-    // the advisory finding carries no appName.
-    const ALLOWED_SHARED_NAMES = new Set(["Selleasy"]);
+    // the advisory finding carries no appName. "17TRACK" likewise (gc-dr7a):
+    // its signature keys on the www.17track.net widget host, which the
+    // advisory deliberately does not match.
+    const ALLOWED_SHARED_NAMES = new Set(["Selleasy", "17TRACK"]);
     const signatureNames = new Set(APP_SIGNATURES.map((s) => s.appName));
     for (const entry of APP_INCIDENT_ADVISORIES) {
       if (ALLOWED_SHARED_NAMES.has(entry.appName)) continue;
@@ -1366,7 +1381,7 @@ describe("activeAdvisories", () => {
   it("uses the real list by default and never mutates it", () => {
     expect(activeAdvisories(ACTIVE)).toEqual([...APP_INCIDENT_ADVISORIES]);
     expect(activeAdvisories(new Date("2030-01-01T00:00:00Z"))).toEqual([]);
-    expect(APP_INCIDENT_ADVISORIES).toHaveLength(3);
+    expect(APP_INCIDENT_ADVISORIES).toHaveLength(4);
   });
 });
 

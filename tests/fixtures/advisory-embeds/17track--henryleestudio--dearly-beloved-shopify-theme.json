@@ -1,0 +1,24 @@
+/*
+ * Advisory precision fixture (gc-dr7a). Source: https://github.com/henryleestudio/dearly-beloved-shopify-theme/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/henryleestudio/dearly-beloved-shopify-theme/main/config/settings_data.json), fetched 2026-10-26.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "4981902369724952902": {
+        "type": "shopify://apps/vo-product-options/blocks/embed-block/430cbd7b-bd20-4c16-ba41-db6f4c645164",
+        "disabled": false
+      },
+      "2104245418471043333": {
+        "type": "shopify://apps/17track/blocks/app-embed/1519e068-e330-4e0b-92dd-0a3263bfceda",
+        "disabled": false
+      },
+      "15683396631634586217": {
+        "type": "shopify://apps/inbox/blocks/chat/841fc607-4181-4ad1-842d-e24d7f8bad6b",
+        "disabled": false
+      }
+    }
+  }
+}

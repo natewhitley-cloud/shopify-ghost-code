@@ -2,18 +2,18 @@
  * Advisory precision over REAL public theme settings (gc-q5z8, flag-on bar).
  *
  * Dev-store installs are impossible for these apps (Hulk Product Options,
- * Swym Wishlist Plus and Selleasy are delisted), so the verification bar for
+ * Swym Wishlist Plus, Selleasy and 17TRACK are delisted), so the verification bar for
  * turning the advisory on is: each embed handle is seen in several unrelated
  * public `config/settings_data.json` files, and the detector is precise over
  * those real files. The fixtures in tests/fixtures/advisory-embeds/ are the
- * app embed block entries of nine public themes (three per entry), copied verbatim (types, ids,
+ * app embed block entries of twelve public themes (three per entry), copied verbatim (types, ids,
  * disabled flags) with each file's source URL in its header comment.
  *
  * Each fixture must fire ONLY its own entry, once; the sibling embeds in the
  * same files (Swym's wishlist-collections-embed, Logbase's DealEasy
  * `app-embed`, HulkApps' Hulk Discounts and Hulk Form Builder `app-embed`,
  * Klaviyo, Judge.me...)
- * fire nothing; and a disabled embed never fires (none of the real Hulk, Swym or
+ * fire nothing; and a disabled embed never fires (none of the real Hulk, Swym,
  * Selleasy entries is disabled, so each is also run with its own entry
  * flipped to disabled; a control flips it back and it fires again).
  */
@@ -37,15 +37,18 @@ const entry = (name: string) => APP_INCIDENT_ADVISORIES.find((a) => a.appName ==
 const SWYM = entry("Swym Wishlist Plus");
 const SELLEASY = entry("Selleasy");
 const HULK = entry("Hulk Product Options");
+const TRACK17 = entry("17TRACK");
 const EXPECTED: Record<string, string> = {
   hulk: advisoryDescription({ advisory: HULK, embedHandle: HULK.embedHandles[0] }),
   swym: advisoryDescription({ advisory: SWYM, embedHandle: SWYM.embedHandles[0] }),
   selleasy: advisoryDescription({ advisory: SELLEASY, embedHandle: SELLEASY.embedHandles[0] }),
+  "17track": advisoryDescription({ advisory: TRACK17, embedHandle: TRACK17.embedHandles[0] }),
 };
 const OWN_HANDLE: Record<string, string> = {
   hulk: HULK.embedHandles[0],
   swym: SWYM.embedHandles[0],
   selleasy: SELLEASY.embedHandles[0],
+  "17track": TRACK17.embedHandles[0],
 };
 
 type Block = { type: string; disabled: boolean };
@@ -88,11 +91,12 @@ describe("advisory precision over real public settings_data.json fixtures", () =
     expect(FIXTURES.filter((f) => f.app === "hulk")).toHaveLength(3);
     expect(FIXTURES.filter((f) => f.app === "swym")).toHaveLength(3);
     expect(FIXTURES.filter((f) => f.app === "selleasy")).toHaveLength(3);
+    expect(FIXTURES.filter((f) => f.app === "17track")).toHaveLength(3);
     for (const f of FIXTURES) {
       expect(f.header, f.name).toMatch(
         /Source: https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/blob\/[^/\s]+\/config\/settings_data\.json/,
       );
-      expect(f.header, f.name).toContain("fetched 2026-10-19");
+      expect(f.header, f.name).toMatch(/fetched 2026-10-\d{2}\./);
       // Each holds its own app's real embed entry, verbatim.
       expect(
         Object.values(f.blocks).some((b) => b.type.startsWith(`${OWN_HANDLE[f.app]}/`)),
@@ -142,11 +146,11 @@ describe("advisory precision over real public settings_data.json fixtures", () =
     expect(detect(content)).toEqual([]);
   });
 
-  it("all nine files together (the union of their blocks) fire one finding per entry", () => {
+  it("all twelve files together (the union of their blocks) fire one finding per entry", () => {
     const blocks = Object.assign({}, ...FIXTURES.map((f) => f.blocks));
     const findings = detect(JSON.stringify({ current: { blocks } }));
     expect(findings.map((f) => f.description).sort()).toEqual(
-      [EXPECTED.hulk, EXPECTED.selleasy, EXPECTED.swym].sort(),
+      [EXPECTED.hulk, EXPECTED.selleasy, EXPECTED.swym, EXPECTED["17track"]].sort(),
     );
   });
 });

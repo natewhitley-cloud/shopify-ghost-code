@@ -924,7 +924,7 @@ describe("app-removal detection never counts an advisory", () => {
 describe("expiry is never reported as fixed", () => {
   const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
   const BEFORE = new Date("2026-12-20T12:00:00Z");
-  const AFTER = new Date("2027-01-15T12:00:00Z");
+  const AFTER = new Date("2027-01-22T12:00:00Z");
 
   beforeEach(() => {
     process.env[FLAG] = "true";

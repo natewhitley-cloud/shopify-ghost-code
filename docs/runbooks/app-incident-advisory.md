@@ -8,8 +8,10 @@ in `config/settings_data.json` (gc-14x5.1). It states two facts: the theme
 loads the app's code (or has its embed on), and a public report names the
 app. It never says the store was affected. In-app only, every plan, no email.
 
-Current entries (2026-10-19): Hulk Product Options (host and embed),
-Swym Wishlist Plus (embed only), Selleasy (host and embed).
+Current entries (2026-10-26): Hulk Product Options (host and embed),
+Swym Wishlist Plus (embed only), Selleasy (host and embed), 17TRACK (embed
+only; the report lists it as "unconfirmed but de-listed", so its `report`
+says "unconfirmed"; added on Nathan's call 2026-10-26, gc-dr7a).
 
 How it shows (gc-q5z8): a red "Security risk" banner per advisory at the top of
 Home and of the scan page (the same `SecurityRiskBanner` as known malicious
@@ -58,12 +60,12 @@ what the theme now does.
    each hit right". Zero is a valid result.
 3. Precision review (this is the review; do it before the flag goes on in
    production). Verification bar (Nathan, 2026-10-19): dev-store installs are
-   impossible because Hulk Product Options, Swym Wishlist Plus and Selleasy are
-   all delisted, so each embed handle must be seen in several UNRELATED public
+   impossible because Hulk Product Options, Swym Wishlist Plus, Selleasy and
+   17TRACK are all delisted, so each embed handle must be seen in several UNRELATED public
    `settings_data.json` files, and the detector must be precise over those
    real files as fixtures:
    - `npx vitest run tests/services/app-incident-advisory-fixtures.server.test.ts`
-     passes: nine real public files (three per entry, sources in each
+     passes: twelve real public files (three per entry, sources in each
      fixture's header, `tests/fixtures/advisory-embeds/`) each fire only their
      own entry, once; the sibling embeds in them (Swym's
      wishlist-collections-embed, Logbase's DealEasy, Hulk Form Builder, Hulk

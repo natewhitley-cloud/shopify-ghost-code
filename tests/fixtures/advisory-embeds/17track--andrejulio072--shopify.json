@@ -1,0 +1,48 @@
+/*
+ * Advisory precision fixture (gc-dr7a). Source: https://github.com/andrejulio072/Shopify/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/andrejulio072/Shopify/main/config/settings_data.json), fetched 2026-10-26.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "6478312753674380289": {
+        "type": "shopify://apps/gempages-builder/blocks/embed-gp-script-head/20b379d4-1b20-474c-a6ca-665c331919f3",
+        "disabled": false
+      },
+      "15706352229161960306": {
+        "type": "shopify://apps/slide-cart-sticky-cart-drawer/blocks/app-embeded/41ace2ee-41e6-45af-a9c4-452e6defecc0",
+        "disabled": false
+      },
+      "2104245418471043333": {
+        "type": "shopify://apps/17track/blocks/app-embed/1519e068-e330-4e0b-92dd-0a3263bfceda",
+        "disabled": false
+      },
+      "17198465164502963513": {
+        "type": "shopify://apps/parcel-panel/blocks/app.embed/fc785c3f-90e0-4c98-a20c-7cde9ba5e4b5",
+        "disabled": false
+      },
+      "13429640401162358610": {
+        "type": "shopify://apps/google-reviews/blocks/app-embed-block/4eeaae1c-902b-481c-bec5-3f32291a58d5",
+        "disabled": false
+      },
+      "14060646107696862457": {
+        "type": "shopify://apps/judge-me-reviews/blocks/judgeme_core/61ccd3b1-a9f2-4160-9fe9-4fec8413e5d8",
+        "disabled": false
+      },
+      "13768625480086291342": {
+        "type": "shopify://apps/forms/blocks/forms/8744a304-fcb1-4347-b211-bb6b4759a76a",
+        "disabled": false
+      },
+      "15683396631634586217": {
+        "type": "shopify://apps/inbox/blocks/chat/841fc607-4181-4ad1-842d-e24d7f8bad6b",
+        "disabled": false
+      },
+      "15639742860725253803": {
+        "type": "shopify://apps/musbu-wa-chat/blocks/app-embed/267d7a73-494b-4925-ba55-49fe70b0f09e",
+        "disabled": false
+      }
+    }
+  }
+}

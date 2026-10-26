@@ -1,0 +1,28 @@
+/*
+ * Advisory precision fixture (gc-dr7a). Source: https://github.com/Neilcn/dyus/blob/main/config/settings_data.json
+ * (raw: https://raw.githubusercontent.com/Neilcn/dyus/main/config/settings_data.json), fetched 2026-10-26.
+ * Trimmed to the app embed block entries of `current.blocks` (type + disabled only,
+ * settings dropped); block ids and app embed types are copied verbatim.
+ */
+{
+  "current": {
+    "blocks": {
+      "2104245418471043333": {
+        "type": "shopify://apps/17track/blocks/app-embed/1519e068-e330-4e0b-92dd-0a3263bfceda",
+        "disabled": false
+      },
+      "17599714577972976482": {
+        "type": "shopify://apps//blocks/cvs_widget/db3cf894-1968-40c5-bb48-952d15f1fd8d",
+        "disabled": false
+      },
+      "6987625696575125306": {
+        "type": "shopify://apps/weglot-translate-your-store/blocks/weglot/3097482a-fafe-42ff-bc33-ea19e35c4a20",
+        "disabled": true
+      },
+      "15683396631634586217": {
+        "type": "shopify://apps/inbox/blocks/chat/841fc607-4181-4ad1-842d-e24d7f8bad6b",
+        "disabled": true
+      }
+    }
+  }
+}
