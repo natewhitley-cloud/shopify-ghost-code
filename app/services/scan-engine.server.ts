@@ -2370,12 +2370,18 @@ function parseScriptOpenTag(
  * the value to the end of the file), so the caller hides the rest of the
  * file. Linear. Shared with the runtime malicious check (gc-0htk), which
  * reads `<script>` and `<link>` tags of the served homepage.
+ *
+ * `onAttribute`, when given, is called for EVERY attribute that has a value
+ * (lower-case name, raw undecoded value), in order, duplicates included. It
+ * runs before the tag is known to close: a caller that needs a complete tag
+ * keeps what it saw until this returns non-null (gc-7gjj.4, on*= handlers).
  */
 export function parseOpenTagAttributes(
   text: string,
   start: number,
   tagLength: number,
   names: readonly string[],
+  onAttribute?: (name: string, value: string) => void,
 ): { end: number; attributes: Record<string, { value: string; offset: number }> } | null {
   const n = text.length;
   const attributes: Record<string, { value: string; offset: number }> = {};
@@ -2412,6 +2418,7 @@ export function parseOpenTagAttributes(
     if (names.includes(name) && attributes[name] === undefined) {
       attributes[name] = { value, offset: valueStart };
     }
+    onAttribute?.(name, value);
   }
 }
 
