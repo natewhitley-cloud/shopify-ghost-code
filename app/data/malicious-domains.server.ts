@@ -172,8 +172,11 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     // 17TRACK app wrote an <img onerror> loader into navigation menu labels
     // and the checkout button that pulled scripts from cartassure.top
     // (/check-out/assets/l2.js, l3.js) and sent shoppers to a phishing
-    // checkout on the same domain. Merchant report plus the romanzipp.com
-    // write-up of the campaign; no vendor analysis.
+    // checkout on the same domain. Corroborated by the campaign write-up
+    // (romanzipp.com/blog/shopify-hit-with-phishing-attack): 17TRACK listed
+    // as "unconfirmed but de-listed" (2026-10-22) and a merchant comment
+    // (2026-10-21) naming www.cartassure.top. Merchant reports only; no
+    // vendor analysis.
     domain: "cartassure.top",
     note: "fake checkout page that collects card details",
   },

