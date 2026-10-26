@@ -23,14 +23,20 @@
  *     inside inline JavaScript (a `<script>` with no src and a JavaScript
  *     type). A `<link>` that is only a connection hint (`preconnect`,
  *     `dns-prefetch`) is still reported, but labelled as named, not loaded
- *     (gc-3y89 item 3). A URL in
+ *     (gc-3y89 item 3). A URL inside an `on*=` event-handler attribute of ANY
+ *     element (`<img onerror>`, `<svg onload>`, `<a onclick>`) is read too,
+ *     after decoding HTML character references (gc-7gjj.4: the 17TRACK
+ *     menu-label loader was an `<img src=x onerror=...>`). A URL in
  *     page text, a link (`<a href>`), an image, or a JSON data block is not
  *     read: it does not load code, and merchant or shopper text (a blog post,
  *     a review) can mention any domain. Bodies of inert or text-only elements
  *     (`<textarea>`, `<title>`, `<template>`, `<noscript>`, ...) are skipped.
  *     Known limits: a URL in a JavaScript STRING counts (merchant text a theme
- *     serializes into a script can match), and a tag written inside another
- *     tag's attribute value is read as a tag.
+ *     serializes into a script can match); a loader that builds its URL at
+ *     run time (`atob`, string concatenation) names no host; and once one tag
+ *     on the page never closes, later elements' handlers are no longer read
+ *     (and a tag written inside another tag's attribute value is read as a
+ *     tag again, as before gc-7gjj.4), which keeps the pass linear.
  *   - HTML comments and JS comments are blanked first (blankInertComments,
  *     the theme detector's helper) for EVERY entry, not only `ignoreInComments`
  *     ones: a commented-out tag on the served page does not load, and the
@@ -66,6 +72,7 @@ export type HomepageSource =
   | "iframe"
   | "importmap"
   | "inline_script"
+  | "event_handler"
   | "form"
   | "hint";
 
@@ -76,8 +83,9 @@ const SOURCE_RANK: Record<HomepageSource, number> = {
   iframe: 3,
   importmap: 4,
   inline_script: 5,
-  form: 6,
-  hint: 7,
+  event_handler: 6,
+  form: 7,
+  hint: 8,
 };
 
 /** Merchant-facing: how the page used the domain (the stored snippet's second line). */
@@ -88,6 +96,7 @@ export const HOMEPAGE_SOURCE_LABELS: Record<HomepageSource, string> = {
   iframe: "Loaded in a frame in the page",
   importmap: "Named in an import map in the page",
   inline_script: "Named in JavaScript in the page",
+  event_handler: "Named in JavaScript attached to an element in the page",
   form: "Named as where a form in the page sends its data",
   hint: "Named in a connection hint in the page",
 };
@@ -133,13 +142,82 @@ const JS_SCRIPT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The next `<script` or `<link` tag start, or the start of an element whose
- * body the browser never loads from (its body is skipped: a tag written
- * inside a `<textarea>`, `<title>`, `<template>`, `<noscript>` and the like is
- * text or inert). Followed by whitespace, `>` or `/`.
+ * The next element start tag of any name, followed by whitespace, `>` or `/`.
+ * `<script>`, `<link>`, `<iframe>` and `<form>` are read for what they load;
+ * every element is read for its `on*=` handlers (gc-7gjj.4).
  */
-const TAG_START_RE =
-  /<(script|link|iframe|form|textarea|title|template|noscript|xmp|noembed|noframes|style)(?=[\s>/])/gi;
+const TAG_START_RE = /<([a-z][a-z0-9-]{0,63})(?=[\s>/])/gi;
+
+/** Elements read for the URL they load, and the attributes that hold it. */
+const LOADING_ELEMENT_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
+  script: ["src", "type"],
+  link: ["href", "rel"],
+  iframe: ["src"],
+  form: ["action"],
+};
+
+/**
+ * Elements whose BODY the browser never loads from (it is skipped: a tag
+ * written inside a `<textarea>`, `<title>`, `<template>`, `<noscript>` and the
+ * like is text or inert). Their own start tag's handlers are still read.
+ */
+const OPAQUE_BODY_ELEMENTS: ReadonlySet<string> = new Set([
+  "textarea",
+  "title",
+  "template",
+  "noscript",
+  "xmp",
+  "noembed",
+  "noframes",
+  "style",
+]);
+
+/** An event-handler attribute name: `on` then at least one letter (`onerror`, `onload`). */
+const EVENT_HANDLER_NAME_RE = /^on[a-z]+$/;
+
+/** Named character references worth decoding in a handler (others stay as written). */
+const NAMED_CHAR_REFS: Readonly<Record<string, string>> = {
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  lt: "<",
+  gt: ">",
+  sol: "/",
+  colon: ":",
+  period: ".",
+  lpar: "(",
+  rpar: ")",
+  comma: ",",
+  semi: ";",
+  equals: "=",
+  Tab: "\t",
+  NewLine: "\n",
+  nbsp: "\u00a0",
+};
+
+// A numeric reference (`;` optional, as browsers decode it) or a named one
+// with its `;`. Bounded quantifiers, one pass: linear.
+const CHAR_REF_RE = /&(?:#(\d{1,8})|#[xX]([0-9a-fA-F]{1,7})|([A-Za-z]{2,8}));?/g;
+
+/**
+ * An attribute value as the browser hands it to the handler: numeric and the
+ * common named character references decoded (`&#47;`, `&#x2F;`, `&quot;`,
+ * `&colon;`). An out-of-range or unknown reference stays as written. Exported
+ * for tests.
+ */
+export function decodeAttributeValue(value: string): string {
+  if (!value.includes("&")) return value;
+  return value.replace(CHAR_REF_RE, (whole, dec?: string, hex?: string, name?: string) => {
+    if (name !== undefined) {
+      return whole.endsWith(";") && Object.hasOwn(NAMED_CHAR_REFS, name)
+        ? NAMED_CHAR_REFS[name]
+        : whole;
+    }
+    const code = dec !== undefined ? Number.parseInt(dec, 10) : Number.parseInt(hex!, 16);
+    if (code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return whole;
+    return String.fromCodePoint(code);
+  });
+}
 
 /** Whether a `type` attribute is run as JavaScript (MIME parameters such as `; charset=` ignored). */
 function isJavaScriptType(type: string | undefined): boolean {
@@ -156,12 +234,16 @@ function normalizeHost(host: string): string {
 
 /**
  * Every listed domain the served homepage uses, ONE hit per domain (its most
- * specific source: script tag, then script src, then link, then inline JS),
- * sorted by domain. `scriptTagUrls` are the app script tags the fetcher
- * already parsed from the same page (parseScriptTagUrls).
+ * specific source: script tag, then script src, then link, then inline JS,
+ * then an event handler), sorted by domain. `scriptTagUrls` are the app
+ * script tags the fetcher already parsed from the same page
+ * (parseScriptTagUrls).
  *
  * Linear: one forward pass over the comment-blanked page; a script's body is
- * skipped as markup (a `<link` written inside JavaScript is not a tag).
+ * skipped as markup (a `<link` written inside JavaScript is not a tag), and a
+ * parsed start tag is skipped whole. A start tag that never closes is parsed
+ * to the end of the page at most once: after that, elements are read only
+ * for what they load, as before gc-7gjj.4.
  */
 export function findMaliciousInHomepage(
   html: string,
@@ -181,15 +263,60 @@ export function findMaliciousInHomepage(
   for (const url of scriptTagUrls) add(scriptUrlHost(url), "script_tag");
 
   const live = blankInertComments(html, "homepage.html");
+  // Handler values seen in the start tag being parsed, kept until it closes.
+  let handlers: string[] = [];
+  const onAttribute = (name: string, value: string): void => {
+    if (EVENT_HANDLER_NAME_RE.test(name)) handlers.push(value);
+  };
+  // Set once a start tag never closes: later handlers are not read (linear).
+  let handlersOff = false;
   TAG_START_RE.lastIndex = 0;
   let found: RegExpExecArray | null;
   while ((found = TAG_START_RE.exec(live)) !== null) {
     const at = found.index;
     const element = found[1].toLowerCase();
+    const loadAttributes = LOADING_ELEMENT_ATTRIBUTES[element];
+    const opaque = OPAQUE_BODY_ELEMENTS.has(element);
+    if (!loadAttributes && handlersOff) {
+      if (!opaque) continue;
+      // An inert or text-only element: skip to its closing tag.
+      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
+      if (close === -1) break;
+      TAG_START_RE.lastIndex = close;
+      continue;
+    }
+
+    handlers = [];
+    const tag = parseOpenTagAttributes(
+      live,
+      at,
+      found[0].length,
+      loadAttributes ?? [],
+      handlersOff ? undefined : onAttribute,
+    );
+    if (!tag) {
+      // A tag that never closes: the browser reads the rest as that tag.
+      if (loadAttributes) break;
+      handlersOff = true;
+      if (!opaque) continue;
+      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
+      if (close === -1) break;
+      TAG_START_RE.lastIndex = close;
+      continue;
+    }
+    for (const value of handlers) {
+      for (const host of urlHostsOnLine(decodeAttributeValue(value))) add(host, "event_handler");
+    }
+
+    if (opaque) {
+      // An inert or text-only element: skip to its closing tag.
+      const close = indexOfIgnoreCase(live, `</${element}`, tag.end);
+      if (close === -1) break;
+      TAG_START_RE.lastIndex = close;
+      continue;
+    }
     if (element === "iframe" || element === "form") {
       const attr = element === "iframe" ? "src" : "action";
-      const tag = parseOpenTagAttributes(live, at, found[0].length, [attr]);
-      if (!tag) break;
       add(tag.attributes[attr] ? scriptUrlHost(tag.attributes[attr].value) : null, element);
       if (element === "form") {
         // A form's body is ordinary markup: keep reading its tags.
@@ -202,27 +329,16 @@ export function findMaliciousInHomepage(
       TAG_START_RE.lastIndex = close;
       continue;
     }
-    if (element !== "script" && element !== "link") {
-      // An inert or text-only element: skip to its closing tag.
-      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
-      if (close === -1) break;
-      TAG_START_RE.lastIndex = close;
-      continue;
-    }
-    const isScript = element === "script";
-    const tag = parseOpenTagAttributes(
-      live,
-      at,
-      found[0].length,
-      isScript ? ["src", "type"] : ["href", "rel"],
-    );
-    // A tag that never closes: the browser reads the rest as that tag.
-    if (!tag) break;
-    if (!isScript) {
+    if (element === "link") {
       add(
         tag.attributes.href ? scriptUrlHost(tag.attributes.href.value) : null,
         isConnectionHint(tag.attributes.rel?.value) ? "hint" : "link",
       );
+      TAG_START_RE.lastIndex = tag.end;
+      continue;
+    }
+    if (element !== "script") {
+      // Any other element: its body is markup, read on.
       TAG_START_RE.lastIndex = tag.end;
       continue;
     }
