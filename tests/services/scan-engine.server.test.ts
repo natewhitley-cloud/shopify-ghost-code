@@ -6969,6 +6969,8 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "account-confirm.top",
     "billing-confirm.top",
     "checkout-guard.top",
+    // 17TRACK menu-label checkout hijack, added 2026-10-26 (gc-dr7a).
+    "cartassure.top",
   ];
 
   // Hosts that must stay OFF the list: the legitimate polyfill replacements,
@@ -7009,6 +7011,10 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "checkout-guard.com",
     "checkoutguard.top",
     "checkout-guard.top.example.com",
+    // gc-dr7a lookalikes: other TLD, a hyphen, a longer label.
+    "cartassure.com",
+    "cart-assure.top",
+    "cartassurance.top",
   ];
 
   const SHARED_HOSTS = [
@@ -7026,7 +7032,7 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "cloudflare.com",
   ];
 
-  it("lists exactly the twelve vetted domains", () => {
+  it("lists exactly the thirteen vetted domains", () => {
     expect(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain)).toEqual([
       "jsdeliver.cloud",
       "cb28utrk.com",
@@ -7152,6 +7158,8 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
         "References known-malicious domain billing-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
       "checkout-guard.top":
         "References known-malicious domain checkout-guard.top (fake checkout page that collects card details), likely injected code. Your theme may be compromised",
+      "cartassure.top":
+        "References known-malicious domain cartassure.top (fake checkout page that collects card details), likely injected code. Your theme may be compromised",
     });
   });
 

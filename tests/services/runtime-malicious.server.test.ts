@@ -337,6 +337,18 @@ describe("maliciousDomainsInUrls (speed test requests)", () => {
     ).toEqual(["biliing.top", "checkout-guard.top"]);
   });
 
+  it("finds the 17TRACK menu-label loader's script requests (gc-dr7a)", () => {
+    // The loader sits in an <img onerror> in a menu label, which the homepage
+    // HTML check does not read; the speed test's browser runs it and requests
+    // these scripts.
+    expect(
+      maliciousDomainsInUrls([
+        "https://cartassure.top/check-out/assets/l2.js",
+        "https://cartassure.top/check-out/assets/l3.js",
+      ]),
+    ).toEqual(["cartassure.top"]);
+  });
+
   it("skips lookalikes, non-http URLs, non-strings and garbage", () => {
     expect(
       maliciousDomainsInUrls([
