@@ -310,6 +310,11 @@ export type ShopDomains = { primaryHost: string; myshopifyHost: string | null };
 
 type StorefrontContext = { domains: ShopDomains | null; published: boolean };
 
+type ShopDomainsNode = {
+  primaryDomain?: { host?: unknown; url?: unknown } | null;
+  myshopifyDomain?: unknown;
+} | null;
+
 /**
  * ONE Admin query: the shop's primary storefront host + myshopify host (null
  * when unusable) and whether the scanned theme is the published (MAIN) one.
@@ -321,16 +326,41 @@ async function fetchStorefrontContext(
   const response = await admin.graphql(STOREFRONT_CONTEXT_QUERY, { variables: { themeId } });
   const body = (await response.json()) as {
     data?: {
-      shop?: {
-        primaryDomain?: { host?: unknown; url?: unknown } | null;
-        myshopifyDomain?: unknown;
-      } | null;
+      shop?: ShopDomainsNode;
       theme?: { role?: unknown } | null;
     } | null;
     errors?: unknown;
   };
   const published = body?.data?.theme?.role === "MAIN";
-  const shop = body?.data?.shop;
+  return { domains: parseShopDomains(body?.data?.shop), published };
+}
+
+const SHOP_DOMAINS_QUERY = `
+  query StorefrontShopDomains {
+    shop {
+      primaryDomain {
+        host
+        url
+      }
+      myshopifyDomain
+    }
+  }
+`;
+
+/**
+ * ONE Admin query for the shop's storefront hosts only (no theme): the
+ * checkout guard caches them and refreshes at most daily (gc-1q1s.3), so a
+ * check never needs an Admin call. Null when the hosts are unusable. Throws
+ * on a transport error (the caller keeps its cached hosts).
+ */
+export async function fetchShopDomains(admin: AdminApiContext): Promise<ShopDomains | null> {
+  const response = await admin.graphql(SHOP_DOMAINS_QUERY);
+  const body = (await response.json()) as { data?: { shop?: ShopDomainsNode } | null };
+  return parseShopDomains(body?.data?.shop);
+}
+
+/** The validated hosts from an Admin `shop` node, or null when the primary host is unusable. */
+function parseShopDomains(shop: ShopDomainsNode | undefined): ShopDomains | null {
   const primary = shop?.primaryDomain;
   // Prefer the URL's hostname (the canonical storefront address); fall back to
   // `host`. Either way it is validated as a bare hostname below.
@@ -343,15 +373,12 @@ async function fetchStorefrontContext(
     }
   }
   if (!primaryHost && typeof primary?.host === "string") primaryHost = primary.host;
-  if (!primaryHost || !isBareHostname(primaryHost)) return { domains: null, published };
+  if (!primaryHost || !isBareHostname(primaryHost)) return null;
   const myshopify =
     typeof shop?.myshopifyDomain === "string" && isBareHostname(shop.myshopifyDomain)
       ? shop.myshopifyDomain.toLowerCase()
       : null;
-  return {
-    domains: { primaryHost: primaryHost.toLowerCase(), myshopifyHost: myshopify },
-    published,
-  };
+  return { primaryHost: primaryHost.toLowerCase(), myshopifyHost: myshopify };
 }
 
 /**
@@ -575,7 +602,16 @@ export type StorefrontRead =
       /** The body, only when `readBody` asked for it (else null, never read). */
       body: string | null;
     }
-  | { status: "unreachable"; reason: StorefrontReadFailure };
+  | {
+      status: "unreachable";
+      reason: StorefrontReadFailure;
+      /**
+       * redirect_other_domain only: the host the store tried to send us to
+       * (a bare, lower-case hostname; never a path or query string). The
+       * checkout guard shows it so the gap is visible (gc-1q1s.3).
+       */
+      redirectHost?: string;
+    };
 
 /**
  * ONE guarded GET of a public storefront URL: the only network code that
@@ -647,7 +683,11 @@ export async function guardedStorefrontGet(
       }
       if (!opts.allowedHosts.has(next.hostname.toLowerCase())) {
         // Well-formed, but not a host this read may follow (see the file header).
-        return { status: "unreachable", reason: "redirect_other_domain" };
+        return {
+          status: "unreachable",
+          reason: "redirect_other_domain",
+          redirectHost: next.hostname.toLowerCase(),
+        };
       }
       url = next;
     }
@@ -668,27 +708,50 @@ export async function guardedStorefrontGet(
   }
 }
 
+/** Options shared by the storefront page reads (all test seams but readBody). */
+export type StorefrontPageReadOptions = {
+  readBody: (url: URL, httpStatus: number) => boolean;
+  fetchImpl?: StorefrontFetch;
+  dnsLookup?: DnsLookupAll;
+  timeoutMs?: number;
+};
+
 /**
- * GET `https://<primaryHost>/` through guardedStorefrontGet, redirects allowed
- * to the primary or myshopify host only. Shared by the ScriptTag fetcher and
- * the store speed report's password pre-check (gc-wt3y).
+ * Fixed storefront paths a read may request. A closed list, never a path
+ * from page or theme content: the homepage (ScriptTag audit, speed report
+ * pre-check, checkout guard) and the empty cart page (checkout guard,
+ * gc-1q1s.3), where Dawn-family themes render the checkout button markup.
  */
-export function readStorefrontHomepage(
+export type StorefrontPagePath = "/" | "/cart";
+
+/**
+ * GET `https://<primaryHost><path>` through guardedStorefrontGet, redirects
+ * allowed to the primary or myshopify host only. No cookie jar: every read is
+ * a fresh visitor (an empty cart on /cart).
+ */
+export function readStorefrontPage(
   domains: ShopDomains,
-  opts: {
-    readBody: (url: URL, httpStatus: number) => boolean;
-    fetchImpl?: StorefrontFetch;
-    dnsLookup?: DnsLookupAll;
-    timeoutMs?: number;
-  },
+  path: StorefrontPagePath,
+  opts: StorefrontPageReadOptions,
 ): Promise<StorefrontRead> {
   const allowedHosts = new Set([domains.primaryHost]);
   if (domains.myshopifyHost) allowedHosts.add(domains.myshopifyHost);
-  return guardedStorefrontGet(new URL(`https://${domains.primaryHost}/`), {
+  return guardedStorefrontGet(new URL(`https://${domains.primaryHost}${path}`), {
     ...opts,
     allowedHosts,
     accept: "text/html",
   });
+}
+
+/**
+ * GET `https://<primaryHost>/` (readStorefrontPage). Shared by the ScriptTag
+ * fetcher and the store speed report's password pre-check (gc-wt3y).
+ */
+export function readStorefrontHomepage(
+  domains: ShopDomains,
+  opts: StorefrontPageReadOptions,
+): Promise<StorefrontRead> {
+  return readStorefrontPage(domains, "/", opts);
 }
 
 /**
