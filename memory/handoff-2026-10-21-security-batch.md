@@ -1,32 +1,23 @@
 ## Session Handoff: 2026-10-21, security batch (gc-dcyh Phase 0 + gc-3y89 + gc-xtno + gc-n3in)
 
-### RESUME HERE (2026-10-21 ~16:00Z)
-- **main = 92d0700, prod = dce2101 (NOT deployed yet).** Push to main succeeded; the Deploy workflow
-  (run 39629377721, re-run once) failed at "Deploy to Railway" with `Invalid RAILWAY_TOKEN`. Cause is NOT
-  the token: Railway major incident https://status.railway.com/incident/QH8L8B3E ("Dashboard and API
-  unavailable, builds paused", from 07:24 UTC 10-21). Same CLI image digest as the 10-20 good run and the
-  secret is unchanged since 2026-03-22. Railway never got a build, so prod is untouched.
-- **Unblock:** once the incident is Resolved (builds unpaused), `gh run rerun 39629377721` (redeploys
-  92d0700 with .deploy-sha; smoke pins EXPECTED_SHA). Only if it STILL says invalid token with Railway
-  green, create a new project token (production) and `gh secret set RAILWAY_TOKEN`. If smoke fails on a
-  SHA mismatch right after deploy, it is usually Railway swap lag: wait 1-2 min, `gh run rerun --failed <run-id>`.
-- **SECURITY (Railway, 10-21 ~21:30Z):** Railway disclosed that an unauthorized party may have accessed (and for some
-  decrypted) customer environment variables (https://blog.railway.com/p/security-disclosure-wednesday-october-21st).
-  Recommendation: rotate ALL Railway env vars (Shopify API secret, DATABASE_URL, Inngest keys, Resend, IPQS,
-  Google Ads, TOKEN_ENCRYPTION_KEY, any AI provider keys) across GhostCode, ClearSignal, FraudPilot, TaxDelta, NOD,
-  and review logs. Builds still paused at 7 pm MT 10-21 (last checked 01:00Z 10-22). The deploy of 92d0700 is ON HOLD
-  for Nathan's call: rotate GhostCode secrets first and deploy once (recommended), or deploy as soon as builds return.
-  Open offer: a per-app rotation runbook (Nathan does dashboard steps; Claude never rotates/revokes).
-- **After green:** close gc-dcyh (Phase 0 shipped dark), gc-3y89 (1-4, 6, 10 shipped; 9 -> gc-s6p2;
-  5, 7, 8 -> gc-e3zo), gc-xtno (1, 2, 3, 4a shipped; 4b -> gc-o7y7; 5 deferred: remaining 3 Hulk
-  files are store theme repos, fixture bar already met), gc-n3in. Then decide on turning on
-  `SUSPICIOUS_CODE_SIGNAL_ENABLED=true` in Railway to start the 2-4 week false-positive measurement
-  (gc-yn50 go/no-go; read data per gc-gayw).
-- **Rollback (after it deploys):** `git revert --no-edit dce2101..92d0700` on a branch from origin/main,
-  gate, push to main (deploys the revert); or Railway dashboard "Redeploy" on the previous dce2101
-  deployment. No schema change in this batch, so rollback is code-only.
-- Worktree: `~/shopify/gc-dcyh` (branch feat/gc-dcyh-security-batch == origin/main 92d0700).
-  Remove after the deploy is verified ([[worktree-globs-pollute-test-runs]]).
+### RESUME HERE (2026-10-26 ~13:00Z): DEPLOYED, nothing in flight
+- **Prod = main = 92d0700** (deployed 2026-10-26 12:5xZ). Smoke (scripts/smoke.mjs, EXPECTED_SHA pinned) green:
+  /health 200, deep health ok (db, inngest keys, 0 expired sessions, 0 stuck scans), SHA match, PUT /api/inngest 200.
+  Runtime logs clean right after deploy. Rollback: Railway dashboard redeploy of the dce2101 deployment, or revert
+  dce2101..92d0700 and deploy (no schema change).
+- **Deployed via local CLI, NOT GitHub Actions.** The GH secret RAILWAY_TOKEN is genuinely invalid now (re-run
+  2026-10-26 12:48Z failed with Railway green). On 10-21 the same error came from the Railway outage
+  (status.railway.com/incident/QH8L8B3E, resolved). Local path used: clean worktree at the SHA,
+  `git rev-parse HEAD > .deploy-sha`, `railway link` (project ghost-code ef319f99..., env production ca140675...,
+  service shopify-ghost-code d49c0498...), `railway up --service d49c0498... --ci`, then smoke with
+  HEALTH_CHECK_TOKEN read from `railway variables --json` (never printed). Failed GH run 39629377721 stays red.
+- **TODO Nathan:** (1) new Railway project token (ghost-code, production) -> `gh secret set RAILWAY_TOKEN
+  --repo natewhitley-cloud/shopify-ghost-code`, or every push to main will fail to deploy; (2) Railway security
+  incident (blog: preliminary-report-october-security-incident): rotate env vars stored in Railway across all
+  projects (ghost-code, bot-analytics-cleanup-app, fraud-triage, tax-integrity, form-to-crm); AI provider keys first;
+  (3) decide on SUSPICIOUS_CODE_SIGNAL_ENABLED=true (starts Phase 0 data for gc-yn50).
+- Beads closed 2026-10-26: gc-dcyh, gc-3y89, gc-xtno, gc-n3in. Open follow-ups: gc-yn50, gc-e3zo, gc-s6p2, gc-gayw.
+- Release 2: rebase ~/shopify/gc-rrh4 on 92d0700 before slice 3 (see merge notes below).
 
 ### What shipped in 92d0700 (7 commits on dce2101)
 - cb608eb gc-dcyh Phase 0: `app/lib/suspicious-code.ts` (filename marker `<name>.null.js`/nulled/warez,
