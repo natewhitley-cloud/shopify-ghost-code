@@ -311,6 +311,37 @@ describe("analyzeStorefrontHtml: signals", () => {
     expect(analyzeStorefrontHtml("")).toEqual({ maliciousHits: [], loaders: [], hosts: [] });
   });
 
+  it("Object.prototype names as elements, attributes, handlers and hosts never blind it (gc-7gjj.4 class)", () => {
+    // A `<constructor>` tag crashed the homepage walk once (fd9f241); the
+    // analyzer reads the same walk plus its own lookups, so every
+    // prototype-member name must stay an ordinary name here too.
+    for (const name of Object.getOwnPropertyNames(Object.prototype).map((n) => n.toLowerCase())) {
+      const tag = /^[a-z]/.test(name) ? name : `x${name}`;
+      // A hostname label cannot hold `_`; `__proto__` -> `proto.example`.
+      const label = name.replace(/_/g, "");
+      const out = analyzeStorefrontHtml(
+        page(
+          `<${tag} ${name}=1 on${name}="x()" onerror="fetch('https://${name}/a.js')">t</${tag}>` +
+            `<script src="https://${label}.example/a.js"></script>` +
+            `<nav><img src=x onerror="${loader("checkout-guard.example")}">` +
+            `<img src=x onerror="${loader("cartassure.top")}"></nav>`,
+        ),
+      );
+      expect(
+        out.maliciousHits.map((h) => h.domain),
+        name,
+      ).toEqual(["cartassure.top"]);
+      expect(
+        out.loaders.map((l) => l.host),
+        name,
+      ).toContain("checkout-guard.example");
+      expect(
+        out.hosts.map((h) => h.host),
+        name,
+      ).toContain(`${label}.example`);
+    }
+  });
+
   it("stays linear on a large page of handlers (1 MB)", () => {
     const html = page(`<img src=x onload="this.classList.add('a')">`.repeat(25_000));
     const started = Date.now();
