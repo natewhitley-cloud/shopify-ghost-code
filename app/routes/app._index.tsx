@@ -19,6 +19,7 @@ import {
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
+import { GuardStatusLine, StorefrontIncidentBanner } from "../components/StorefrontIncidentBanner";
 import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
@@ -60,6 +61,11 @@ import {
 } from "../lib/security-risk";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
+  GUARD_ALSO_SEEN_LEAD,
+  mergeGuardWithScanRisks,
+  type GuardHomeView,
+} from "../lib/storefront-guard-copy";
+import {
   SUMMARY_NOTICE_DISMISS,
   SUMMARY_NOTICE_HEADING,
   SUMMARY_OPTIN_ACCEPT,
@@ -93,6 +99,7 @@ import {
   getOrCreateShopMetadata,
   getShopMetadata,
 } from "../models/shop.server";
+import { acknowledgeGuardIncident } from "../models/storefront-guard.server";
 import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
 import type { FindingRow } from "../services/finding-aggregation.server";
 import {
@@ -106,6 +113,7 @@ import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
 import { areStoredAdvisoriesShown } from "../services/soft-launch-flags.server";
+import { loadGuardHome } from "../services/storefront-guard-home.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
@@ -200,6 +208,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       advisoryCount: 0,
       securityRisks: [] as SecurityRisk[],
       securityRiskSource: null as SecurityRiskSource | null,
+      guard: null as GuardHomeView | null,
       riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
@@ -818,6 +827,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the loaded row, so every other load (and every 3s poll) issues no query.
   const summaryNotice = await claimSummaryNoticeForHome(shop, admin);
 
+  // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
+  // line while the guard is live. Two small indexed reads; never throws.
+  const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
+
   return {
     shop,
     latestScan,
@@ -842,6 +855,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     advisoryCount,
     securityRisks,
     securityRiskSource,
+    guard,
     riskSummaryLine,
     startHere,
     dominant,
@@ -897,6 +911,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
   // Session shop only; idempotent.
+  // Checkout guard "This is expected" (gc-1q1s.6) on a NEW_SCRIPT_HOST
+  // incident: scoped to this shop's own open new-host incident.
+  if (intent === "guard-acknowledge") {
+    const incidentId = formData.get("incidentId");
+    if (typeof incidentId !== "string" || incidentId === "") return { ignored: true };
+    return { acknowledged: await acknowledgeGuardIncident(shop.id, incidentId, new Date()) };
+  }
+
   if (intent === "dismiss-summary-notice") {
     await dismissSummaryNotice(shop.id);
     return { dismissed: true };
@@ -1256,6 +1278,7 @@ export default function Dashboard() {
     laneSummary,
     securityRisks,
     securityRiskSource,
+    guard,
     riskSummaryLine,
     startHere,
     dominant,
@@ -1329,6 +1352,24 @@ export default function Dashboard() {
   const handleDismissRemovalNotice = (scanId: string) => {
     setRemovalDismissedFor(scanId);
     removalDismissFetcher.submit({ intent: "dismiss-removal-notice", scanId }, { method: "POST" });
+  };
+
+  // Checkout guard (gc-1q1s.6): a KNOWN_MALICIOUS incident on a domain a scan
+  // banner already names is folded into that banner (one banner per domain);
+  // "This is expected" hides a new-host incident at once (optimistic).
+  const guardFetcher = useFetcher<typeof action>();
+  const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
+  const scanRiskDomains = new Set(
+    // Older test fixtures render without securityRisks: treat it as none.
+    (securityRisks ?? []).flatMap((r) => (r.kind === "malicious" && r.domain ? [r.domain] : [])),
+  );
+  const guardMerge = mergeGuardWithScanRisks(
+    (guard?.incidents ?? []).filter((i) => !acknowledgedIds.has(i.id)),
+    scanRiskDomains,
+  );
+  const handleGuardAcknowledge = (incidentId: string) => {
+    setAcknowledgedIds((prev) => new Set([...prev, incidentId]));
+    guardFetcher.submit({ intent: "guard-acknowledge", incidentId }, { method: "POST" });
   };
 
   // Summary-email notice (gc-ol95): the loader returns it only on the load that
@@ -1448,8 +1489,26 @@ export default function Dashboard() {
               risk={risk}
               scanDate={securityRiskSource.scanDate}
               checkHref={`/app/scans/${securityRiskSource.scanId}#${securityRiskAnchorId(risk)}`}
-            />
+            >
+              {risk.kind === "malicious" && risk.domain && guardMerge.seenByGuard[risk.domain] && (
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: "21px" }}>
+                  {GUARD_ALSO_SEEN_LEAD}{" "}
+                  <FormattedDate value={guardMerge.seenByGuard[risk.domain]} />.
+                </p>
+              )}
+            </SecurityRiskBanner>
           ))}
+
+        {/* Checkout guard (gc-1q1s.6): incidents the scan banners above do not
+          already name, on EVERY plan, then the guard's status line. */}
+        {guardMerge.standalone.map((incident) => (
+          <StorefrontIncidentBanner
+            key={incident.id}
+            incident={incident}
+            onAcknowledge={handleGuardAcknowledge}
+          />
+        ))}
+        {guard?.status && <GuardStatusLine status={guard.status} />}
 
         {/* Error banner — only rendered when the action returns an error */}
         {actionError && (

@@ -164,3 +164,9 @@ export function SecurityRiskBanner({
     </section>
   );
 }
+
+/**
+ * The banner's frame styles, shared with the checkout guard's incident banner
+ * (StorefrontIncidentBanner, gc-1q1s.6) so every security banner looks alike.
+ */
+export const securityRiskStyles = { card, bar, body, title, facts, actions, WARNING_SIGN };

@@ -14,6 +14,7 @@ import type { Prisma, StorefrontGuardState, StorefrontIncident } from "@prisma/c
 
 import db from "../db.server";
 import {
+  acknowledgeNewHost,
   EMPTY_GUARD_STATE,
   type GuardIncident,
   type GuardStateData,
@@ -282,4 +283,34 @@ export function listGuardCandidateShops() {
     },
     orderBy: { id: "asc" },
   });
+}
+
+/**
+ * Home's "This is expected" on a NEW_SCRIPT_HOST incident: its host joins the
+ * baseline and the incident resolves (acknowledgeNewHost), in one transaction
+ * at the state row's version, so it never races the cron's write. Retries
+ * once on a lost race. False when the incident is not this shop's open
+ * new-host incident, or the shop has no guard state.
+ */
+export async function acknowledgeGuardIncident(
+  shopId: string,
+  incidentId: string,
+  now: Date,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const loaded = await loadGuard(shopId);
+    const incident = loaded.incidents.find((i) => i.id === incidentId);
+    if (!incident || loaded.version === null) return false;
+    const next = acknowledgeNewHost(loaded.state, incident, now);
+    if (!next) return false;
+    const saved = await saveGuardCheck({
+      shopId,
+      expectedVersion: loaded.version,
+      state: next.state,
+      domains: loaded.domains,
+      changed: [next.incident],
+    });
+    if (saved.status === "saved") return true;
+  }
+  return false;
 }

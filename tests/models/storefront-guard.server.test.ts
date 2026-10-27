@@ -18,6 +18,7 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import { EMPTY_GUARD_STATE, type GuardIncident } from "../../app/lib/storefront-guard-state";
 import {
+  acknowledgeGuardIncident,
   loadGuard,
   loadGuardForHome,
   markIncidentsEmailed,
@@ -194,5 +195,54 @@ describe("reads", () => {
       where: { id: "inc-1", openedAt: NOW },
       data: { emailedOpenedAt: NOW },
     });
+  });
+});
+
+describe("acknowledgeGuardIncident", () => {
+  const newHost = row({
+    id: "inc-n",
+    kind: "NEW_SCRIPT_HOST",
+    fingerprint: "NEW_SCRIPT_HOST:new.io",
+    host: "new.io",
+  });
+  const stateRow = {
+    shopId: "shop-1",
+    version: 7,
+    baselineHosts: {},
+    recentHostSets: [["new.io"]],
+  };
+
+  it("moves the host into the baseline at the current version and resolves the incident", async () => {
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(stateRow);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([newHost]);
+    tx.storefrontGuardState.updateMany.mockResolvedValue({ count: 1 });
+    expect(await acknowledgeGuardIncident("shop-1", "inc-n", NOW)).toBe(true);
+    const update = tx.storefrontGuardState.updateMany.mock.calls[0][0];
+    expect(update.where).toEqual({ shopId: "shop-1", version: 7 });
+    expect(update.data.baselineHosts).toHaveProperty("new.io");
+    expect(update.data.recentHostSets).toEqual([[]]);
+    expect(tx.storefrontIncident.upsert.mock.calls[0][0].update).toMatchObject({
+      state: "resolved",
+      resolution: "acknowledged",
+    });
+  });
+
+  it("refuses another shop's incident, a known-malicious one, or a shop never checked", async () => {
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(stateRow);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([row()]);
+    expect(await acknowledgeGuardIncident("shop-1", "inc-n", NOW)).toBe(false);
+    expect(await acknowledgeGuardIncident("shop-1", "inc-1", NOW)).toBe(false);
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([newHost]);
+    expect(await acknowledgeGuardIncident("shop-1", "inc-n", NOW)).toBe(false);
+    expect(tx.storefrontIncident.upsert).not.toHaveBeenCalled();
+  });
+
+  it("retries once after losing a race, then gives up", async () => {
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(stateRow);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([newHost]);
+    tx.storefrontGuardState.updateMany.mockResolvedValue({ count: 0 });
+    expect(await acknowledgeGuardIncident("shop-1", "inc-n", NOW)).toBe(false);
+    expect(tx.storefrontGuardState.updateMany).toHaveBeenCalledTimes(2);
   });
 });
