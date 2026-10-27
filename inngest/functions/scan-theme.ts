@@ -129,6 +129,7 @@ import {
   extractDanglingReferences,
 } from "../../app/services/dangling-reference-extractor.server";
 import { buildMissingSnippetIndex } from "../../app/services/liquid-error-detector.server";
+import type { MenuFetchResult } from "../../app/services/menu-fetcher.server";
 import type { BulkRedirectGroups } from "../../app/services/redirect-detector.server";
 import type { HomepageMaliciousHit } from "../../app/services/runtime-malicious.server";
 import {
@@ -415,30 +416,29 @@ async function runMenuAudit(opts: {
   // No shop record: a no-op, not a scope skip.
   if (!shop) return none;
 
-  const { unauthenticated } = await import("../../app/shopify.server");
-  const { admin } = await unauthenticated.admin(shop.domain);
-  const { hasNavigationScope } = await import("../../app/services/redirect-fetcher.server");
-  if (!(await hasNavigationScope(admin, opts.grantedOptionalScopes))) {
-    const { logger } = await import("../../app/lib/logger.server");
-    logger.info("scope not available — skipping audit step", {
-      function: "scan-theme",
-      stepName: "menu-audit",
-      shopId: opts.shopId,
-    });
-    // Scope not granted: NOT audited (skippedCategories keeps prior findings).
-    return { ...none, skipped: true };
-  }
-
-  const { fetchMenuItems } = await import("../../app/services/menu-fetcher.server");
-  const { detectMenuInjection } = await import("../../app/services/menu-injection-detector.server");
+  // A failed admin context, scope probe or menus read must not fail the
+  // whole scan (theme findings, malicious code): the menus query's cost and
+  // failure modes are unmeasured (gc-7gjj.5). Recorded as not run: not live,
+  // so no prior finding resolves.
   const stats: PaginateStats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
-  let fetched: Awaited<ReturnType<typeof fetchMenuItems>>;
+  let fetched: MenuFetchResult | null;
   try {
-    fetched = await fetchMenuItems(admin, stats);
+    const { unauthenticated } = await import("../../app/shopify.server");
+    const { admin } = await unauthenticated.admin(shop.domain);
+    const { hasNavigationScope } = await import("../../app/services/redirect-fetcher.server");
+    if (!(await hasNavigationScope(admin, opts.grantedOptionalScopes))) {
+      const { logger } = await import("../../app/lib/logger.server");
+      logger.info("scope not available — skipping audit step", {
+        function: "scan-theme",
+        stepName: "menu-audit",
+        shopId: opts.shopId,
+      });
+      fetched = null;
+    } else {
+      const { fetchMenuItems } = await import("../../app/services/menu-fetcher.server");
+      fetched = await fetchMenuItems(admin, stats);
+    }
   } catch (err) {
-    // The menus query's cost and failure modes are unmeasured (gc-7gjj.5): a
-    // failed read must not fail the whole scan (theme findings, malicious
-    // code). Recorded as not run: not live, so no prior finding resolves.
     const { logger } = await import("../../app/lib/logger.server");
     const { safeErrorFields } = await import("../../app/lib/safe-error");
     logger.warn("menu audit failed; menu labels recorded as not checked", {
@@ -449,10 +449,21 @@ async function runMenuAudit(opts: {
     });
     return none;
   }
+  // Scope not granted: NOT audited (skippedCategories keeps prior findings).
+  if (fetched === null) return { ...none, skipped: true };
   const { items } = fetched;
+  const { detectMenuInjection } = await import("../../app/services/menu-injection-detector.server");
   const { findings, truncated } = detectMenuInjection(items);
   const capped = fetched.capped || truncated;
 
+  // persistAuditFindings skips its delete on an empty batch. A retry of this
+  // step can find nothing where an earlier attempt persisted rows (a menu
+  // edited in between), so clear this type first (re-audit fix).
+  if (findings.length === 0) {
+    await db.finding.deleteMany({
+      where: { scanId: opts.scanId, findingType: FindingType.MENU_INJECTION },
+    });
+  }
   await persistAuditFindings({
     scanId: opts.scanId,
     shopId: opts.shopId,

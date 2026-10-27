@@ -153,7 +153,10 @@ export function summarizeAppRemovals(
  * over it, and one that appears or goes away is reported as new or fixed.
  *
  * An affected-app advisory (gc-14x5) counts in NONE of the three numbers:
- * advisories are shown in the app only.
+ * advisories are shown in the app only. Code in a menu (MENU_INJECTION,
+ * gc-7gjj.1) is left out the same way: it is store data, not theme code, so
+ * "Still in your theme" does not count it. Owner decision whether the email
+ * should mention it (open, gc-7gjj.1 notes).
  *
  * The lists behind the counts come from diffFindingLists (gc-rrh.4), which the
  * "What changed" log shares, so the two can never disagree on what is new.

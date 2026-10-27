@@ -37,10 +37,11 @@
  *
  * Pure: no I/O, no logging.
  */
+import { createHash } from "node:crypto";
+
 import { FindingType, Severity } from "@prisma/client";
 
 import { decodeAttributeValue } from "./runtime-malicious.server";
-import { djb2Hex } from "./scan-differ.server";
 import { indexOfIgnoreCase, urlHostsOnLine } from "./scan-engine.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import type { CreateFindingInput } from "../models/finding.server";
@@ -79,6 +80,9 @@ const EXCERPT_LEAD = 60;
 export const MENU_EXCERPT_MAX = 200;
 /** Each title in the stored menu path is cut to this length. */
 const PATH_TITLE_MAX = 80;
+
+/** HTML's ASCII whitespace (NBSP is not whitespace to the tokenizer). */
+const HTML_SPACE: ReadonlySet<string> = new Set([" ", "\t", "\n", "\f", "\r"]);
 
 /** A tag start in a title: `<` and a letter (an element name). */
 const TAG_START_RE = /<[a-z]/gi;
@@ -119,8 +123,12 @@ function tagEnd(title: string, start: number): { end: number; closed: boolean } 
     const c = title[i];
     if (c === ">") return { end: i + 1, closed: true };
     if (c === "=") {
+      // HTML: only ASCII whitespace may sit between `=` and the value, and a
+      // quote opens a quoted value only there. Anything else starts an
+      // unquoted value, which runs to whitespace or `>` (so `b=="` is the
+      // unquoted value `="`, re-audit fix).
       i++;
-      while (i < n && /\s/.test(title[i])) i++;
+      while (i < n && HTML_SPACE.has(title[i])) i++;
       const q = title[i];
       if (q === '"' || q === "'") {
         const close = title.indexOf(q, i + 1);
@@ -128,11 +136,33 @@ function tagEnd(title: string, start: number): { end: number; closed: boolean } 
         i = close + 1;
         continue;
       }
+      while (i < n && title[i] !== ">" && !HTML_SPACE.has(title[i])) i++;
       continue;
     }
     i++;
   }
   return { end: n, closed: false };
+}
+
+/**
+ * Each `<letter ...` up to the FIRST `>` after it (or the end), the split the
+ * detector used before tagEnd. matchMenuItem reads both splits: a tag one of
+ * them hides inside a quoted value (or an unquoted one) is at a segment start
+ * in the other, so the anchored frame and meta tests always see it
+ * (re-audit fix). Linear.
+ */
+function plainTagSegments(title: string): Array<{ at: number; text: string }> {
+  const segments: Array<{ at: number; text: string }> = [];
+  TAG_START_RE.lastIndex = 0;
+  let found: RegExpExecArray | null;
+  while ((found = TAG_START_RE.exec(title)) !== null) {
+    const close = title.indexOf(">", found.index + 1);
+    const end = close === -1 ? title.length : close + 1;
+    segments.push({ at: found.index, text: title.slice(found.index, end) });
+    if (close === -1) break;
+    TAG_START_RE.lastIndex = end;
+  }
+  return segments;
 }
 
 /**
@@ -172,7 +202,8 @@ export function matchMenuItem(
   const script = indexOfIgnoreCase(title, "<script");
   if (script !== -1) return { rule: "script", field: "title", at: script };
 
-  const segments = tagSegments(title);
+  // Both splits (see plainTagSegments): at most twice the title, still linear.
+  const segments = [...tagSegments(title), ...plainTagSegments(title)];
   for (const seg of segments) {
     if (HANDLER_ATTR_RE.test(seg.text)) return { rule: "handler", field: "title", at: seg.at };
   }
@@ -244,7 +275,9 @@ export function menuInjectionDescription(
 
 /**
  * The synthetic locator of a menu item: `menus/{menuId}/items/{itemId}/{hash}`,
- * the hash over the item's FULL label and link. The finding's fingerprint
+ * the hash (sha256, first 16 hex characters, over the JSON pair [label, link]
+ * so no two items share an encoding; re-audit fix: a 32-bit djb2 could be
+ * collided by padding) over the item's FULL label and link. The finding's fingerprint
  * includes the filename, so any rewrite of the item (a new payload, past the
  * excerpt or the path's 80-character cut, or in the link only) reads as a new
  * finding and is not covered by an ignore of the old one (audit fix).
@@ -252,7 +285,11 @@ export function menuInjectionDescription(
 export function menuItemFilename(
   item: Pick<MenuItemData, "menuId" | "itemId" | "title" | "url">,
 ): string {
-  return `menus/${item.menuId}/items/${item.itemId}/${djb2Hex(`${item.title}\0${item.url ?? ""}`)}`;
+  const hash = createHash("sha256")
+    .update(JSON.stringify([item.title, item.url ?? ""]))
+    .digest("hex")
+    .slice(0, 16);
+  return `menus/${item.menuId}/items/${item.itemId}/${hash}`;
 }
 
 /** What the detector returns: the findings, and whether MAX_MENU_INJECTION_FINDINGS cut them. */

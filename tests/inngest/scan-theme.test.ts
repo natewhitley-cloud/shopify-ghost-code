@@ -203,7 +203,7 @@ vi.mock("../../app/services/menu-injection-detector.server", () => ({
     findings: items
       .filter((item) => item.title.includes("onerror"))
       .map((item) => ({
-        filename: `menus/${item.menuId}/items/${item.itemId}`,
+        filename: `menus/${item.menuId}/items/${item.itemId}/0123456789abcdef`,
         lineNumber: 0,
         codeSnippet: `Main menu > ${item.title}\nLabel: ${item.title}`,
         findingType: "MENU_INJECTION",
@@ -7890,7 +7890,7 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     const [[, findings]] = menuCreates();
     expect(findings).toEqual([
       expect.objectContaining({
-        filename: "menus/11/items/22",
+        filename: "menus/11/items/22/0123456789abcdef",
         lineNumber: 0,
         findingType: "MENU_INJECTION",
         severity: "HIGH",
@@ -7911,6 +7911,10 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     await runScanTheme();
 
     expect(menuCreates()).toEqual([]);
+    // A retry that finds nothing still clears rows an earlier attempt wrote.
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: "MENU_INJECTION" },
+    });
     expect(finalizeArg().liveFindingTypes).toContain("MENU_INJECTION");
     expect(finalizeArg().cappedCategories).not.toContain("MENU_INJECTION");
   });
@@ -7948,6 +7952,20 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
 
     expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
     expect(menuCreates()).toEqual([]);
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
+  });
+
+  it("a failed scope probe never fails the scan either (recorded as not run)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    // The redirect audit runs the same probe earlier; fail only the second call.
+    mockHasNavigationScope
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error("transient scope check"));
+
+    await runScanTheme();
+
+    expect(mockFetchMenuItems).not.toHaveBeenCalled();
     expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
     expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
   });

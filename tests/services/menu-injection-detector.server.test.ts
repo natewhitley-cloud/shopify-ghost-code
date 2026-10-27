@@ -118,6 +118,19 @@ describe("matchMenuItem: the rules", () => {
     expect(matchMenuItem(item(title))?.rule).toBe("handler");
   });
 
+  // Re-audit HIGH: a quote not directly after `=` (or after an NBSP) does not
+  // open a value, and no split may hide an anchored frame or meta tag.
+  it.each([
+    '<a b==">"<iframe src=//evil.example/x>"',
+    '<a b=\u00a0">"<iframe src=//evil.example/x>"',
+    '<a b==">"<meta http-equiv=refresh content="0;url=//evil.example">"',
+    '<a b==">"<embed src=//evil.example/x>"',
+    '<a b==">"<object data=//evil.example/x>"',
+    '<a title="x>"<iframe src=//evil.example/x>',
+  ])("flags a frame or meta tag hidden behind a quote trick: %j", (title) => {
+    expect(matchMenuItem(item(title))?.rule).toBe("frame");
+  });
+
   it("flags srcdoc and a script URL with wide whitespace around =", () => {
     expect(matchMenuItem(item(`<div srcdoc${" ".repeat(30)}="x">`))?.rule).toBe("frame");
     expect(matchMenuItem(item(`<a href${" ".repeat(30)}="javascript:x">y</a>`))?.rule).toBe(
@@ -209,7 +222,7 @@ describe("detectMenuInjection: stored shape", () => {
     expect(findings).toHaveLength(1);
     const [f] = findings;
     expect(f).toMatchObject({
-      filename: expect.stringMatching(/^menus\/100\/items\/201\/[0-9a-f]{8}$/),
+      filename: expect.stringMatching(/^menus\/100\/items\/201\/[0-9a-f]{16}$/),
       lineNumber: 0,
       findingType: "MENU_INJECTION",
       severity: "HIGH",
@@ -257,9 +270,16 @@ describe("detectMenuInjection: stored shape", () => {
     );
   });
 
+  it("no two different items share a locator, NUL bytes included (re-audit fix)", () => {
+    const at = (title: string, url: string) =>
+      menuItemFilename({ menuId: "1", itemId: "2", title, url });
+    expect(at("a\u0000b", "c")).not.toBe(at("a", "b\u0000c"));
+    expect(at("ab", "")).not.toBe(at("a", "b"));
+  });
+
   it("the locator is the numeric ids plus a hash of the full label and link", () => {
     const base = { menuId: "1", itemId: "2", title: "<script>x</script>", url: "/x" };
-    expect(menuItemFilename(base)).toMatch(/^menus\/1\/items\/2\/[0-9a-f]{8}$/);
+    expect(menuItemFilename(base)).toMatch(/^menus\/1\/items\/2\/[0-9a-f]{16}$/);
     expect(menuItemFilename(base)).toBe(menuItemFilename({ ...base }));
   });
 
