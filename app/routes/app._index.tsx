@@ -62,6 +62,10 @@ import {
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
   GUARD_ALSO_SEEN_LEAD,
+  GUARD_NOTICE_HEADING,
+  GUARD_NOTICE_OK,
+  GUARD_NOTICE_TURN_OFF,
+  guardNoticeLead,
   mergeGuardWithScanRisks,
   type GuardHomeView,
 } from "../lib/storefront-guard-copy";
@@ -86,7 +90,7 @@ import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polli
 import { getRemovalNoticeRows } from "../models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
-import { dismissSummaryNotice } from "../models/merchant-alert.server";
+import { dismissSummaryNotice, turnOffGuardEmail } from "../models/merchant-alert.server";
 import {
   getScanById,
   getScansForShop,
@@ -114,6 +118,7 @@ import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
 import { areStoredAdvisoriesShown } from "../services/soft-launch-flags.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
+import { claimGuardEmailNoticeForHome } from "../services/storefront-guard-notice.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
@@ -209,6 +214,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       securityRisks: [] as SecurityRisk[],
       securityRiskSource: null as SecurityRiskSource | null,
       guard: null as GuardHomeView | null,
+      guardEmailNotice: null as { email: string | null } | null,
       riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
@@ -830,6 +836,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
   // line while the guard is live. Two small indexed reads; never throws.
   const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
+  // "Checkout guard alerts will be emailed to ..." (gc-1q1s.7): the one-time
+  // consent notice, Standard/Professional only, claimed by the load that
+  // renders it (pre-checked on the loaded row: no query on most loads).
+  const guardEmailNotice = await claimGuardEmailNoticeForHome(shop, admin);
 
   return {
     shop,
@@ -856,6 +866,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     securityRisks,
     securityRiskSource,
     guard,
+    guardEmailNotice,
     riskSummaryLine,
     startHere,
     dominant,
@@ -917,6 +928,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const incidentId = formData.get("incidentId");
     if (typeof incidentId !== "string" || incidentId === "") return { ignored: true };
     return { acknowledged: await acknowledgeGuardIncident(shop.id, incidentId, new Date()) };
+  }
+
+  // Checkout guard email notice "Turn off" (gc-1q1s.7): no guard email after this.
+  if (intent === "guard-email-off") {
+    await turnOffGuardEmail(shop.id);
+    return { guardEmailOff: true };
   }
 
   if (intent === "dismiss-summary-notice") {
@@ -1279,6 +1296,7 @@ export default function Dashboard() {
     securityRisks,
     securityRiskSource,
     guard,
+    guardEmailNotice,
     riskSummaryLine,
     startHere,
     dominant,
@@ -1370,6 +1388,20 @@ export default function Dashboard() {
   const handleGuardAcknowledge = (incidentId: string) => {
     setAcknowledgedIds((prev) => new Set([...prev, incidentId]));
     guardFetcher.submit({ intent: "guard-acknowledge", incidentId }, { method: "POST" });
+  };
+
+  // Checkout guard email notice (gc-1q1s.7): returned only on the load that
+  // claimed it, so latch it for this page view until answered.
+  const guardNoticeFetcher = useFetcher<typeof action>();
+  const [latchedGuardNotice, setLatchedGuardNotice] = useState(guardEmailNotice);
+  const [guardNoticeAnswer, setGuardNoticeAnswer] = useState<"off" | "ok" | null>(null);
+  useEffect(() => {
+    if (guardEmailNotice) setLatchedGuardNotice(guardEmailNotice);
+  }, [guardEmailNotice]);
+  const visibleGuardNotice = guardNoticeAnswer ? null : latchedGuardNotice;
+  const handleGuardEmailOff = () => {
+    setGuardNoticeAnswer("off");
+    guardNoticeFetcher.submit({ intent: "guard-email-off" }, { method: "POST" });
   };
 
   // Summary-email notice (gc-ol95): the loader returns it only on the load that
@@ -1514,6 +1546,23 @@ export default function Dashboard() {
         {actionError && (
           <s-banner tone="critical">
             <s-paragraph>{actionError}</s-paragraph>
+          </s-banner>
+        )}
+
+        {/* Checkout guard alerts are on (gc-1q1s.7): the one-time consent notice. */}
+        {visibleGuardNotice && (
+          <s-banner tone="info" heading={GUARD_NOTICE_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{guardNoticeLead(visibleGuardNotice.email)}</s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button variant="secondary" onClick={handleGuardEmailOff}>
+                  {GUARD_NOTICE_TURN_OFF}
+                </s-button>
+                <s-button variant="tertiary" onClick={() => setGuardNoticeAnswer("ok")}>
+                  {GUARD_NOTICE_OK}
+                </s-button>
+              </s-stack>
+            </s-stack>
           </s-banner>
         )}
 

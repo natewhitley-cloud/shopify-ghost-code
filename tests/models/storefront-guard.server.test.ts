@@ -12,6 +12,7 @@ const tx = vi.hoisted(() => ({
 const mockDb = vi.hoisted(() => ({
   storefrontGuardState: { findUnique: vi.fn() },
   storefrontIncident: { findMany: vi.fn(), updateMany: vi.fn() },
+  shop: { findUnique: vi.fn() },
   $transaction: vi.fn(),
 }));
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
@@ -19,6 +20,8 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 import { EMPTY_GUARD_STATE, type GuardIncident } from "../../app/lib/storefront-guard-state";
 import {
   acknowledgeGuardIncident,
+  getGuardEmailShop,
+  loadIncidentsToEmail,
   loadGuard,
   loadGuardForHome,
   markIncidentsEmailed,
@@ -244,5 +247,42 @@ describe("acknowledgeGuardIncident", () => {
     tx.storefrontGuardState.updateMany.mockResolvedValue({ count: 0 });
     expect(await acknowledgeGuardIncident("shop-1", "inc-n", NOW)).toBe(false);
     expect(tx.storefrontGuardState.updateMany).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("loadIncidentsToEmail (gc-1q1s.7)", () => {
+  it("keeps open, opened, emailable incidents not yet emailed for this episode", async () => {
+    const earlier = new Date("2026-10-01T00:00:00Z");
+    mockDb.storefrontIncident.findMany.mockResolvedValue([
+      row({ id: "a" }),
+      row({ id: "b", emailedOpenedAt: NOW }), // this episode already emailed
+      row({ id: "c", emailedOpenedAt: earlier }), // an earlier episode was emailed
+      row({ id: "d", kind: "NEW_SCRIPT_HOST", fingerprint: "NEW_SCRIPT_HOST:x.io" }),
+      row({ id: "e", kind: "SCRIPT_LOADER", openedAt: null, state: "open" }),
+    ]);
+    const out = await loadIncidentsToEmail("shop-1", ["a", "b", "c", "d", "e"]);
+    expect(out.map((i) => i.id)).toEqual(["a", "c"]);
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { shopId: "shop-1", id: { in: ["a", "b", "c", "d", "e"] }, state: "open" },
+      }),
+    );
+  });
+
+  it("no ids: no query", async () => {
+    expect(await loadIncidentsToEmail("shop-1", [])).toEqual([]);
+    expect(mockDb.storefrontIncident.findMany).not.toHaveBeenCalled();
+  });
+
+  it("getGuardEmailShop selects the consent gates and never the access token", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    await getGuardEmailShop("shop-1");
+    const select = mockDb.shop.findUnique.mock.calls[0][0].select;
+    expect(select).toMatchObject({
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
+      alertsEnabled: true,
+    });
+    expect(select).not.toHaveProperty("accessToken");
   });
 });

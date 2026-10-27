@@ -45,6 +45,9 @@ export type ShopMetadata = {
   summaryOptedInAt: Date | null;
   summaryOptInDeclinedAt: Date | null;
   summaryOptInFirstShownAt: Date | null;
+  // Checkout guard email consent (gc-1q1s.7).
+  guardEmailNoticeShownAt: Date | null;
+  guardEmailOffAt: Date | null;
 };
 
 /**
@@ -127,6 +130,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       summaryOptedInAt: true,
       summaryOptInDeclinedAt: true,
       summaryOptInFirstShownAt: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
     },
   });
 }
@@ -416,6 +421,9 @@ export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShown
  */
 export type SummaryOptInColumn = "summaryOptInDeclinedAt" | "summaryOptInFirstShownAt";
 
+/** Home's one-time checkout guard email notice (gc-1q1s.7): the consent stamp. */
+export type GuardEmailNoticeColumn = "guardEmailNoticeShownAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
@@ -425,7 +433,8 @@ export type ShopStampColumn =
   | JourneyMilestoneColumn
   | EverPaidColumn
   | SummaryNoticeColumn
-  | SummaryOptInColumn;
+  | SummaryOptInColumn
+  | GuardEmailNoticeColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey

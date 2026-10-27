@@ -92,13 +92,47 @@ export const storefrontGuard = inngest.createFunction(
       byOutcome[key] = (byOutcome[key] ?? 0) + 1;
     }
     const opened = results.flatMap((r) => (r.status === "checked" ? r.opened : []));
+
+    // Incident email (gc-1q1s.7): one step per shop that opened an emailable
+    // incident this run (incidents batched into one email). Only when the
+    // email flag is on; sendGuardIncidentEmail re-checks every gate.
+    const { isStorefrontGuardEmailLive } =
+      await import("../../app/services/soft-launch-flags.server");
+    const emailable = opened.filter(
+      (o) => o.kind === "KNOWN_MALICIOUS" || o.kind === "SCRIPT_LOADER",
+    );
+    const emailed: Record<string, string> = {};
+    if (emailable.length > 0 && isStorefrontGuardEmailLive()) {
+      const byShop = new Map<string, string[]>();
+      for (const o of emailable)
+        byShop.set(o.shopId, [...(byShop.get(o.shopId) ?? []), o.incidentId]);
+      for (const [shopId, incidentIds] of byShop) {
+        const outcome = await step.run(`notify-${shopId}`, async () => {
+          const { getGuardEmailShop } = await import("../../app/models/storefront-guard.server");
+          const { sendGuardIncidentEmail } =
+            await import("../../app/services/storefront-guard-email.server");
+          const shop = await getGuardEmailShop(shopId);
+          if (!shop) return { sent: false, reason: "shop_not_found" };
+          let admin = null;
+          try {
+            const { unauthenticated } = await import("../../app/shopify.server");
+            admin = (await unauthenticated.admin(shop.domain)).admin;
+          } catch {
+            admin = null; // the cached owner email is used
+          }
+          return sendGuardIncidentEmail({ shop, incidentIds, admin });
+        });
+        emailed[shopId] = outcome.reason;
+      }
+    }
     logger.info(`[${STOREFRONT_GUARD_ID}] run complete`, {
       event: "storefront_guard_run",
       firedAt,
       due: shops.length,
       byOutcome,
       opened: opened.length,
+      emailed,
     });
-    return { due: shops.length, byOutcome, opened: opened.length };
+    return { due: shops.length, byOutcome, opened: opened.length, emailed };
   }),
 );

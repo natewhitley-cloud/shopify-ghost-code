@@ -141,6 +141,11 @@ export function buildScanAdminUrl(shopDomain: string, scanId: string): string {
   return `https://admin.shopify.com/store/${storeHandleFromDomain(shopDomain)}/apps/${APP_HANDLE}/app/scans/${scanId}`;
 }
 
+/** Deep link to the app's Home in the embedded admin (checkout guard email, gc-1q1s.7). */
+export function buildHomeAdminUrl(shopDomain: string): string {
+  return `https://admin.shopify.com/store/${storeHandleFromDomain(shopDomain)}/apps/${APP_HANDLE}/app`;
+}
+
 /** Deep link to the Store speed page in the embedded admin (gc-2wnf). */
 export function buildSpeedAdminUrl(shopDomain: string): string {
   return `https://admin.shopify.com/store/${storeHandleFromDomain(shopDomain)}/apps/${APP_HANDLE}/app/speed`;

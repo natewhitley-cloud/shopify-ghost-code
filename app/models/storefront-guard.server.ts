@@ -15,6 +15,7 @@ import type { Prisma, StorefrontGuardState, StorefrontIncident } from "@prisma/c
 import db from "../db.server";
 import {
   acknowledgeNewHost,
+  EMAIL_INCIDENT_KINDS,
   EMPTY_GUARD_STATE,
   type GuardIncident,
   type GuardStateData,
@@ -313,4 +314,48 @@ export async function acknowledgeGuardIncident(
     if (saved.status === "saved") return true;
   }
   return false;
+}
+
+/**
+ * The shop's incidents among `ids` that an email may still report: open,
+ * opened (not pending), of an emailable kind, and not yet emailed for their
+ * current episode.
+ */
+export async function loadIncidentsToEmail(
+  shopId: string,
+  ids: readonly string[],
+): Promise<Array<GuardIncident & { id: string; openedAt: Date }>> {
+  if (ids.length === 0) return [];
+  const rows = await db.storefrontIncident.findMany({
+    where: { shopId, id: { in: [...ids] }, state: "open" },
+    orderBy: [{ openedAt: "asc" }, { id: "asc" }],
+  });
+  return rows
+    .map(toGuardIncident)
+    .filter(
+      (i): i is GuardIncident & { id: string; openedAt: Date } =>
+        !!i &&
+        !!i.id &&
+        i.openedAt !== null &&
+        EMAIL_INCIDENT_KINDS.has(i.kind) &&
+        i.emailedOpenedAt?.getTime() !== i.openedAt.getTime(),
+    );
+}
+
+/** The Shop fields the checkout guard email gates on (gc-1q1s.7), or null. */
+export function getGuardEmailShop(shopId: string) {
+  return db.shop.findUnique({
+    where: { id: shopId },
+    select: {
+      id: true,
+      domain: true,
+      plan: true,
+      alertsEnabled: true,
+      alertEmail: true,
+      storeName: true,
+      uninstalledAt: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
+    },
+  });
 }

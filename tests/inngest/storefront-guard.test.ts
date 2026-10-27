@@ -9,7 +9,11 @@ const svc = vi.hoisted(() => ({
   checkGuardShop: vi.fn(),
   mapPool: vi.fn(),
 }));
-const model = vi.hoisted(() => ({ listGuardCandidateShops: vi.fn() }));
+const model = vi.hoisted(() => ({
+  listGuardCandidateShops: vi.fn(),
+  getGuardEmailShop: vi.fn(),
+}));
+const email = vi.hoisted(() => ({ sendGuardIncidentEmail: vi.fn() }));
 const mockRecordCronHeartbeat = vi.hoisted(() => vi.fn());
 
 vi.mock("../../inngest/client", () => ({
@@ -23,6 +27,7 @@ vi.mock("../../inngest/client", () => ({
 }));
 vi.mock("../../app/services/storefront-guard.server", () => svc);
 vi.mock("../../app/models/storefront-guard.server", () => model);
+vi.mock("../../app/services/storefront-guard-email.server", () => email);
 vi.mock("../../app/shopify.server", () => ({
   unauthenticated: { admin: vi.fn(async () => ({ admin: {} })) },
 }));
@@ -60,6 +65,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
+  delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
 });
 
 describe("storefront-guard cron", () => {
@@ -110,6 +116,8 @@ describe("storefront-guard cron", () => {
       due: GUARD_CHUNK_SIZE + 2,
       byOutcome: { ok: GUARD_CHUNK_SIZE, failed: 1, paused_password: 1 },
       opened: 1,
+      // Email flag off: no notify step.
+      emailed: {},
     });
     expect(mockRecordCronHeartbeat).toHaveBeenCalledWith("storefront-guard");
   });
@@ -122,6 +130,63 @@ describe("storefront-guard cron", () => {
       id: "s0",
       domain: "s0.myshopify.com",
       plan: "Standard",
+    });
+  });
+
+  describe("incident email (gc-1q1s.7)", () => {
+    const opened = (shopId: string, incidentId: string, kind: string) => ({
+      status: "checked",
+      outcome: "ok",
+      opened: [{ shopId, incidentId, kind, openedAt: "2026-10-27T05:17:00.000Z" }],
+    });
+
+    beforeEach(() => {
+      process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+      model.listGuardCandidateShops.mockResolvedValue(shops(3));
+      model.getGuardEmailShop.mockImplementation(async (id: string) => ({
+        id,
+        domain: `${id}.myshopify.com`,
+      }));
+      email.sendGuardIncidentEmail.mockResolvedValue({ sent: true, reason: "sent" });
+      svc.checkGuardShop
+        .mockResolvedValueOnce(opened("s0", "a", "KNOWN_MALICIOUS"))
+        .mockResolvedValueOnce(opened("s1", "b", "NEW_SCRIPT_HOST"))
+        .mockResolvedValueOnce({
+          status: "checked",
+          outcome: "ok",
+          opened: [
+            { shopId: "s2", incidentId: "c", kind: "SCRIPT_LOADER", openedAt: "x" },
+            { shopId: "s2", incidentId: "d", kind: "KNOWN_MALICIOUS", openedAt: "x" },
+          ],
+        });
+    });
+
+    it("one notify step per shop with an emailable incident, incidents batched; new hosts never", async () => {
+      process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
+      const step = createMockInngestStep();
+      const out = await run(step);
+      const names = step.run.mock.calls.map((c) => c[0]);
+      expect(names).toEqual(["select-due-shops", "check-chunk-0", "notify-s0", "notify-s2"]);
+      expect(email.sendGuardIncidentEmail.mock.calls.map((c) => c[0].incidentIds)).toEqual([
+        ["a"],
+        ["c", "d"],
+      ]);
+      expect(out.emailed).toEqual({ s0: "sent", s2: "sent" });
+    });
+
+    it("no notify step while the email flag is off", async () => {
+      const step = createMockInngestStep();
+      await run(step);
+      expect(step.run.mock.calls.map((c) => c[0])).toEqual(["select-due-shops", "check-chunk-0"]);
+      expect(email.sendGuardIncidentEmail).not.toHaveBeenCalled();
+    });
+
+    it("a dead offline token still emails with the cached address (admin null)", async () => {
+      process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
+      const { unauthenticated } = await import("../../app/shopify.server");
+      (unauthenticated.admin as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("401"));
+      await run();
+      expect(email.sendGuardIncidentEmail.mock.calls[0][0].admin).toBeNull();
     });
   });
 });

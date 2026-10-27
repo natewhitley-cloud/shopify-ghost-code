@@ -178,3 +178,18 @@ export function mergeGuardWithScanRisks(
 /** The line added to a scan banner the guard also saw: "{lead} {date}." */
 export const GUARD_ALSO_SEEN_LEAD =
   "GhostCode's checkout guard also saw it on your live store, last on";
+
+// Email consent notice (gc-1q1s.7)
+
+export const GUARD_NOTICE_HEADING = "Checkout guard alerts are on";
+export const GUARD_NOTICE_TURN_OFF = "Turn off";
+export const GUARD_NOTICE_OK = "Got it";
+
+/** The notice's sentence; a generic address when the owner email is unknown. */
+export function guardNoticeLead(email: string | null): string {
+  const to = email ?? "your store's owner email address";
+  return (
+    `Checkout guard alerts will be emailed to ${to}. ` +
+    "We email only when GhostCode finds known malicious code or a script loader on your live store, never routine updates."
+  );
+}

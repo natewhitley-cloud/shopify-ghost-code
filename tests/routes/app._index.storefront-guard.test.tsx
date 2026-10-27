@@ -97,6 +97,8 @@ vi.mock("../../inngest/client", () => ({
 vi.mock("../../app/models/merchant-alert.server", () => ({
   claimSummaryNoticeShown: vi.fn(),
   dismissSummaryNotice: vi.fn(),
+  claimGuardEmailNoticeShown: vi.fn(),
+  turnOffGuardEmail: vi.fn(),
 }));
 
 vi.mock("../../app/services/merchant-alert.server", () => ({
@@ -117,7 +119,11 @@ import { canStartScan, getScanUsage } from "../../app/lib/plan-gating.server";
 import { getRemovalNoticeRows } from "../../app/models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
-import { claimSummaryNoticeShown } from "../../app/models/merchant-alert.server";
+import {
+  claimGuardEmailNoticeShown,
+  claimSummaryNoticeShown,
+  turnOffGuardEmail,
+} from "../../app/models/merchant-alert.server";
 import {
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
@@ -166,6 +172,8 @@ const SHOP = {
   summaryNoticePendingAt: null as Date | null,
   summaryNoticeShownAt: null as Date | null,
   summaryOptedInAt: null as Date | null,
+  guardEmailNoticeShownAt: null as Date | null,
+  guardEmailOffAt: null as Date | null,
 };
 const COMPLETED = {
   id: "scan-2",
@@ -232,6 +240,7 @@ beforeEach(() => {
   mock(refreshShopAlertEmail).mockResolvedValue(null);
   mock(loadGuardForHome).mockResolvedValue({ state: null, incidents: [] });
   delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
+  delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
 });
 
 const T = new Date("2026-10-27T03:17:00Z");
@@ -380,5 +389,58 @@ describe("Home action: guard-acknowledge (gc-1q1s.6)", () => {
   it("reports false when the incident is not this shop's open new-host incident", async () => {
     mock(acknowledgeGuardIncident).mockResolvedValue(false);
     await expect(ack("someone-elses")).resolves.toEqual({ acknowledged: false });
+  });
+});
+
+describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
+  const live = () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
+  };
+
+  it("a paid shop sees the notice once, naming the owner email, with Turn off", async () => {
+    live();
+    mock(claimGuardEmailNoticeShown).mockResolvedValue(true);
+    const data = await load();
+    expect(claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+    const html = renderDashboard(data);
+    expect(html).toMatch(/<s-banner[^>]*tone="info"[^>]*heading="Checkout guard alerts are on"/);
+    expect(html).toContain("Checkout guard alerts will be emailed to owner@example.com.");
+    expect(html).toContain(">Turn off</s-button>");
+    expect(html).not.toMatch(/[\u2014\u2013]/);
+  });
+
+  it("Free never sees it (in-app only) and nothing is claimed", async () => {
+    live();
+    const data = await load({ plan: "free" });
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+    expect(renderDashboard(data)).not.toContain("Checkout guard alerts are on");
+  });
+
+  it("dark: no notice, no claim", async () => {
+    const data = await load();
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+    expect(data.guardEmailNotice).toBeNull();
+  });
+
+  it("already shown or turned off: never again", async () => {
+    live();
+    expect((await load({ guardEmailNoticeShownAt: T })).guardEmailNotice).toBeNull();
+    expect((await load({ guardEmailOffAt: T })).guardEmailNotice).toBeNull();
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("Turn off stamps the session shop and starts no scan", async () => {
+    const res = await action({
+      request: new Request("https://example.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ intent: "guard-email-off" }),
+      }),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+    expect(res).toEqual({ guardEmailOff: true });
+    expect(turnOffGuardEmail).toHaveBeenCalledExactlyOnceWith(SHOP.id);
+    expect(dispatchScan).not.toHaveBeenCalled();
   });
 });

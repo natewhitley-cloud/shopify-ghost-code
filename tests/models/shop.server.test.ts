@@ -179,6 +179,9 @@ describe("getShopMetadata", () => {
         summaryOptInDeclinedAt: true,
         // gc-rxq0: when Home's opt-in prompt first rendered (14-day offer).
         summaryOptInFirstShownAt: true,
+        // gc-1q1s.7: Home's checkout guard email consent notice gates.
+        guardEmailNoticeShownAt: true,
+        guardEmailOffAt: true,
       },
     });
   });

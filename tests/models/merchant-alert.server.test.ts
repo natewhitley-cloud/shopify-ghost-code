@@ -6,12 +6,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDb = vi.hoisted(() => ({
   shop: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  merchantAlert: { findFirst: vi.fn(), create: vi.fn() },
+  merchantAlert: { findFirst: vi.fn(), create: vi.fn(), count: vi.fn() },
 }));
 
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
+  claimGuardEmailNoticeShown,
+  countGuardAlertsSince,
+  turnOffGuardEmail,
   claimSummaryNoticeShown,
   claimSummaryOptInFirstShown,
   declineSummaryOptIn,
@@ -47,12 +50,13 @@ describe("generateUnsubscribeToken", () => {
 });
 
 describe("ledger helpers", () => {
-  it("getLatestMerchantAlert reads the newest row for the shop", async () => {
+  it("getLatestMerchantAlert reads the newest row for the shop, never a checkout guard email (gc-1q1s.7)", async () => {
     const row = { id: "a1" };
     mockDb.merchantAlert.findFirst.mockResolvedValue(row);
     await expect(getLatestMerchantAlert("s1")).resolves.toBe(row);
+    // A guard incident email must never throttle or re-baseline the summary.
     expect(mockDb.merchantAlert.findFirst).toHaveBeenCalledWith({
-      where: { shopId: "s1" },
+      where: { shopId: "s1", kind: { not: "checkout_guard" } },
       orderBy: { sentAt: "desc" },
     });
   });
@@ -403,5 +407,40 @@ describe("Settings opt-in -> summary eligibility (gc-ol95, Nathan Q9=9A)", () =>
 
   it("live opt-in is eligible immediately", async () => {
     expect(summaryShopSkipReason(await optIn(true))).toBeNull();
+  });
+});
+
+describe("checkout guard email helpers (gc-1q1s.7)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("claimGuardEmailNoticeShown stamps once, never after Turn off", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(claimGuardEmailNoticeShown("a.myshopify.com")).resolves.toBe(true);
+    const where = mockDb.shop.updateMany.mock.calls[0][0].where;
+    expect(where).toEqual({
+      domain: "a.myshopify.com",
+      guardEmailNoticeShownAt: null,
+      guardEmailOffAt: null,
+    });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(claimGuardEmailNoticeShown("a.myshopify.com")).resolves.toBe(false);
+  });
+
+  it("turnOffGuardEmail stamps only an unset column (first answer kept)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await turnOffGuardEmail("shop-1");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { id: "shop-1", guardEmailOffAt: null },
+      data: { guardEmailOffAt: expect.any(Date) },
+    });
+  });
+
+  it("countGuardAlertsSince counts only guard emails for the shop", async () => {
+    mockDb.merchantAlert.count.mockResolvedValue(2);
+    const since = new Date("2026-10-26T00:00:00Z");
+    await expect(countGuardAlertsSince("shop-1", since)).resolves.toBe(2);
+    expect(mockDb.merchantAlert.count).toHaveBeenCalledWith({
+      where: { shopId: "shop-1", kind: "checkout_guard", sentAt: { gte: since } },
+    });
   });
 });
