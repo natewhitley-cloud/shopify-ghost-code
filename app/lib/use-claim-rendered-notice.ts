@@ -23,6 +23,9 @@ export const MAX_CLAIM_POSTS = 2;
  * watching the fetcher pass through a busy state: a post that settles
  * between two renders is never lost. A response is told from the data that
  * was there before the post by identity (each response is a new object).
+ * submit's promise resolves with no data (react-router 7.18), but useFetcher
+ * reads `data` from the router's fetcher-data map, which the router fills
+ * before that promise resolves, so the settle's render already has the answer.
  */
 export function useClaimRenderedNotice(notice: unknown, form: Record<string, string>): void {
   const fetcher = useFetcher<NoticeClaimResponse>();
@@ -44,9 +47,11 @@ export function useClaimRenderedNotice(notice: unknown, form: Record<string, str
     const post = () => {
       c.attempts += 1;
       c.before = fetcher.data;
-      Promise.resolve(
-        fetcher.submit(JSON.parse(body) as Record<string, string>, { method: "POST" }),
-      )
+      // The executor turns a submit that throws synchronously into a
+      // rejection: a failed post, retried like any other.
+      new Promise<void>((resolve) => {
+        resolve(fetcher.submit(JSON.parse(body) as Record<string, string>, { method: "POST" }));
+      })
         .catch(() => undefined)
         .finally(() => setSettled((n) => n + 1));
     };

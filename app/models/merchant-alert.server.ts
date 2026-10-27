@@ -365,15 +365,25 @@ export async function disableAlertsByToken(token: string): Promise<boolean> {
   if (typeof token !== "string" || token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
     return false;
   }
-  const result = await db.shop.updateMany({
-    where: { alertUnsubscribeToken: token },
-    // Rotate: the token may already sit in an access log (the RFC 8058 header
-    // URL carries it in the path), so a used token must be dead. The next send's
-    // ensureUnsubscribeToken mints a fresh one; re-enabling in Settings needs none.
-    // An unsubscribe also withdraws checkout guard email consent (wave 3 U1):
-    // re-enabling summaries later must not silently resume guard email.
-    data: { alertsEnabled: false, alertUnsubscribeToken: null, guardEmailOffAt: new Date() },
-  });
+  // An unsubscribe also withdraws checkout guard email consent (wave 3 U1):
+  // re-enabling summaries later must not silently resume guard email. An
+  // existing turn-off time is kept (first "no" wins, as in
+  // setSummaryEmailsEnabled), so that write is conditional and runs first,
+  // while the token still finds the row. One transaction, so mail is never
+  // off with the consent still standing.
+  const [, result] = await db.$transaction([
+    db.shop.updateMany({
+      where: { alertUnsubscribeToken: token, guardEmailOffAt: null },
+      data: { guardEmailOffAt: new Date() },
+    }),
+    db.shop.updateMany({
+      where: { alertUnsubscribeToken: token },
+      // Rotate: the token may already sit in an access log (the RFC 8058 header
+      // URL carries it in the path), so a used token must be dead. The next send's
+      // ensureUnsubscribeToken mints a fresh one; re-enabling in Settings needs none.
+      data: { alertsEnabled: false, alertUnsubscribeToken: null },
+    }),
+  ]);
   return result.count > 0;
 }
 

@@ -317,19 +317,32 @@ describe("ensureUnsubscribeToken", () => {
 });
 
 describe("disableAlertsByToken", () => {
-  it("disables and returns true when a shop holds the token", async () => {
-    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
-    await expect(disableAlertsByToken("tok")).resolves.toBe(true);
-    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
-      where: { alertUnsubscribeToken: "tok" },
-      // Rotates: the used token is nulled so a logged token is already dead.
-      // Wave 3 U1: also withdraws checkout guard email consent.
-      data: {
-        alertsEnabled: false,
-        alertUnsubscribeToken: null,
-        guardEmailOffAt: expect.any(Date),
-      },
+  it("disables, rotates the token, withdraws guard consent, and returns true", async () => {
+    const row = installFakeShopRow(mockDb.shop, {
+      alertsEnabled: true,
+      alertUnsubscribeToken: "tok",
+      guardEmailOffAt: null,
     });
+    await expect(disableAlertsByToken("tok")).resolves.toBe(true);
+    // Rotates: the used token is nulled so a logged token is already dead.
+    expect(row.alertsEnabled).toBe(false);
+    expect(row.alertUnsubscribeToken).toBeNull();
+    // Wave 3 U1: also withdraws checkout guard email consent.
+    expect(row.guardEmailOffAt).toBeInstanceOf(Date);
+    expect(mockDb.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an existing guard turn-off time (the first no wins)", async () => {
+    const firstNo = new Date("2026-01-02T03:04:05Z");
+    const row = installFakeShopRow(mockDb.shop, {
+      alertsEnabled: true,
+      alertUnsubscribeToken: "tok",
+      guardEmailOffAt: firstNo,
+    });
+    await expect(disableAlertsByToken("tok")).resolves.toBe(true);
+    expect(row.guardEmailOffAt).toEqual(firstNo);
+    expect(row.alertsEnabled).toBe(false);
+    expect(row.alertUnsubscribeToken).toBeNull();
   });
 
   it("a rotated (nulled) token is re-minted by the next ensureUnsubscribeToken", async () => {

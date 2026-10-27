@@ -12,11 +12,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /** Each post's promise, settled by the test. */
 let pending: Array<() => void> = [];
+/** How many of the next submits throw synchronously (reset per test). */
+let syncThrows = 0;
 const submit = vi.fn<(form: Record<string, string>, opts: { method: string }) => Promise<void>>(
-  () =>
-    new Promise<void>((resolve) => {
+  () => {
+    if (syncThrows > 0) {
+      syncThrows -= 1;
+      throw new Error("submit threw");
+    }
+    return new Promise<void>((resolve) => {
       pending.push(resolve);
-    }),
+    });
+  },
 );
 const fetcher: { state: string; data: unknown; submit: typeof submit } = {
   state: "idle",
@@ -79,6 +86,7 @@ const settle = async (data: unknown) => {
 beforeEach(() => {
   submit.mockClear();
   pending = [];
+  syncThrows = 0;
   fetcher.state = "idle";
   fetcher.data = undefined;
   ref = null;
@@ -175,6 +183,28 @@ describe("useClaimRenderedNotice", () => {
     render();
     await settle(undefined); // no new response: the old data is not an answer
     expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("a submit that throws synchronously is a failed post: retried once, never thrown", async () => {
+    syncThrows = 1;
+    expect(() => render()).not.toThrow();
+    expect(submit).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    render(); // the settle's re-render
+    expect(submit).toHaveBeenCalledTimes(2);
+    await settle({ noticeClaimed: true });
+    render();
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("a retry that also throws synchronously is the last post", async () => {
+    syncThrows = 2;
+    render();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(() => render()).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    render();
+    expect(submit).toHaveBeenCalledTimes(MAX_CLAIM_POSTS);
   });
 
   it("an idle fetcher before the post settles is not read as a failure", () => {
