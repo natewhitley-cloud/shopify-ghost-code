@@ -134,3 +134,25 @@ export function isSuspiciousCodeSignalEnabled(): boolean {
 export function isMenuLabelSignalEnabled(): boolean {
   return process.env.MENU_LABEL_SIGNAL_ENABLED === "true";
 }
+
+/**
+ * Whether the checkout guard runs (gc-1q1s.5): the hourly storefront-guard
+ * cron reads installed shops' homepage and /cart. Deliberately NOT in
+ * SOFT_LAUNCH_FLAGS: it has no FindingType (incidents live in their own
+ * table). Off (unset or anything but "true") = the cron returns before any
+ * DB read, Admin call or storefront request, and Home shows no guard line.
+ * Stored incidents stay shown (security is never hidden once found).
+ */
+export function isStorefrontGuardLive(): boolean {
+  return process.env.STOREFRONT_GUARD_LIVE_ENABLED === "true";
+}
+
+/**
+ * Whether checkout guard incidents may be emailed (gc-1q1s.7). Needs the
+ * guard itself live too, plus the merchant mail transport
+ * (MERCHANT_ALERTS_ENABLED + sender). Off = no consent notice and no email;
+ * incidents still show in-app on every plan.
+ */
+export function isStorefrontGuardEmailLive(): boolean {
+  return isStorefrontGuardLive() && process.env.STOREFRONT_GUARD_EMAIL_ENABLED === "true";
+}

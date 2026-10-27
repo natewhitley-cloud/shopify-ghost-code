@@ -26,6 +26,7 @@ import {
   speedReportRun,
   speedReportWeekly,
 } from "../../inngest/functions/speed-report";
+import { storefrontGuard } from "../../inngest/functions/storefront-guard";
 import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 const handler = serve({
@@ -50,6 +51,7 @@ const handler = serve({
     speedReportWeekly,
     speedReportRun,
     speedReportCancelled,
+    storefrontGuard,
   ],
 });
 

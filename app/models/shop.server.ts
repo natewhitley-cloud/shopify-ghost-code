@@ -45,6 +45,9 @@ export type ShopMetadata = {
   summaryOptedInAt: Date | null;
   summaryOptInDeclinedAt: Date | null;
   summaryOptInFirstShownAt: Date | null;
+  // Checkout guard email consent (gc-1q1s.7).
+  guardEmailNoticeShownAt: Date | null;
+  guardEmailOffAt: Date | null;
 };
 
 /**
@@ -127,6 +130,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       summaryOptedInAt: true,
       summaryOptInDeclinedAt: true,
       summaryOptInFirstShownAt: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
     },
   });
 }
@@ -416,6 +421,9 @@ export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShown
  */
 export type SummaryOptInColumn = "summaryOptInDeclinedAt" | "summaryOptInFirstShownAt";
 
+/** Home's one-time checkout guard email notice (gc-1q1s.7): the consent stamp. */
+export type GuardEmailNoticeColumn = "guardEmailNoticeShownAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
@@ -425,7 +433,8 @@ export type ShopStampColumn =
   | JourneyMilestoneColumn
   | EverPaidColumn
   | SummaryNoticeColumn
-  | SummaryOptInColumn;
+  | SummaryOptInColumn
+  | GuardEmailNoticeColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey
@@ -695,6 +704,8 @@ export async function updateThemePublishTimestamp(
  *   Shop → IgnoredFinding
  *   Shop → MerchantFeedback (also deleted explicitly below: personal data)
  *   Shop → MerchantAlert (also deleted explicitly below: holds the recipient email)
+ *   Shop → StorefrontGuardState, StorefrontIncident (checkout guard, gc-1q1s.4;
+ *          also deleted explicitly below)
  *
  * OpsEvent has NO Shop FK, so cascade never touches it — yet observability rows
  * carry the shop's myshopify domain (webhook-failure `metadata.shop`, api-error
@@ -747,6 +758,11 @@ export async function deleteShopData(domain: string) {
     // merchant's email, so it is named explicitly like MerchantFeedback. The Shop
     // row delete below also removes alertEmail / alertUnsubscribeToken / storeName.
     db.merchantAlert.deleteMany({ where: { shopId: shop.id } }),
+    // Checkout guard (gc-1q1s.4): both tables cascade from Shop (hostnames and
+    // timestamps only, no personal data); named explicitly for symmetry with
+    // the ledger above, so a dropped cascade can never leave them behind.
+    db.storefrontIncident.deleteMany({ where: { shopId: shop.id } }),
+    db.storefrontGuardState.deleteMany({ where: { shopId: shop.id } }),
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),

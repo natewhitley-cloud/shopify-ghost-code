@@ -31,16 +31,53 @@ export type RecordMerchantAlertInput = {
   inactiveAppCount: number;
   cleanedAppCount: number;
   recipient: string;
+  /** Which email the row records (default "summary"; "checkout_guard", gc-1q1s.7). */
+  kind?: string;
 };
+
+/** MerchantAlert.kind of a checkout guard incident email (gc-1q1s.7). */
+export const GUARD_ALERT_KIND = "checkout_guard";
 
 /** Generate a crypto-random, URL-safe unsubscribe token (>= 128 bits). */
 export function generateUnsubscribeToken(): string {
   return randomBytes(UNSUBSCRIBE_TOKEN_BYTES).toString("base64url");
 }
 
-/** The most recent summary sent to a shop, or null: baseline/idempotency/throttle source. */
+/**
+ * The most recent summary sent to a shop, or null: baseline/idempotency/throttle
+ * source. Checkout guard incident emails (gc-1q1s.7) share the ledger but are
+ * not summaries: they must never throttle or re-baseline the next summary.
+ */
 export function getLatestMerchantAlert(shopId: string): Promise<MerchantAlert | null> {
-  return db.merchantAlert.findFirst({ where: { shopId }, orderBy: { sentAt: "desc" } });
+  return db.merchantAlert.findFirst({
+    where: { shopId, kind: { not: GUARD_ALERT_KIND } },
+    orderBy: { sentAt: "desc" },
+  });
+}
+
+/** Checkout guard emails sent to a shop since `since` (the 3-per-24h throttle). */
+export function countGuardAlertsSince(shopId: string, since: Date): Promise<number> {
+  return db.merchantAlert.count({
+    where: { shopId, kind: GUARD_ALERT_KIND, sentAt: { gte: since } },
+  });
+}
+
+/**
+ * Claim the render of Home's checkout guard email notice (gc-1q1s.7): stamps
+ * guardEmailNoticeShownAt once, only while the merchant has not turned guard
+ * email off. Of concurrent loads exactly one wins. Returns true IFF this call
+ * stamped it (that stamp is the consent).
+ */
+export function claimGuardEmailNoticeShown(domain: string): Promise<boolean> {
+  return claimShopStamp(domain, "guardEmailNoticeShownAt", { guardEmailOffAt: null });
+}
+
+/** The notice's "Turn off": no checkout guard email while set. Idempotent. */
+export async function turnOffGuardEmail(shopId: string): Promise<void> {
+  await db.shop.updateMany({
+    where: { id: shopId, guardEmailOffAt: null },
+    data: { guardEmailOffAt: new Date() },
+  });
 }
 
 /** Append one sent-summary row to the ledger ((shopId, scanId) is unique). */

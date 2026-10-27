@@ -27,6 +27,8 @@ const mockDb = vi.hoisted(() => ({
   opsEvent: { create: vi.fn(), deleteMany: vi.fn() },
   merchantFeedback: { deleteMany: vi.fn() },
   merchantAlert: { deleteMany: vi.fn() },
+  storefrontIncident: { deleteMany: vi.fn() },
+  storefrontGuardState: { deleteMany: vi.fn() },
   speedReport: { deleteMany: vi.fn() },
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));

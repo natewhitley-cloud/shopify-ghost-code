@@ -19,6 +19,7 @@ import {
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
+import { GuardStatusLine, StorefrontIncidentBanner } from "../components/StorefrontIncidentBanner";
 import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
@@ -60,6 +61,15 @@ import {
 } from "../lib/security-risk";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
+  GUARD_ALSO_SEEN_LEAD,
+  GUARD_NOTICE_HEADING,
+  GUARD_NOTICE_OK,
+  GUARD_NOTICE_TURN_OFF,
+  guardNoticeLead,
+  mergeGuardWithScanRisks,
+  type GuardHomeView,
+} from "../lib/storefront-guard-copy";
+import {
   SUMMARY_NOTICE_DISMISS,
   SUMMARY_NOTICE_HEADING,
   SUMMARY_OPTIN_ACCEPT,
@@ -80,7 +90,7 @@ import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polli
 import { getRemovalNoticeRows } from "../models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
-import { dismissSummaryNotice } from "../models/merchant-alert.server";
+import { dismissSummaryNotice, turnOffGuardEmail } from "../models/merchant-alert.server";
 import {
   getScanById,
   getScansForShop,
@@ -93,6 +103,7 @@ import {
   getOrCreateShopMetadata,
   getShopMetadata,
 } from "../models/shop.server";
+import { acknowledgeGuardIncident } from "../models/storefront-guard.server";
 import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
 import type { FindingRow } from "../services/finding-aggregation.server";
 import {
@@ -106,6 +117,8 @@ import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
 import { areStoredAdvisoriesShown } from "../services/soft-launch-flags.server";
+import { loadGuardHome } from "../services/storefront-guard-home.server";
+import { claimGuardEmailNoticeForHome } from "../services/storefront-guard-notice.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
@@ -201,6 +214,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       advisoryCount: 0,
       securityRisks: [] as SecurityRisk[],
       securityRiskSource: null as SecurityRiskSource | null,
+      guard: null as GuardHomeView | null,
+      guardEmailNotice: null as { email: string | null } | null,
       riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
@@ -830,6 +845,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the loaded row, so every other load (and every 3s poll) issues no query.
   const summaryNotice = await claimSummaryNoticeForHome(shop, admin);
 
+  // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
+  // line while the guard is live. Two small indexed reads; never throws.
+  const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
+  // "Checkout guard alerts will be emailed to ..." (gc-1q1s.7): the one-time
+  // consent notice, Standard/Professional only, claimed by the load that
+  // renders it (pre-checked on the loaded row: no query on most loads).
+  const guardEmailNotice = await claimGuardEmailNoticeForHome(shop, admin);
+
   return {
     shop,
     latestScan,
@@ -854,6 +877,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     advisoryCount,
     securityRisks,
     securityRiskSource,
+    guard,
+    guardEmailNotice,
     riskSummaryLine,
     startHere,
     dominant,
@@ -905,6 +930,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!scan || scan.shopId !== shop.id) return { ignored: true };
     await dismissRemovalNotice(shop.id, scanId);
     return { dismissed: true };
+  }
+
+  // Checkout guard "This is expected" (gc-1q1s.6) on a NEW_SCRIPT_HOST
+  // incident: scoped to this shop's own open new-host incident.
+  if (intent === "guard-acknowledge") {
+    const incidentId = formData.get("incidentId");
+    if (typeof incidentId !== "string" || incidentId === "") return { ignored: true };
+    return { acknowledged: await acknowledgeGuardIncident(shop.id, incidentId, new Date()) };
+  }
+
+  // Checkout guard email notice "Turn off" (gc-1q1s.7): no guard email after this.
+  if (intent === "guard-email-off") {
+    await turnOffGuardEmail(shop.id);
+    return { guardEmailOff: true };
   }
 
   // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
@@ -1268,6 +1307,8 @@ export default function Dashboard() {
     laneSummary,
     securityRisks,
     securityRiskSource,
+    guard,
+    guardEmailNotice,
     riskSummaryLine,
     startHere,
     dominant,
@@ -1341,6 +1382,38 @@ export default function Dashboard() {
   const handleDismissRemovalNotice = (scanId: string) => {
     setRemovalDismissedFor(scanId);
     removalDismissFetcher.submit({ intent: "dismiss-removal-notice", scanId }, { method: "POST" });
+  };
+
+  // Checkout guard (gc-1q1s.6): a KNOWN_MALICIOUS incident on a domain a scan
+  // banner already names is folded into that banner (one banner per domain);
+  // "This is expected" hides a new-host incident at once (optimistic).
+  const guardFetcher = useFetcher<typeof action>();
+  const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
+  const scanRiskDomains = new Set(
+    // Older test fixtures render without securityRisks: treat it as none.
+    (securityRisks ?? []).flatMap((r) => (r.kind === "malicious" && r.domain ? [r.domain] : [])),
+  );
+  const guardMerge = mergeGuardWithScanRisks(
+    (guard?.incidents ?? []).filter((i) => !acknowledgedIds.has(i.id)),
+    scanRiskDomains,
+  );
+  const handleGuardAcknowledge = (incidentId: string) => {
+    setAcknowledgedIds((prev) => new Set([...prev, incidentId]));
+    guardFetcher.submit({ intent: "guard-acknowledge", incidentId }, { method: "POST" });
+  };
+
+  // Checkout guard email notice (gc-1q1s.7): returned only on the load that
+  // claimed it, so latch it for this page view until answered.
+  const guardNoticeFetcher = useFetcher<typeof action>();
+  const [latchedGuardNotice, setLatchedGuardNotice] = useState(guardEmailNotice);
+  const [guardNoticeAnswer, setGuardNoticeAnswer] = useState<"off" | "ok" | null>(null);
+  useEffect(() => {
+    if (guardEmailNotice) setLatchedGuardNotice(guardEmailNotice);
+  }, [guardEmailNotice]);
+  const visibleGuardNotice = guardNoticeAnswer ? null : latchedGuardNotice;
+  const handleGuardEmailOff = () => {
+    setGuardNoticeAnswer("off");
+    guardNoticeFetcher.submit({ intent: "guard-email-off" }, { method: "POST" });
   };
 
   // Summary-email notice (gc-ol95): the loader returns it only on the load that
@@ -1460,13 +1533,48 @@ export default function Dashboard() {
               risk={risk}
               scanDate={securityRiskSource.scanDate}
               checkHref={`/app/scans/${securityRiskSource.scanId}#${securityRiskAnchorId(risk)}`}
-            />
+            >
+              {risk.kind === "malicious" && risk.domain && guardMerge.seenByGuard[risk.domain] && (
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: "21px" }}>
+                  {GUARD_ALSO_SEEN_LEAD}{" "}
+                  <FormattedDate value={guardMerge.seenByGuard[risk.domain]} />.
+                </p>
+              )}
+            </SecurityRiskBanner>
           ))}
+
+        {/* Checkout guard (gc-1q1s.6): incidents the scan banners above do not
+          already name, on EVERY plan, then the guard's status line. */}
+        {guardMerge.standalone.map((incident) => (
+          <StorefrontIncidentBanner
+            key={incident.id}
+            incident={incident}
+            onAcknowledge={handleGuardAcknowledge}
+          />
+        ))}
+        {guard?.status && <GuardStatusLine status={guard.status} />}
 
         {/* Error banner — only rendered when the action returns an error */}
         {actionError && (
           <s-banner tone="critical">
             <s-paragraph>{actionError}</s-paragraph>
+          </s-banner>
+        )}
+
+        {/* Checkout guard alerts are on (gc-1q1s.7): the one-time consent notice. */}
+        {visibleGuardNotice && (
+          <s-banner tone="info" heading={GUARD_NOTICE_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{guardNoticeLead(visibleGuardNotice.email)}</s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button variant="secondary" onClick={handleGuardEmailOff}>
+                  {GUARD_NOTICE_TURN_OFF}
+                </s-button>
+                <s-button variant="tertiary" onClick={() => setGuardNoticeAnswer("ok")}>
+                  {GUARD_NOTICE_OK}
+                </s-button>
+              </s-stack>
+            </s-stack>
           </s-banner>
         )}
 

@@ -34,6 +34,7 @@ import { POLL_THEME_CHANGES_CRON } from "../../inngest/functions/poll-theme-chan
 import { RECONCILE_INSTALLS_CRON } from "../../inngest/functions/reconcile-installs";
 import { SNAPSHOT_METRICS_CRON } from "../../inngest/functions/snapshot-metrics";
 import { SPEED_REPORT_CRON } from "../../inngest/functions/speed-report";
+import { STOREFRONT_GUARD_CRON } from "../../inngest/functions/storefront-guard";
 import { WEEKLY_SCAN_CRON } from "../../inngest/functions/weekly-scan";
 
 const EXPECTED: Array<[string, string, string]> = [
@@ -47,6 +48,8 @@ const EXPECTED: Array<[string, string, string]> = [
   ["operator-digest", OPERATOR_DIGEST_CRON, "TZ=America/Denver 30 5 * * *"],
   // gc-wt3y: Sunday 08:10 UTC, 90 min after weekly-scan.
   ["speed-report-weekly", SPEED_REPORT_CRON, "10 8 * * 0"],
+  // gc-1q1s.5: checkout guard, hourly at :17.
+  ["storefront-guard", STOREFRONT_GUARD_CRON, "17 * * * *"],
 ];
 
 describe("cron schedules", () => {

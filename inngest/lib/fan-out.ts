@@ -67,20 +67,24 @@ export async function fanOutShopChecks(step: FanOutStep, shops: FanOutShop[]): P
 
 /**
  * The chunking core shared by every coordinator fan-out (poll/check-shop
- * above, the store speed report's speed-report/requested): `send` runs once per
- * FAN_OUT_CHUNK_SIZE chunk, each inside its own step named
- * `${stepPrefix}-${chunkIndex}`, so a retry re-sends only the failed chunk.
- * No-op for an empty list.
+ * above, the store speed report's speed-report/requested) and the checkout
+ * guard's batched checks (gc-1q1s.5, 15-shop chunks): `send` runs once per
+ * `chunkSize` chunk (default FAN_OUT_CHUNK_SIZE), each inside its own step
+ * named `${stepPrefix}-${chunkIndex}`, so a retry redoes only the failed
+ * chunk. Returns each chunk's result in order. No-op for an empty list.
  */
-export async function fanOutInChunks<T>(
+export async function fanOutInChunks<T, R = void>(
   step: FanOutStep,
   items: T[],
   stepPrefix: string,
-  send: (chunk: T[]) => Promise<void>,
-): Promise<void> {
-  for (let offset = 0; offset < items.length; offset += FAN_OUT_CHUNK_SIZE) {
-    const chunk = items.slice(offset, offset + FAN_OUT_CHUNK_SIZE);
-    const chunkIndex = offset / FAN_OUT_CHUNK_SIZE;
-    await step.run(`${stepPrefix}-${chunkIndex}`, () => send(chunk));
+  send: (chunk: T[]) => Promise<R>,
+  chunkSize: number = FAN_OUT_CHUNK_SIZE,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let offset = 0; offset < items.length; offset += chunkSize) {
+    const chunk = items.slice(offset, offset + chunkSize);
+    const chunkIndex = offset / chunkSize;
+    results.push((await step.run(`${stepPrefix}-${chunkIndex}`, () => send(chunk))) as R);
   }
+  return results;
 }

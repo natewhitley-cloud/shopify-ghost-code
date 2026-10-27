@@ -237,6 +237,20 @@ export type PlanFeatures = {
    * the monthly report instead). Also DARK behind SPEED_REPORT_LIVE_ENABLED.
    */
   freeSpeedTest: boolean;
+  /**
+   * How often the checkout guard reads the storefront (homepage + /cart) for
+   * known malicious code, script loaders and new script hosts (gc-1q1s.5):
+   * Standard and Professional hourly, Free daily (owner decision 2026-10-26).
+   * Never "none": any hit is shown in-app on every plan (security is never
+   * paywalled); only the cadence is gated. DARK behind
+   * STOREFRONT_GUARD_LIVE_ENABLED.
+   */
+  storefrontGuardCadence: "hourly" | "daily";
+  /**
+   * Whether a checkout guard incident can be emailed (gc-1q1s.7): Standard and
+   * Professional, after the one-time consent notice. Free: in-app only.
+   */
+  storefrontGuardEmail: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -261,6 +275,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         speedReportCadence: "monthly", // first Sunday of the month, 08:10 UTC (gc-d0ui)
         speedRunNow: false, // Run now is Professional-only (gc-d0ui)
         freeSpeedTest: false, // replaced by the monthly report (gc-d0ui)
+        storefrontGuardCadence: "hourly", // checkout guard (gc-1q1s.5)
+        storefrontGuardEmail: true, // incident email, consented (gc-1q1s.7)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -282,6 +298,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         speedReportCadence: "weekly", // every Sunday, 08:10 UTC
         speedRunNow: true, // Run now, once per 24h (gc-wt3y)
         freeSpeedTest: false, // Professional has the full report instead
+        storefrontGuardCadence: "hourly", // checkout guard (gc-1q1s.5)
+        storefrontGuardEmail: true, // incident email, consented (gc-1q1s.7)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -305,6 +323,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         speedReportCadence: "none",
         speedRunNow: false,
         freeSpeedTest: true, // one free homepage speed test, once ever
+        storefrontGuardCadence: "daily", // checkout guard, in-app only (gc-1q1s.5)
+        storefrontGuardEmail: false, // Free: in-app only, never email
       };
   }
 }

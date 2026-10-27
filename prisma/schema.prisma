@@ -228,6 +228,14 @@ model Shop {
   changesTeaserShownAt         DateTime?
   changesTeaserClickedAt       DateTime?
   changesTeaserConvertedAt     DateTime?
+  // Checkout guard incident email consent (gc-1q1s.7, Partner Agreement
+  // s.2.1.2). guardEmailNoticeShownAt: Home's one-time "Checkout guard alerts
+  // will be emailed to <owner email>" notice rendered (claimed once; the notice
+  // is the consent, like summaryNoticeShownAt). guardEmailOffAt: the merchant
+  // pressed "Turn off" (no guard email while set). Timestamps only, no personal
+  // data; deleted with the Shop row.
+  guardEmailNoticeShownAt      DateTime?
+  guardEmailOffAt              DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
@@ -235,6 +243,8 @@ model Shop {
   merchantAlerts      MerchantAlert[]
   appRemovals         AppRemoval[]
   speedReports        SpeedReport[]
+  storefrontGuardState StorefrontGuardState?
+  storefrontIncidents  StorefrontIncident[]
 }
 
 // Ledger of merchant-facing emails (gc-syz.1), one row per summary email since
@@ -263,6 +273,78 @@ model MerchantAlert {
   @@index([shopId, sentAt])
   // One summary per scan (gc-ol95): an Inngest retry can never record twice.
   @@unique([shopId, scanId])
+}
+
+// Checkout guard (gc-1q1s.4): one row per shop checked by the storefront-guard
+// cron. Hostnames, timestamps and counters only: never a path, query string or
+// page HTML, and no personal data. Cascades from Shop (shop/redact), and
+// deleteShopData also deletes it explicitly.
+model StorefrontGuardState {
+  shopId                 String    @id
+  shop                   Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  // Cached storefront hosts (Admin `shop.primaryDomain` / `myshopifyDomain`),
+  // refreshed at most daily so a check needs no Admin call.
+  primaryHost            String?
+  myshopifyHost          String?
+  domainsRefreshedAt     DateTime?
+  lastCheckedAt          DateTime?
+  // ok | partial | paused_password | paused_redirect | unreachable:<reason> | error
+  lastOutcome            String?
+  lastReadableAt         DateTime?
+  // paused_redirect only: the host the store sent us to (host only).
+  lastRedirectHost       String?
+  consecutiveUnreachable Int       @default(0)
+  // ok checks in a row whose /cart was unreadable. From 3, the homepage alone
+  // can clear home-only incidents (a store whose /cart never reads).
+  consecutivePartial     Int       @default(0)
+  backoffUntil           DateTime?
+  // Complete readable checks so far; new-host learning ends at 3.
+  readableChecks         Int       @default(0)
+  // host -> last seen (ISO). The learned new-host baseline.
+  baselineHosts          Json      @default("{}")
+  // Non-baseline hosts of the last 3 complete checks (2-of-3 debounce).
+  recentHostSets         Json      @default("[]")
+  // Optimistic lock: the cron and Home's "This is expected" never overwrite
+  // each other's write.
+  version                Int       @default(0)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+}
+
+// Checkout guard incident (gc-1q1s.4): one row per (shop, signal), reopened in
+// place. Hostnames and fixed labels only. Cascades from Shop; deleteShopData
+// also deletes it explicitly.
+model StorefrontIncident {
+  id              String    @id @default(cuid())
+  shopId          String
+  shop            Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  // KNOWN_MALICIOUS | SCRIPT_LOADER | NEW_SCRIPT_HOST
+  kind            String
+  // kind + ":" + host (or a payload key for a host-less loader)
+  fingerprint     String
+  host            String?
+  // home | cart | both
+  page            String
+  sourceLabel     String
+  // pending | open | resolved
+  state           String
+  // The current episode's start; null while pending or for a lapsed candidate.
+  openedAt        DateTime?
+  firstSeenAt     DateTime
+  lastSeenAt      DateTime
+  seenCount       Int       @default(1)
+  cleanStreak     Int       @default(0)
+  resolvedAt      DateTime?
+  // clean | lapsed | acknowledged | auto_merged
+  resolution      String?
+  acknowledgedAt  DateTime?
+  // The openedAt of the episode that was emailed (one email per episode).
+  emailedOpenedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([shopId, fingerprint])
+  @@index([shopId, state])
 }
 
 // Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal

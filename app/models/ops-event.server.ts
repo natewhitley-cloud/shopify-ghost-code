@@ -524,6 +524,8 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   // Store speed report coordinator (gc-wt3y), Sunday 08:10 UTC. Heartbeats even
   // while the feature is dark (the cron runs and returns early).
   { key: "speed-report-weekly", intervalMs: 7 * DAY_MS },
+  // Checkout guard (gc-1q1s.5), hourly at :17. Heartbeats even while dark.
+  { key: "storefront-guard", intervalMs: HOUR_MS },
 ];
 
 /**

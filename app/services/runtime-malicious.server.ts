@@ -225,19 +225,40 @@ function isJavaScriptType(type: string | undefined): boolean {
 }
 
 /** The longest valid DNS name; a longer "host" is never stored (or matched). */
-const MAX_HOST_LENGTH = 253;
+export const MAX_HOST_LENGTH = 253;
 
 /** A matched host as stored: lower case, no trailing FQDN dot. */
-function normalizeHost(host: string): string {
+export function normalizeHost(host: string): string {
   return host.toLowerCase().replace(/\.$/, "");
 }
 
 /**
- * Every listed domain the served homepage uses, ONE hit per domain (its most
- * specific source: script tag, then script src, then link, then inline JS,
- * then an event handler), sorted by domain. `scriptTagUrls` are the app
- * script tags the fetcher already parsed from the same page
- * (parseScriptTagUrls).
+ * What the homepage walk reports (walkHomepage). Offsets are into the
+ * comment-blanked page, which keeps the original length, so they are offsets
+ * into the served HTML too.
+ */
+export interface HomepageVisitor {
+  /**
+   * A URL host the page loads, runs or sends something to, with its source.
+   * `rawUrl` is the attribute or script tag value it came from (absent for
+   * inline JavaScript, import maps and handlers, which yield hosts only).
+   */
+  host(host: string, source: HomepageSource, rawUrl: string | null, at: number): void;
+  /** An `on*=` attribute (lower-case name, decoded value) on `element`'s start tag. */
+  handler?(element: string, name: string, value: string, at: number): void;
+  /**
+   * A `<script>` element at `at`: its src (raw, or null), whether the browser
+   * runs it (a src, or a JavaScript type), and its inline body (read lazily).
+   */
+  script?(at: number, info: { src: string | null; runs: boolean; body: () => string }): void;
+}
+
+/**
+ * The ONE forward walk over the served homepage, shared by the known-malicious
+ * check (findMaliciousInHomepage) and the checkout guard's analyzer
+ * (gc-1q1s.2), so both read the page the same way. `scriptTagUrls` are the
+ * app script tags the fetcher already parsed from the same page
+ * (parseScriptTagUrls); they are reported first, as `script_tag`.
  *
  * Linear: one forward pass over the comment-blanked page; a script's body is
  * skipped as markup (a `<link` written inside JavaScript is not a tag), and a
@@ -245,28 +266,21 @@ function normalizeHost(host: string): string {
  * to the end of the page at most once: after that, elements are read only
  * for what they load, as before gc-7gjj.4.
  */
-export function findMaliciousInHomepage(
+export function walkHomepage(
   html: string,
   scriptTagUrls: readonly string[],
-): HomepageMaliciousHit[] {
-  const best = new Map<string, HomepageMaliciousHit>();
-  const add = (host: string | null, source: HomepageSource): void => {
-    if (!host || host.length > MAX_HOST_LENGTH) return;
-    const entry = matchMaliciousDomain(host);
-    if (!entry) return;
-    const prev = best.get(entry.domain);
-    if (!prev || SOURCE_RANK[source] < SOURCE_RANK[prev.source]) {
-      best.set(entry.domain, { domain: entry.domain, host: normalizeHost(host), source });
-    }
+  visitor: HomepageVisitor,
+): void {
+  const add = (host: string | null, source: HomepageSource, rawUrl: string | null, at: number) => {
+    if (host) visitor.host(host, source, rawUrl, at);
   };
-
-  for (const url of scriptTagUrls) add(scriptUrlHost(url), "script_tag");
+  for (const url of scriptTagUrls) add(scriptUrlHost(url), "script_tag", url, -1);
 
   const live = blankInertComments(html, "homepage.html");
-  // Handler values seen in the start tag being parsed, kept until it closes.
-  let handlers: string[] = [];
+  // Handlers seen in the start tag being parsed, kept until it closes.
+  let handlers: Array<{ name: string; value: string }> = [];
   const onAttribute = (name: string, value: string): void => {
-    if (EVENT_HANDLER_NAME_RE.test(name)) handlers.push(value);
+    if (EVENT_HANDLER_NAME_RE.test(name)) handlers.push({ name, value });
   };
   // Set once a start tag never closes: later handlers are not read (linear).
   let handlersOff = false;
@@ -308,8 +322,10 @@ export function findMaliciousInHomepage(
       TAG_START_RE.lastIndex = close;
       continue;
     }
-    for (const value of handlers) {
-      for (const host of urlHostsOnLine(decodeAttributeValue(value))) add(host, "event_handler");
+    for (const { name, value } of handlers) {
+      const decoded = decodeAttributeValue(value);
+      for (const host of urlHostsOnLine(decoded)) add(host, "event_handler", null, at);
+      visitor.handler?.(element, name, decoded, at);
     }
 
     if (opaque) {
@@ -321,7 +337,8 @@ export function findMaliciousInHomepage(
     }
     if (element === "iframe" || element === "form") {
       const attr = element === "iframe" ? "src" : "action";
-      add(tag.attributes[attr] ? scriptUrlHost(tag.attributes[attr].value) : null, element);
+      const value = tag.attributes[attr]?.value ?? null;
+      add(value ? scriptUrlHost(value) : null, element, value, at);
       if (element === "form") {
         // A form's body is ordinary markup: keep reading its tags.
         TAG_START_RE.lastIndex = tag.end;
@@ -334,9 +351,12 @@ export function findMaliciousInHomepage(
       continue;
     }
     if (element === "link") {
+      const href = tag.attributes.href?.value ?? null;
       add(
-        tag.attributes.href ? scriptUrlHost(tag.attributes.href.value) : null,
+        href ? scriptUrlHost(href) : null,
         isConnectionHint(tag.attributes.rel?.value) ? "hint" : "link",
+        href,
+        at,
       );
       TAG_START_RE.lastIndex = tag.end;
       continue;
@@ -348,18 +368,51 @@ export function findMaliciousInHomepage(
     }
     const close = indexOfIgnoreCase(live, "</script", tag.end);
     const bodyEnd = close === -1 ? live.length : close;
+    const isJs = isJavaScriptType(tag.attributes.type?.value);
+    visitor.script?.(at, {
+      src: tag.attributes.src?.value ?? null,
+      runs: isJs,
+      body: () => live.slice(tag.end, bodyEnd),
+    });
     if (tag.attributes.src) {
-      add(scriptUrlHost(tag.attributes.src.value), "script");
-    } else if (isJavaScriptType(tag.attributes.type?.value)) {
-      for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) add(host, "inline_script");
+      const src = tag.attributes.src.value;
+      add(scriptUrlHost(src), "script", src, at);
+    } else if (isJs) {
+      for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) {
+        add(host, "inline_script", null, at);
+      }
     } else if (tag.attributes.type?.value.trim().toLowerCase() === "importmap") {
       // The module URLs an import map lets the page load (JSON, read as text).
-      for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) add(host, "importmap");
+      for (const host of urlHostsOnLine(live.slice(tag.end, bodyEnd))) {
+        add(host, "importmap", null, at);
+      }
     }
     if (close === -1) break;
     TAG_START_RE.lastIndex = close;
   }
+}
 
+/**
+ * Every listed domain the served homepage uses, ONE hit per domain (its most
+ * specific source: script tag, then script src, then link, then inline JS,
+ * then an event handler), sorted by domain. A filter over walkHomepage.
+ */
+export function findMaliciousInHomepage(
+  html: string,
+  scriptTagUrls: readonly string[],
+): HomepageMaliciousHit[] {
+  const best = new Map<string, HomepageMaliciousHit>();
+  walkHomepage(html, scriptTagUrls, {
+    host(host, source) {
+      if (host.length > MAX_HOST_LENGTH) return;
+      const entry = matchMaliciousDomain(host);
+      if (!entry) return;
+      const prev = best.get(entry.domain);
+      if (!prev || SOURCE_RANK[source] < SOURCE_RANK[prev.source]) {
+        best.set(entry.domain, { domain: entry.domain, host: normalizeHost(host), source });
+      }
+    },
+  });
   return [...best.values()].sort((a, b) => a.domain.localeCompare(b.domain));
 }
 

@@ -45,6 +45,12 @@ const mockDb = vi.hoisted(() => ({
   merchantAlert: {
     deleteMany: vi.fn(),
   },
+  storefrontIncident: {
+    deleteMany: vi.fn(),
+  },
+  storefrontGuardState: {
+    deleteMany: vi.fn(),
+  },
   // Array-form $transaction: resolve each staged operation in parallel.
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));
@@ -173,6 +179,9 @@ describe("getShopMetadata", () => {
         summaryOptInDeclinedAt: true,
         // gc-rxq0: when Home's opt-in prompt first rendered (14-day offer).
         summaryOptInFirstShownAt: true,
+        // gc-1q1s.7: Home's checkout guard email consent notice gates.
+        guardEmailNoticeShownAt: true,
+        guardEmailOffAt: true,
       },
     });
   });
@@ -761,6 +770,25 @@ describe("deleteShopData", () => {
     );
   });
 
+  it("deletes the shop's checkout guard state and incidents before the Shop row (gc-1q1s.4)", async () => {
+    const existingShop = { id: "shop-gdpr-guard", domain: "delete-me.myshopify.com", plan: "free" };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.storefrontIncident.deleteMany.mockResolvedValue({ count: 3 });
+    mockDb.storefrontGuardState.deleteMany.mockResolvedValue({ count: 1 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    for (const model of [mockDb.storefrontIncident, mockDb.storefrontGuardState]) {
+      expect(model.deleteMany).toHaveBeenCalledWith({ where: { shopId: "shop-gdpr-guard" } });
+      expect(model.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+        mockDb.shop.delete.mock.invocationCallOrder[0],
+      );
+    }
+    expect(mockDb.$transaction).toHaveBeenCalledOnce();
+  });
+
   it("purges OpsEvent rows carrying the domain (key + metadata.shop + metadata.shopDomain) and the internal shopId", async () => {
     const existingShop = {
       id: "shop-gdpr-ops",
@@ -950,7 +978,7 @@ describe("deleteShopData", () => {
     });
     // Staged in the one atomic transaction, before the shop delete.
     const staged = mockDb.$transaction.mock.calls[0][0] as unknown[];
-    expect(staged).toHaveLength(5);
+    expect(staged).toHaveLength(7);
     const feedbackDeleteOrder = mockDb.merchantFeedback.deleteMany.mock.invocationCallOrder[0];
     const shopDeleteOrder = mockDb.shop.delete.mock.invocationCallOrder[0];
     expect(feedbackDeleteOrder).toBeLessThan(shopDeleteOrder);
