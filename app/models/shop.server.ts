@@ -421,9 +421,6 @@ export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShown
  */
 export type SummaryOptInColumn = "summaryOptInDeclinedAt" | "summaryOptInFirstShownAt";
 
-/** Home's one-time checkout guard email notice (gc-1q1s.7): the consent stamp. */
-export type GuardEmailNoticeColumn = "guardEmailNoticeShownAt";
-
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
@@ -433,8 +430,7 @@ export type ShopStampColumn =
   | JourneyMilestoneColumn
   | EverPaidColumn
   | SummaryNoticeColumn
-  | SummaryOptInColumn
-  | GuardEmailNoticeColumn;
+  | SummaryOptInColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey

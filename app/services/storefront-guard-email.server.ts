@@ -36,7 +36,7 @@ import {
 import { refreshShopContact } from "./shop-alert-email.server";
 import { isStorefrontGuardEmailLive } from "./soft-launch-flags.server";
 import { toIncidentView } from "./storefront-guard-home.server";
-import type { GuardEmailNoticeShop } from "./storefront-guard-notice.server";
+import { guardConsentHash, type GuardEmailNoticeShop } from "./storefront-guard-notice.server";
 import { escapeHtml, SENDER_NAME, storeNameForEmail, SUPPORT_EMAIL } from "./summary-email.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
@@ -52,7 +52,9 @@ import {
   countGuardAlertsSince,
   ensureUnsubscribeToken,
   GUARD_ALERT_KIND,
+  hasGuardAlert,
   recordMerchantAlert,
+  resetGuardEmailNotice,
 } from "../models/merchant-alert.server";
 import { loadIncidentsToEmail, markIncidentsEmailed } from "../models/storefront-guard.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -167,6 +169,8 @@ export type GuardEmailShop = GuardEmailNoticeShop & {
   id: string;
   storeName: string | null;
   uninstalledAt: Date | null;
+  /** guardConsentHash of the address the notice named (null: the generic wording). */
+  guardEmailConsentHash: string | null;
 };
 
 export type GuardEmailSkipReason =
@@ -206,6 +210,8 @@ export type GuardEmailOutcome = {
     | "nothing_to_send"
     | "throttled"
     | "no_recipient"
+    | "recipient_changed"
+    | "already_sent"
     | "no_app_url"
     | "no_unsubscribe_token"
     | "send_failed"
@@ -221,10 +227,31 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 /**
+ * Stamp the emailed episodes, logged and swallowed: the email went out, so a
+ * failed stamp must not fail (or re-run) the send. The ledger row, checked
+ * before every send, keeps a later run from emailing them again (audit fix).
+ */
+async function stampEmailedQuietly(
+  shopId: string,
+  incidents: ReadonlyArray<{ id: string; openedAt: Date }>,
+): Promise<void> {
+  try {
+    await markIncidentsEmailed(incidents);
+  } catch (error) {
+    logger.error("Guard email sent but episode stamp failed", {
+      context: "storefront-guard-email",
+      shopId,
+      ...safeErrorFields(error),
+    });
+  }
+}
+
+/**
  * Email one shop about the incidents a cron run opened. Order: flags and
  * transport, shop gates, which incidents still need an email, throttle,
- * recipient, app URL, unsubscribe token, send, ledger, episode stamps.
- * `admin` may be null (the cached owner email is used). Never throws.
+ * recipient (only the address the notice named), app URL, unsubscribe token,
+ * ledger check (already sent: stamp, never resend), send, ledger, episode
+ * stamps. `admin` may be null (the cached owner email is used). Never throws.
  */
 export async function sendGuardIncidentEmail(args: {
   shop: GuardEmailShop;
@@ -254,6 +281,12 @@ export async function sendGuardIncidentEmail(args: {
     const recipient = fresh?.email ?? shop.alertEmail;
     const storeName = fresh?.storeName ?? shop.storeName;
     if (!recipient) return skip("no_recipient");
+    // Consent covers the address the notice named (audit fix): a different
+    // owner email gets the notice again first, and no email until then.
+    if (shop.guardEmailConsentHash && guardConsentHash(recipient) !== shop.guardEmailConsentHash) {
+      await resetGuardEmailNotice(shop.id);
+      return skip("recipient_changed");
+    }
     const appUrl = process.env.SHOPIFY_APP_URL?.replace(/\/+$/, "");
     if (!appUrl) return skip("no_app_url");
     const token = await ensureUnsubscribeToken(shop.id);
@@ -267,6 +300,11 @@ export async function sendGuardIncidentEmail(args: {
       unsubscribeUrl: buildBodyUnsubscribeUrl(appUrl, token),
     };
     const key = guardLedgerKey(incidents);
+    // Sent before (the episode stamp failed after it): stamp, never resend.
+    if (await hasGuardAlert(shop.id, key)) {
+      await stampEmailedQuietly(shop.id, incidents);
+      return skip("already_sent");
+    }
     const result = await sendMerchantAlert({
       to: recipient,
       subject: buildGuardEmailSubject(storeName, shop.domain),
@@ -279,8 +317,8 @@ export async function sendGuardIncidentEmail(args: {
     if (!result.sent) return skip("send_failed");
 
     let reason: GuardEmailOutcome["reason"] = "sent";
-    try {
-      await recordMerchantAlert({
+    const record = () =>
+      recordMerchantAlert({
         shopId: shop.id,
         scanId: key,
         kind: GUARD_ALERT_KIND,
@@ -291,17 +329,29 @@ export async function sendGuardIncidentEmail(args: {
         cleanedAppCount: 0,
         recipient,
       });
-    } catch (error) {
-      if (!isUniqueViolation(error)) {
-        logger.error("Guard email sent but ledger write failed", {
-          context: "storefront-guard-email",
-          shopId: shop.id,
-          ...safeErrorFields(error),
-        });
+    // The ledger row is what the throttle counts and what stops a resend, so
+    // a failed write is retried once (audit fix) before it is reported.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await record();
+        reason = "sent";
+        break;
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          reason = "sent";
+          break;
+        }
         reason = "sent_not_recorded";
+        if (attempt === 1) {
+          logger.error("Guard email sent but ledger write failed", {
+            context: "storefront-guard-email",
+            shopId: shop.id,
+            ...safeErrorFields(error),
+          });
+        }
       }
     }
-    await markIncidentsEmailed(incidents);
+    await stampEmailedQuietly(shop.id, incidents);
     return { sent: true, reason, count: incidents.length };
   } catch (error) {
     logger.error("Guard email failed", {

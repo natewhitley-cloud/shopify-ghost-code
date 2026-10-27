@@ -88,6 +88,13 @@ describe("status words", () => {
       "within a day",
     );
   });
+  it("says when the cart page could not be read (audit fix)", () => {
+    const words = guardStatusWords(s({ cartUnread: true }));
+    expect(words.tail).toBe(
+      ". It checks your homepage every hour. Your cart page could not be read, so it is not checked.",
+    );
+    expect(guardStatusWords(s({})).tail).toContain("homepage and cart page");
+  });
   it("redirect names both hosts (host only)", () => {
     expect(
       guardStatusWords(s({ state: "paused_redirect", redirectHost: "shop.example.ca" })).lead,

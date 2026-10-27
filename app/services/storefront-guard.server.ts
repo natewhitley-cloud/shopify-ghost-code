@@ -12,6 +12,11 @@
  *     costs a whole extra day);
  *   - never while backoffUntil is in the future.
  *
+ * A check is stamped (lastCheckedAt) with the RUN's fire time, not the time
+ * its chunk ran (audit fix): a shop checked late in a long run is still due
+ * at the next hourly run, and a retried chunk step skips the shops it already
+ * checked in that run (lastCheckedAt >= the fire time).
+ *
  * Isolation: checkGuardShop never throws. A shop's failure is logged and
  * returned as `failed`; it never fails the chunk or another shop.
  */
@@ -39,6 +44,8 @@ import {
   guardDomainsFrom,
   latestScanThemeHosts,
   loadGuard,
+  MAX_GUARD_INCIDENTS,
+  pruneGuardIncidents,
   saveGuardCheck,
   type GuardDomainsCache,
 } from "../models/storefront-guard.server";
@@ -105,6 +112,8 @@ export type GuardShopResult =
       toEmail: OpenedIncident[];
     }
   | { status: "stale"; outcome: string }
+  /** Already checked in this run (a retried chunk step): nothing done. */
+  | { status: "already_checked" }
   | { status: "failed" };
 
 /** The analysis of each read page as the state machine's sightings and hosts. */
@@ -174,15 +183,19 @@ async function resolveDomains(
 /**
  * One shop's check, end to end. Never throws. `opened` lists the incident
  * episodes this check opened (every kind); `toEmail` the ones the email step
- * should (re)try.
+ * should (re)try. `runAt` is the cron run's fire time: the check is stamped
+ * with it, and a shop already stamped at or after it is skipped.
  */
 export async function checkGuardShop(
   shop: { id: string; domain: string; plan: string },
   now: Date,
   deps: GuardShopDeps,
+  runAt: Date = now,
 ): Promise<GuardShopResult> {
   try {
-    const loaded = await loadGuard(shop.id);
+    const loaded = await loadGuard(shop.id, now);
+    const last = loaded.state.lastCheckedAt;
+    if (last && last.getTime() >= runAt.getTime()) return { status: "already_checked" };
     const { domains, cache } = await resolveDomains(shop, loaded.domains, now, deps);
 
     let input: GuardCheckInput;
@@ -205,7 +218,7 @@ export async function checkGuardShop(
     const saved = await saveGuardCheck({
       shopId: shop.id,
       expectedVersion: loaded.version,
-      state: result.state,
+      state: { ...result.state, lastCheckedAt: runAt },
       domains: cache,
       changed: result.changed,
     });
@@ -218,6 +231,7 @@ export async function checkGuardShop(
       });
       return { status: "stale", outcome };
     }
+    await pruneQuietly(shop.id, now, loaded.incidents.length >= MAX_GUARD_INCIDENTS);
     type Saved = GuardIncident & { id: string; openedAt: Date };
     const asOpened = (i: Saved): OpenedIncident => ({
       shopId: shop.id,
@@ -254,6 +268,20 @@ export async function checkGuardShop(
       ...safeErrorFields(err),
     });
     return { status: "failed" };
+  }
+}
+
+/** pruneGuardIncidents, logged and swallowed: housekeeping never fails a check. */
+async function pruneQuietly(shopId: string, now: Date, overCap: boolean): Promise<void> {
+  try {
+    await pruneGuardIncidents(shopId, now, overCap);
+  } catch (err) {
+    logger.warn("checkout guard incident prune failed", {
+      function: "storefront-guard",
+      event: "storefront_guard_prune_failed",
+      shopId,
+      ...safeErrorFields(err),
+    });
   }
 }
 

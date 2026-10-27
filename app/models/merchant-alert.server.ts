@@ -65,11 +65,40 @@ export function countGuardAlertsSince(shopId: string, since: Date): Promise<numb
 /**
  * Claim the render of Home's checkout guard email notice (gc-1q1s.7): stamps
  * guardEmailNoticeShownAt once, only while the merchant has not turned guard
- * email off. Of concurrent loads exactly one wins. Returns true IFF this call
- * stamped it (that stamp is the consent).
+ * email off, together with `consentHash` (the hashed address the notice names,
+ * or null for the generic wording). Of concurrent loads exactly one wins.
+ * Returns true IFF this call stamped it (that stamp is the consent).
  */
-export function claimGuardEmailNoticeShown(domain: string): Promise<boolean> {
-  return claimShopStamp(domain, "guardEmailNoticeShownAt", { guardEmailOffAt: null });
+export async function claimGuardEmailNoticeShown(
+  domain: string,
+  consentHash: string | null,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: { domain, guardEmailNoticeShownAt: null, guardEmailOffAt: null },
+    data: { guardEmailNoticeShownAt: new Date(), guardEmailConsentHash: consentHash },
+  });
+  return count === 1;
+}
+
+/**
+ * The owner email changed since the notice named it (audit fix): clear the
+ * consent so Home shows the notice again with the new address. No guard email
+ * goes out until then. A turned-off shop is left alone.
+ */
+export async function resetGuardEmailNotice(shopId: string): Promise<void> {
+  await db.shop.updateMany({
+    where: { id: shopId, guardEmailOffAt: null },
+    data: { guardEmailNoticeShownAt: null, guardEmailConsentHash: null },
+  });
+}
+
+/** Whether the ledger already holds this guard email (shopId + ledger key). */
+export async function hasGuardAlert(shopId: string, key: string): Promise<boolean> {
+  const row = await db.merchantAlert.findUnique({
+    where: { shopId_scanId: { shopId, scanId: key } },
+    select: { id: true },
+  });
+  return row !== null;
 }
 
 /** The notice's "Turn off": no checkout guard email while set. Idempotent. */

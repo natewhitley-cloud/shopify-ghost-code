@@ -29,7 +29,8 @@
  *
  * Known limits: menu regions are found by tag name, not by role or class
  * (`<div role="navigation">` is not a region); a region ends at the first
- * matching close tag.
+ * matching close tag, and an element that never closes is no region (audit
+ * fix: it used to run to the end of the page).
  */
 import {
   findMaliciousInHomepage,
@@ -128,9 +129,10 @@ export function findGuardRegions(html: string): Region[] {
       const start = findTag(lower, name, from);
       if (start === -1) break;
       const close = lower.indexOf(`</${name}`, start);
-      const end = close === -1 ? lower.length : close;
-      regions.push({ start, end, kind: "menu" });
-      from = end;
+      // Never closed: not a region (it would cover the rest of the page).
+      if (close === -1) break;
+      regions.push({ start, end: close, kind: "menu" });
+      from = close;
     }
   }
   for (const name of ["button", "a"] as const) {
@@ -143,8 +145,9 @@ export function findGuardRegions(html: string): Region[] {
       if (tagEnd === -1) break;
       if (tagEnd - start > 2048 || !CHECKOUT_TAG_RE.test(lower.slice(start, tagEnd + 1))) continue;
       const close = lower.indexOf(`</${name}`, tagEnd);
-      const end = close === -1 ? lower.length : close;
-      regions.push({ start, end, kind: "checkout" });
+      // Never closed: not a region (it would cover the rest of the page).
+      if (close === -1) continue;
+      regions.push({ start, end: close, kind: "checkout" });
       if (regions.length >= MAX_REGIONS * 2) break;
     }
   }
@@ -168,6 +171,25 @@ const REGION_WORDS: Record<Region["kind"], string> = {
   checkout: "in the checkout button",
 };
 
+/**
+ * The shop's own hosts as trusted: each given host, plus its `www.` twin (the
+ * apex of a `www.` host, or the `www.` of any other). Never another parent:
+ * `x.myshopify.com` never makes `myshopify.com` (or any public suffix's
+ * other subdomains) trusted. Audit fix: an exact match missed the apex or
+ * `www.` the store also serves from.
+ */
+export function ownStoreHosts(shopHosts: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const raw of shopHosts) {
+    const h = normalizeHost(raw);
+    if (!h) continue;
+    out.add(h);
+    out.add(h.startsWith("www.") ? h.slice(4) : `www.${h}`);
+  }
+  out.delete("");
+  return out;
+}
+
 function cleanHost(host: string): string | null {
   const h = normalizeHost(host);
   return h.length <= MAX_HOST_LENGTH && isBareHostname(h) ? h : null;
@@ -185,7 +207,7 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
   const scriptTagUrls = parseScriptTagUrls(html) ?? [];
   const maliciousHits = findMaliciousInHomepage(html, scriptTagUrls);
   const regions = findGuardRegions(html);
-  const shopHosts = new Set((ctx.shopHosts ?? []).map((h) => h.toLowerCase()));
+  const shopHosts = ownStoreHosts(ctx.shopHosts ?? []);
 
   const loaders = new Map<string, LoaderHit>();
   const addLoader = (host: string | null, reason: LoaderHit["reason"], label: string) => {

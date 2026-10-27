@@ -139,6 +139,7 @@ import Dashboard, { action, loader } from "../../app/routes/app._index";
 import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { refreshShopAlertEmail } from "../../app/services/shop-alert-email.server";
+import { guardConsentHash } from "../../app/services/storefront-guard-notice.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
@@ -435,7 +436,11 @@ describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
     live();
     mock(claimGuardEmailNoticeShown).mockResolvedValue(true);
     const data = await load();
-    expect(claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+    // The claim records which address the notice names (hashed, audit fix).
+    expect(claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
+      DOMAIN,
+      guardConsentHash("owner@example.com"),
+    );
     const html = renderDashboard(data);
     expect(html).toMatch(/<s-banner[^>]*tone="info"[^>]*heading="Checkout guard alerts are on"/);
     expect(html).toContain("Checkout guard alerts will be emailed to owner@example.com.");

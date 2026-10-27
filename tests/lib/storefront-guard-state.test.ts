@@ -17,6 +17,7 @@ import {
   MAX_HOSTS_PER_CHECK,
   newHostFingerprint,
   PARTIAL_HOME_AUTHORITY,
+  PAUSED_RECHECK_MS,
   type GuardCheckInput,
   type GuardHostSighting,
   type GuardIncident,
@@ -415,6 +416,33 @@ describe("backoff", () => {
       { outcome: "paused_password" },
     ]);
     expect(r.state.consecutiveUnreachable).toBe(0);
+    // The last pause (at T0 + 2 h) sets the fixed recheck floor, nothing more.
+    expect(r.state.backoffUntil).toEqual(at(2 * HOUR + PAUSED_RECHECK_MS));
+  });
+
+  // Audit fix: a paused store was re-read every hour forever.
+  it.each([
+    { outcome: "paused_password" } as const,
+    { outcome: "paused_redirect", redirectHost: "other.example" } as const,
+  ])("a $outcome store is not read again for PAUSED_RECHECK_MS", (check) => {
+    const r = applyGuardCheck(EMPTY_GUARD_STATE, [], check, T0);
+    expect(PAUSED_RECHECK_MS).toBe(6 * HOUR);
+    expect(r.state.backoffUntil).toEqual(at(PAUSED_RECHECK_MS));
+  });
+
+  it("a pause never shortens a longer unreachable backoff", () => {
+    const later = at(DAY);
+    const r = applyGuardCheck(
+      { ...EMPTY_GUARD_STATE, backoffUntil: later },
+      [],
+      { outcome: "paused_password" },
+      T0,
+    );
+    expect(r.state.backoffUntil).toEqual(later);
+  });
+
+  it("a readable check clears the pause", () => {
+    const r = run([{ outcome: "paused_password" }, ok()]);
     expect(r.state.backoffUntil).toBeNull();
   });
 });
@@ -444,6 +472,41 @@ describe("a store whose /cart never reads (audit fix)", () => {
       ...Array(PARTIAL_HOME_AUTHORITY + 3).fill(partial),
     ]);
     expect(r.incidents.get(MAL.fingerprint)!.state).toBe("open");
+  });
+
+  // Audit fix (M6): /cart is treated as absent after the threshold.
+  it("an incident seen on both pages resolves on homepage evidence once /cart is absent", () => {
+    const partial = ok({ complete: false });
+    const r = run([
+      ok({ sightings: [MAL, { ...MAL, page: "cart" }] }),
+      ...Array(PARTIAL_HOME_AUTHORITY + 2).fill(partial),
+    ]);
+    const i = r.incidents.get(MAL.fingerprint)!;
+    expect(i.page).toBe("both");
+    expect(i.state).toBe("resolved");
+    expect(i.resolution).toBe("clean");
+  });
+
+  it("learning completes on the homepage once /cart is absent", () => {
+    const partial = (hosts: string[]) => ok({ hosts, complete: false });
+    const r = run([
+      ...Array(PARTIAL_HOME_AUTHORITY - 1).fill(partial(["a.com"])),
+      partial(["a.com"]),
+      partial(["b.com"]),
+      partial(["c.com"]),
+    ]);
+    expect(r.state.readableChecks).toBe(3);
+    expect(Object.keys(r.state.baselineHosts).sort()).toEqual(["a.com", "b.com", "c.com"]);
+  });
+
+  it("then a new homepage host opens after the 2-of-3 debounce", () => {
+    const partial = (hosts: string[]) => ok({ hosts, complete: false });
+    const r = run([
+      ...Array(PARTIAL_HOME_AUTHORITY + 3).fill(partial([])),
+      partial(["new.io"]),
+      partial(["new.io"]),
+    ]);
+    expect(r.incidents.get(newHostFingerprint("new.io"))?.state).toBe("open");
   });
 
   it("a complete check resets the partial run", () => {

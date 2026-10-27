@@ -14,6 +14,8 @@ const ledger = vi.hoisted(() => ({
   countGuardAlertsSince: vi.fn(),
   ensureUnsubscribeToken: vi.fn(),
   recordMerchantAlert: vi.fn(),
+  hasGuardAlert: vi.fn(),
+  resetGuardEmailNotice: vi.fn(),
 }));
 const guardModel = vi.hoisted(() => ({
   loadIncidentsToEmail: vi.fn(),
@@ -52,7 +54,10 @@ import {
   type GuardEmailShop,
 } from "../../app/services/storefront-guard-email.server";
 import { toIncidentView } from "../../app/services/storefront-guard-home.server";
-import { claimGuardEmailNoticeForHome } from "../../app/services/storefront-guard-notice.server";
+import {
+  claimGuardEmailNoticeForHome,
+  guardConsentHash,
+} from "../../app/services/storefront-guard-notice.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 
 const NOW = new Date("2026-10-27T05:17:30Z");
@@ -68,6 +73,7 @@ const SHOP: GuardEmailShop = {
   uninstalledAt: null,
   guardEmailNoticeShownAt: new Date("2026-10-20T00:00:00Z"),
   guardEmailOffAt: null,
+  guardEmailConsentHash: null,
 };
 
 function incident(
@@ -105,6 +111,7 @@ beforeEach(() => {
   ledger.countGuardAlertsSince.mockResolvedValue(0);
   ledger.ensureUnsubscribeToken.mockResolvedValue("tok");
   ledger.recordMerchantAlert.mockResolvedValue({});
+  ledger.hasGuardAlert.mockResolvedValue(false);
   guardModel.loadIncidentsToEmail.mockResolvedValue([incident()]);
   contact.refreshShopContact.mockResolvedValue({ email: null, storeName: null });
   contact.refreshShopAlertEmail.mockResolvedValue(null);
@@ -124,7 +131,24 @@ describe("claimGuardEmailNoticeForHome", () => {
         email: "owner@example.com",
       });
     }
-    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(SHOP.domain);
+    // The claim stamps the hash of the address the notice names (audit fix).
+    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(
+      SHOP.domain,
+      guardConsentHash("owner@example.com"),
+    );
+  });
+
+  it("the generic notice (no address known) stamps no hash", async () => {
+    expect(await claimGuardEmailNoticeForHome({ ...noticeShop, alertEmail: null }, null)).toEqual({
+      email: null,
+    });
+    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(SHOP.domain, null);
+  });
+
+  it("guardConsentHash ignores case and surrounding spaces, and is not the address", () => {
+    expect(guardConsentHash(" Owner@Example.com ")).toBe(guardConsentHash("owner@example.com"));
+    expect(guardConsentHash("owner@example.com")).toMatch(/^[0-9a-f]{32}$/);
+    expect(guardConsentHash("a@example.com")).not.toBe(guardConsentHash("b@example.com"));
   });
 
   it.each([
@@ -288,7 +312,57 @@ describe("sendGuardIncidentEmail", () => {
   it("a ledger failure after sending is reported, and the episode is still stamped", async () => {
     ledger.recordMerchantAlert.mockRejectedValue(new Error("db"));
     expect(await send()).toMatchObject({ sent: true, reason: "sent_not_recorded" });
+    expect(ledger.recordMerchantAlert).toHaveBeenCalledTimes(2);
     expect(guardModel.markIncidentsEmailed).toHaveBeenCalled();
+  });
+
+  // Audit fixes: a stamp failure after a send never causes a resend, and a
+  // transient ledger failure is retried so the throttle still counts it.
+  it("a ledger write that fails once is retried and the email is counted", async () => {
+    ledger.recordMerchantAlert.mockRejectedValueOnce(new Error("blip")).mockResolvedValue({});
+    expect(await send()).toEqual({ sent: true, reason: "sent", count: 1 });
+    expect(ledger.recordMerchantAlert).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed episode stamp after sending still reports sent (never throws, never resends)", async () => {
+    guardModel.markIncidentsEmailed.mockRejectedValue(new Error("db"));
+    expect(await send()).toEqual({ sent: true, reason: "sent", count: 1 });
+  });
+
+  it("already in the ledger (the stamp failed after an earlier send): stamps, never resends", async () => {
+    ledger.hasGuardAlert.mockResolvedValue(true);
+    expect(await send()).toEqual({ sent: false, reason: "already_sent" });
+    expect(ledger.hasGuardAlert).toHaveBeenCalledWith("shop-1", guardLedgerKey([incident()]));
+    expect(alerts.sendMerchantAlert).not.toHaveBeenCalled();
+    expect(guardModel.markIncidentsEmailed).toHaveBeenCalledWith([incident()]);
+  });
+
+  // Audit fix: consent covers the address the notice named.
+  it("sends to the address the notice named", async () => {
+    contact.refreshShopContact.mockResolvedValue({ email: "OWNER@example.com", storeName: null });
+    const consented = { guardEmailConsentHash: guardConsentHash("owner@example.com") };
+    const out = await sendGuardIncidentEmail({
+      shop: { ...SHOP, ...consented },
+      incidentIds: ["inc-1"],
+      admin: {} as AdminApiContext,
+      now: NOW,
+    });
+    expect(out).toMatchObject({ sent: true });
+    expect(alerts.sendMerchantAlert.mock.calls[0][0].to).toBe("OWNER@example.com");
+  });
+
+  it("a changed owner email gets no email; the notice is shown again first", async () => {
+    contact.refreshShopContact.mockResolvedValue({ email: "new@example.com", storeName: null });
+    const out = await sendGuardIncidentEmail({
+      shop: { ...SHOP, guardEmailConsentHash: guardConsentHash("owner@example.com") },
+      incidentIds: ["inc-1"],
+      admin: {} as AdminApiContext,
+      now: NOW,
+    });
+    expect(out).toEqual({ sent: false, reason: "recipient_changed" });
+    expect(ledger.resetGuardEmailNotice).toHaveBeenCalledWith("shop-1");
+    expect(alerts.sendMerchantAlert).not.toHaveBeenCalled();
+    expect(guardModel.markIncidentsEmailed).not.toHaveBeenCalled();
   });
 
   it("never throws", async () => {

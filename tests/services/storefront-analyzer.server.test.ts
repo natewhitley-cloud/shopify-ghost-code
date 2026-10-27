@@ -11,6 +11,7 @@ import { findScriptPayload, MAX_PAYLOAD_TEXT } from "../../app/services/script-p
 import {
   findGuardRegions,
   analyzeStorefrontHtml,
+  ownStoreHosts,
 } from "../../app/services/storefront-analyzer.server";
 
 const page = (body: string, head = "") =>
@@ -213,6 +214,32 @@ describe("analyzeStorefrontHtml: the store's own hosts (audit fix)", () => {
     ]);
   });
 
+  it("the www twin of the store's own hosts is trusted too (audit fix)", () => {
+    for (const src of ["//www.mystore.com/cdn/x.js", "//www.mystore.myshopify.com/x.js"]) {
+      const out = analyzeStorefrontHtml(page(`<nav><script src="${src}"></script></nav>`), ctx);
+      expect(out.loaders, src).toEqual([]);
+    }
+    const apex = analyzeStorefrontHtml(
+      page(`<nav><script src="//mystore.com/cdn/x.js"></script></nav>`),
+      { shopHosts: ["www.mystore.com"] },
+    );
+    expect(apex.loaders).toEqual([]);
+  });
+
+  it("never trusts another parent of the store's hosts", () => {
+    expect([...ownStoreHosts(["mystore.myshopify.com", "Shop.Example.co.uk"])].sort()).toEqual([
+      "mystore.myshopify.com",
+      "shop.example.co.uk",
+      "www.mystore.myshopify.com",
+      "www.shop.example.co.uk",
+    ]);
+    const out = analyzeStorefrontHtml(
+      page(`<nav><script src="https://example.co.uk/l.js"></script></nav>`),
+      { shopHosts: ["shop.example.co.uk"] },
+    );
+    expect(out.loaders.map((l) => l.host)).toEqual(["example.co.uk"]);
+  });
+
   it("theme-scan hosts are trusted for menu scripts too", () => {
     const out = analyzeStorefrontHtml(
       page(`<nav><script src="https://menu.vendor.io/m.js"></script></nav>`),
@@ -359,6 +386,25 @@ describe("findGuardRegions", () => {
       .sort();
     expect(kinds.filter((k) => k === "checkout")).toHaveLength(1);
     expect(kinds.filter((k) => k === "menu").length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("findGuardRegions: an element that never closes (audit fix)", () => {
+  it("an unclosed nav or checkout button is no region, so later scripts are not in it", () => {
+    for (const open of ["<nav>", '<button name="checkout">Check out']) {
+      const html = page(
+        `${open}<div>${"x".repeat(5000)}</div><script src="https://cdn.vendor.example/app.js"></script>`,
+      );
+      expect(findGuardRegions(html), open).toEqual([]);
+      expect(analyzeStorefrontHtml(html).loaders, open).toEqual([]);
+    }
+  });
+
+  it("a closed region still holds its script", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<nav><script src="https://cdn.vendor.example/app.js"></script></nav>`),
+    );
+    expect(out.loaders.map((l) => l.reason)).toEqual(["script_in_menu"]);
   });
 });
 

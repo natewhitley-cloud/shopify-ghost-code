@@ -163,6 +163,54 @@ describe("storefront-guard cron", () => {
     });
   });
 
+  // Audit fix (M5): every chunk stamps the RUN's fire time, so a long run's
+  // late chunks never make their shops skip the next hour.
+  it("passes the run's fire time to every chunk, however late it runs", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    const fired = new Date("2026-10-27T05:17:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(fired);
+      model.listGuardCandidateShops.mockResolvedValue(shops(GUARD_CHUNK_SIZE * 3));
+      const step = createMockInngestStep();
+      step.run.mockImplementation(async (name: string, fn: () => unknown) => {
+        // Each chunk starts 20 minutes after the previous one.
+        if (name.startsWith("check-chunk-")) vi.setSystemTime(new Date(Date.now() + 20 * 60_000));
+        return fn();
+      });
+      await run(step);
+
+      const runAts = svc.checkGuardShop.mock.calls.map((c) => (c[3] as Date).toISOString());
+      expect(new Set(runAts)).toEqual(new Set([fired.toISOString()]));
+      // The last chunk ran at :17 + 60 min; its shops are due at the next run
+      // (an hour after the fire time) under the real cadence rule.
+      const lastChunkNow = svc.checkGuardShop.mock.calls.at(-1)![1] as Date;
+      expect(lastChunkNow.getTime() - fired.getTime()).toBe(60 * 60_000);
+      const { isGuardDue } = await vi.importActual<
+        typeof import("../../app/services/storefront-guard.server")
+      >("../../app/services/storefront-guard.server");
+      const nextRun = new Date(fired.getTime() + 60 * 60_000);
+      const stampedWithRun = { lastCheckedAt: fired, backoffUntil: null };
+      const stampedWithChunk = { lastCheckedAt: lastChunkNow, backoffUntil: null };
+      const shop = { id: "s0", plan: "Standard" };
+      expect(isGuardDue({ ...shop, storefrontGuardState: stampedWithRun }, nextRun)).toBe(true);
+      // What the chunk clock would have done (the bug): skipped an hour.
+      expect(isGuardDue({ ...shop, storefrontGuardState: stampedWithChunk }, nextRun)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts a retried chunk's already-checked shops on their own", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue(shops(2));
+    svc.checkGuardShop
+      .mockResolvedValueOnce({ status: "already_checked" })
+      .mockResolvedValueOnce({ status: "checked", outcome: "ok", opened: [], toEmail: [] });
+    const out = await run();
+    expect(out.byOutcome).toEqual({ already_checked: 1, ok: 1 });
+  });
+
   describe("incident email (gc-1q1s.7)", () => {
     // checkGuardShop decides what is offered (emailable kinds, paid plans):
     // the cron only groups toEmail by shop.

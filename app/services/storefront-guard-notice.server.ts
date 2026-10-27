@@ -10,6 +10,8 @@
  *
  * NEVER THROWS: a failed claim shows nothing this load.
  */
+import { createHash } from "node:crypto";
+
 import { getMerchantAlertConfigStatus } from "./merchant-alert.server";
 import { refreshShopAlertEmail } from "./shop-alert-email.server";
 import { isStorefrontGuardEmailLive } from "./soft-launch-flags.server";
@@ -29,6 +31,15 @@ export type GuardEmailNoticeShop = {
 };
 
 /**
+ * The stored form of the address the notice named: a SHA-256 prefix of the
+ * trimmed, lower-cased email (never the email itself). The sender emails only
+ * an address with the same hash (audit fix).
+ */
+export function guardConsentHash(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 32);
+}
+
+/**
  * Home's one-time notice: rendered by the load that wins the claim, only when
  * guard email can actually be sent to this shop. Never throws.
  */
@@ -41,7 +52,14 @@ export async function claimGuardEmailNoticeForHome(
   if (!shop.alertsEnabled || !getPlanFeatures(shop.plan).storefrontGuardEmail) return null;
   if (!isStorefrontGuardEmailLive() || !getMerchantAlertConfigStatus().configured) return null;
   try {
-    if (!(await claimGuardEmailNoticeShown(shop.domain))) return null;
+    // The address is read first so the claim records exactly what is shown.
+    const email =
+      shop.alertEmail ?? (admin ? await refreshShopAlertEmail(shop.domain, admin) : null);
+    const claimed = await claimGuardEmailNoticeShown(
+      shop.domain,
+      email ? guardConsentHash(email) : null,
+    );
+    return claimed ? { email } : null;
   } catch (err) {
     logger.warn("guard-email-notice-claim-failed", {
       shop: shop.domain,
@@ -49,6 +67,4 @@ export async function claimGuardEmailNoticeForHome(
     });
     return null;
   }
-  const email = shop.alertEmail ?? (admin ? await refreshShopAlertEmail(shop.domain, admin) : null);
-  return { email };
 }

@@ -13,6 +13,7 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
   claimGuardEmailNoticeShown,
+  resetGuardEmailNotice,
   countGuardAlertsSince,
   turnOffGuardEmail,
   claimSummaryNoticeShown,
@@ -415,15 +416,29 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
 
   it("claimGuardEmailNoticeShown stamps once, never after Turn off", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
-    await expect(claimGuardEmailNoticeShown("a.myshopify.com")).resolves.toBe(true);
-    const where = mockDb.shop.updateMany.mock.calls[0][0].where;
+    await expect(claimGuardEmailNoticeShown("a.myshopify.com", "h1")).resolves.toBe(true);
+    const { where, data } = mockDb.shop.updateMany.mock.calls[0][0];
     expect(where).toEqual({
       domain: "a.myshopify.com",
       guardEmailNoticeShownAt: null,
       guardEmailOffAt: null,
     });
+    // The consented address's hash is stamped with the consent (audit fix).
+    expect(data).toEqual({
+      guardEmailNoticeShownAt: expect.any(Date),
+      guardEmailConsentHash: "h1",
+    });
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
-    await expect(claimGuardEmailNoticeShown("a.myshopify.com")).resolves.toBe(false);
+    await expect(claimGuardEmailNoticeShown("a.myshopify.com", null)).resolves.toBe(false);
+  });
+
+  it("resetGuardEmailNotice clears the consent so Home asks again, unless turned off", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await resetGuardEmailNotice("shop-1");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { id: "shop-1", guardEmailOffAt: null },
+      data: { guardEmailNoticeShownAt: null, guardEmailConsentHash: null },
+    });
   });
 
   it("turnOffGuardEmail stamps only an unset column (first answer kept)", async () => {

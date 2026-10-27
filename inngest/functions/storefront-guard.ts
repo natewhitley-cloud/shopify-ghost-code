@@ -87,10 +87,16 @@ export const storefrontGuard = inngest.createFunction(
           await import("../../app/services/storefront-guard.server");
         const { unauthenticated } = await import("../../app/shopify.server");
         const now = new Date();
+        // Stamped with the run's fire time, so a late chunk never makes its
+        // shops skip the next hour, and a retried chunk skips what it checked.
+        const runAt = new Date(firedAt);
         return mapPool(chunk, GUARD_POOL, (shop) =>
-          checkGuardShop(shop, now, {
-            getAdmin: async (domain) => (await unauthenticated.admin(domain)).admin,
-          }),
+          checkGuardShop(
+            shop,
+            now,
+            { getAdmin: async (domain) => (await unauthenticated.admin(domain)).admin },
+            runAt,
+          ),
         );
       },
       GUARD_CHUNK_SIZE,
@@ -99,7 +105,7 @@ export const storefrontGuard = inngest.createFunction(
     const results = chunkResults.flat();
     const byOutcome: Record<string, number> = {};
     for (const r of results) {
-      const key = r.status === "failed" ? "failed" : r.status === "stale" ? "stale" : r.outcome;
+      const key = r.status === "checked" || r.status === "stale" ? r.outcome : r.status;
       byOutcome[key] = (byOutcome[key] ?? 0) + 1;
     }
     const opened = results.flatMap((r) => (r.status === "checked" ? r.opened : []));

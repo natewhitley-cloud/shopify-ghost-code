@@ -14,7 +14,7 @@ import type {
   GuardIncidentView,
   GuardStatusView,
 } from "../lib/storefront-guard-copy";
-import type { GuardIncident } from "../lib/storefront-guard-state";
+import { PARTIAL_HOME_AUTHORITY, type GuardIncident } from "../lib/storefront-guard-state";
 import { loadGuardForHome } from "../models/storefront-guard.server";
 
 /** A readable check older than this turns the status line into "couldn't read since". */
@@ -55,6 +55,7 @@ export function buildGuardStatus(
     lastReadableAt: Date | null;
     primaryHost: string | null;
     lastRedirectHost: string | null;
+    consecutivePartial?: number;
   } | null,
   plan: string,
   now: Date,
@@ -72,7 +73,12 @@ export function buildGuardStatus(
   if (outcome === "paused_redirect") return { ...base, state: "paused_redirect" };
   const readable = state.lastReadableAt;
   const date = readable?.toISOString() ?? null;
-  if (outcome === "ok" || outcome === "partial") return { ...base, state: "ok", date };
+  if (outcome === "ok") return { ...base, state: "ok", date };
+  if (outcome === "partial") {
+    // /cart unread long enough that the guard treats it as absent (M6).
+    const cartUnread = (state.consecutivePartial ?? 0) >= PARTIAL_HOME_AUTHORITY;
+    return { ...base, state: "ok", date, ...(cartUnread ? { cartUnread } : {}) };
+  }
   // Unreachable or error: say so only once nothing was readable for a day.
   if (readable && now.getTime() - readable.getTime() < GUARD_UNREADABLE_AFTER_MS) {
     return { ...base, state: "ok", date };
@@ -85,7 +91,10 @@ export async function loadGuardHome(
   now: Date,
 ): Promise<GuardHomeView> {
   try {
-    const { state, incidents } = await loadGuardForHome(shop.id);
+    const live = isStorefrontGuardLive();
+    // Dark: no status line, so no state read. Incidents are still read: rows
+    // stored before the guard went dark are never hidden.
+    const { state, incidents } = await loadGuardForHome(shop.id, { withState: live });
     const views = incidents
       .filter((i): i is GuardIncident & { id: string } => !!i.id)
       .map(toIncidentView)
@@ -94,7 +103,7 @@ export async function loadGuardHome(
       );
     return {
       incidents: views,
-      status: isStorefrontGuardLive() ? buildGuardStatus(state, shop.plan, now) : null,
+      status: live ? buildGuardStatus(state, shop.plan, now) : null,
     };
   } catch (err) {
     logger.warn("checkout guard: home view unavailable", {

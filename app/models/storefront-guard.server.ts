@@ -17,6 +17,7 @@ import {
   acknowledgeNewHost,
   EMAIL_INCIDENT_KINDS,
   EMPTY_GUARD_STATE,
+  FLAP_WINDOW_MS,
   type GuardIncident,
   type GuardStateData,
   type IncidentKind,
@@ -41,6 +42,15 @@ export type LoadedGuard = {
 };
 
 const KINDS: ReadonlySet<string> = new Set(["KNOWN_MALICIOUS", "SCRIPT_LOADER", "NEW_SCRIPT_HOST"]);
+
+/**
+ * At most this many incident rows are read per shop (audit fix: the reads
+ * were unbounded): open and pending first, then the most recently seen.
+ * Resolved rows past the cap are pruned (pruneGuardIncidents).
+ */
+export const MAX_GUARD_INCIDENTS = 200;
+/** Resolved rows older than this are deleted (well past the 7-day flap window). */
+export const GUARD_INCIDENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const STATES: ReadonlySet<string> = new Set(["pending", "open", "resolved"]);
 const PAGES: ReadonlySet<string> = new Set(["home", "cart", "both"]);
 const RESOLUTIONS: ReadonlySet<string> = new Set([
@@ -108,11 +118,28 @@ export function toGuardIncident(row: StorefrontIncident): GuardIncident | null {
   };
 }
 
-/** Everything one check needs for a shop: state, cached hosts, every incident row. */
-export async function loadGuard(shopId: string): Promise<LoadedGuard> {
+/**
+ * Everything one check needs for a shop: state, cached hosts, and the incident
+ * rows the state machine can act on: every open or pending row, and resolved
+ * rows inside the flap window (a row resolved before that can only start a
+ * new episode, which the state machine builds the same way without it).
+ * Bounded by MAX_GUARD_INCIDENTS (open and pending first; the state values
+ * sort open < pending < resolved).
+ */
+export async function loadGuard(shopId: string, now: Date = new Date()): Promise<LoadedGuard> {
   const [row, incidentRows] = await Promise.all([
     db.storefrontGuardState.findUnique({ where: { shopId } }),
-    db.storefrontIncident.findMany({ where: { shopId } }),
+    db.storefrontIncident.findMany({
+      where: {
+        shopId,
+        OR: [
+          { state: { not: "resolved" } },
+          { resolvedAt: { gte: new Date(now.getTime() - FLAP_WINDOW_MS) } },
+        ],
+      },
+      orderBy: [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }],
+      take: MAX_GUARD_INCIDENTS,
+    }),
   ]);
   return {
     version: row?.version ?? null,
@@ -225,22 +252,66 @@ export function guardDomainsFrom(
   };
 }
 
-/** What Home shows: the guard state row (or null) and the shop's open incidents. */
-export async function loadGuardForHome(shopId: string): Promise<{
+/**
+ * What Home shows: the guard state row (or null) and the shop's open
+ * incidents (at most MAX_GUARD_INCIDENTS). `withState: false` skips the state
+ * read (the status line shows only while the guard is live; incidents stored
+ * before it went dark still show, so they are always read).
+ */
+export async function loadGuardForHome(
+  shopId: string,
+  opts: { withState?: boolean } = {},
+): Promise<{
   state: StorefrontGuardState | null;
   incidents: GuardIncident[];
 }> {
   const [state, rows] = await Promise.all([
-    db.storefrontGuardState.findUnique({ where: { shopId } }),
+    opts.withState === false
+      ? Promise.resolve(null)
+      : db.storefrontGuardState.findUnique({ where: { shopId } }),
     db.storefrontIncident.findMany({
       where: { shopId, state: "open" },
       orderBy: [{ openedAt: "asc" }, { id: "asc" }],
+      take: MAX_GUARD_INCIDENTS,
     }),
   ]);
   return {
     state,
     incidents: rows.map(toGuardIncident).filter((i): i is GuardIncident => i !== null),
   };
+}
+
+/**
+ * Delete the shop's resolved incident rows resolved more than
+ * GUARD_INCIDENT_RETENTION_MS ago, and, when `overCap` (the last load hit
+ * MAX_GUARD_INCIDENTS), resolved rows past the newest MAX_GUARD_INCIDENTS.
+ * Open and pending rows are never deleted. Returns how many rows went.
+ */
+export async function pruneGuardIncidents(
+  shopId: string,
+  now: Date,
+  overCap: boolean,
+): Promise<number> {
+  const { count } = await db.storefrontIncident.deleteMany({
+    where: {
+      shopId,
+      state: "resolved",
+      resolvedAt: { lt: new Date(now.getTime() - GUARD_INCIDENT_RETENTION_MS) },
+    },
+  });
+  if (!overCap) return count;
+  const extra = await db.storefrontIncident.findMany({
+    where: { shopId, state: "resolved" },
+    orderBy: [{ resolvedAt: "desc" }, { id: "asc" }],
+    skip: MAX_GUARD_INCIDENTS,
+    take: 1000,
+    select: { id: true },
+  });
+  if (extra.length === 0) return count;
+  const capped = await db.storefrontIncident.deleteMany({
+    where: { shopId, state: "resolved", id: { in: extra.map((r) => r.id) } },
+  });
+  return count + capped.count;
 }
 
 /** Stamp the episodes that were emailed (emailedOpenedAt = their openedAt). */
@@ -301,7 +372,7 @@ export async function acknowledgeGuardIncident(
   now: Date,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const loaded = await loadGuard(shopId);
+    const loaded = await loadGuard(shopId, now);
     const incident = loaded.incidents.find((i) => i.id === incidentId);
     if (!incident || loaded.version === null) return false;
     const next = acknowledgeNewHost(loaded.state, incident, now);
@@ -358,6 +429,7 @@ export function getGuardEmailShop(shopId: string) {
       uninstalledAt: true,
       guardEmailNoticeShownAt: true,
       guardEmailOffAt: true,
+      guardEmailConsentHash: true,
     },
   });
 }

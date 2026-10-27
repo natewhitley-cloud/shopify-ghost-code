@@ -236,6 +236,11 @@ model Shop {
   // data; deleted with the Shop row.
   guardEmailNoticeShownAt      DateTime?
   guardEmailOffAt              DateTime?
+  // The address the notice named, as a SHA-256 prefix of the lower-cased email
+  // (never the email itself): guard email goes only to that address, and a
+  // changed owner email re-shows the notice (audit fix). Null when the notice
+  // named no address ("your store's owner email address").
+  guardEmailConsentHash        String?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

@@ -11,7 +11,7 @@ const tx = vi.hoisted(() => ({
 }));
 const mockDb = vi.hoisted(() => ({
   storefrontGuardState: { findUnique: vi.fn() },
-  storefrontIncident: { findMany: vi.fn(), updateMany: vi.fn() },
+  storefrontIncident: { findMany: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn() },
   shop: { findUnique: vi.fn() },
   $transaction: vi.fn(),
 }));
@@ -25,6 +25,9 @@ import {
   loadGuard,
   loadGuardForHome,
   markIncidentsEmailed,
+  GUARD_INCIDENT_RETENTION_MS,
+  MAX_GUARD_INCIDENTS,
+  pruneGuardIncidents,
   saveGuardCheck,
   toGuardIncident,
   toGuardStateData,
@@ -182,6 +185,35 @@ describe("reads", () => {
     expect(loaded.incidents).toEqual([]);
   });
 
+  // Audit fix (M7): the reads are bounded.
+  it("loadGuard reads open, pending and flap-window resolved rows, open first, capped", async () => {
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([]);
+    await loadGuard("shop-1", NOW);
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith({
+      where: {
+        shopId: "shop-1",
+        OR: [
+          { state: { not: "resolved" } },
+          { resolvedAt: { gte: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) } },
+        ],
+      },
+      orderBy: [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }],
+      take: MAX_GUARD_INCIDENTS,
+    });
+    expect(MAX_GUARD_INCIDENTS).toBe(200);
+  });
+
+  it("loadGuardForHome caps its read and skips the state read when asked", async () => {
+    mockDb.storefrontIncident.findMany.mockResolvedValue([]);
+    const out = await loadGuardForHome("shop-1", { withState: false });
+    expect(mockDb.storefrontGuardState.findUnique).not.toHaveBeenCalled();
+    expect(out.state).toBeNull();
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: MAX_GUARD_INCIDENTS }),
+    );
+  });
+
   it("loadGuardForHome reads open incidents only", async () => {
     mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
     mockDb.storefrontIncident.findMany.mockResolvedValue([row()]);
@@ -284,5 +316,45 @@ describe("loadIncidentsToEmail (gc-1q1s.7)", () => {
       alertsEnabled: true,
     });
     expect(select).not.toHaveProperty("accessToken");
+  });
+});
+
+describe("pruneGuardIncidents (audit fix, M7)", () => {
+  it("deletes resolved rows past the retention, never open or pending ones", async () => {
+    mockDb.storefrontIncident.deleteMany.mockResolvedValue({ count: 4 });
+    expect(await pruneGuardIncidents("shop-1", NOW, false)).toBe(4);
+    expect(GUARD_INCIDENT_RETENTION_MS).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(mockDb.storefrontIncident.deleteMany).toHaveBeenCalledWith({
+      where: {
+        shopId: "shop-1",
+        state: "resolved",
+        resolvedAt: { lt: new Date(NOW.getTime() - GUARD_INCIDENT_RETENTION_MS) },
+      },
+    });
+    expect(mockDb.storefrontIncident.findMany).not.toHaveBeenCalled();
+  });
+
+  it("over the cap: also deletes resolved rows past the newest MAX_GUARD_INCIDENTS", async () => {
+    mockDb.storefrontIncident.deleteMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 2 });
+    mockDb.storefrontIncident.findMany.mockResolvedValue([{ id: "old-1" }, { id: "old-2" }]);
+    expect(await pruneGuardIncidents("shop-1", NOW, true)).toBe(2);
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { shopId: "shop-1", state: "resolved" },
+        skip: MAX_GUARD_INCIDENTS,
+      }),
+    );
+    expect(mockDb.storefrontIncident.deleteMany).toHaveBeenLastCalledWith({
+      where: { shopId: "shop-1", state: "resolved", id: { in: ["old-1", "old-2"] } },
+    });
+  });
+
+  it("over the cap with nothing extra: one delete only", async () => {
+    mockDb.storefrontIncident.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.storefrontIncident.findMany.mockResolvedValue([]);
+    expect(await pruneGuardIncidents("shop-1", NOW, true)).toBe(0);
+    expect(mockDb.storefrontIncident.deleteMany).toHaveBeenCalledTimes(1);
   });
 });

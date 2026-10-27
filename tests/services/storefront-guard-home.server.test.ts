@@ -73,6 +73,18 @@ describe("buildGuardStatus", () => {
     });
     expect(buildGuardStatus(st({ lastOutcome: "partial" }), "Standard", NOW).state).toBe("ok");
   });
+  it("a /cart unread past PARTIAL_HOME_AUTHORITY checks says so (audit fix)", () => {
+    expect(
+      buildGuardStatus(st({ lastOutcome: "partial", consecutivePartial: 3 }), "Standard", NOW),
+    ).toMatchObject({ state: "ok", cartUnread: true });
+    expect(
+      buildGuardStatus(st({ lastOutcome: "partial", consecutivePartial: 2 }), "Standard", NOW)
+        .cartUnread,
+    ).toBeUndefined();
+    expect(buildGuardStatus(st({ consecutivePartial: 0 }), "Standard", NOW).cartUnread).toBe(
+      undefined,
+    );
+  });
   it("password and redirect pauses", () => {
     expect(buildGuardStatus(st({ lastOutcome: "paused_password" }), "free", NOW).state).toBe(
       "paused_password",
@@ -143,12 +155,15 @@ describe("loadGuardHome", () => {
     const out = await loadGuardHome({ id: "s", plan: "free" }, NOW);
     expect(out.incidents.map((i) => i.id)).toEqual(["m1", "m2", "l", "n"]);
     expect(out.status).toBeNull();
+    // Dark: the state row is not read (audit fix); stored incidents still are.
+    expect(model.loadGuardForHome).toHaveBeenCalledWith("s", { withState: false });
   });
   it("adds the status line while live", async () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
     model.loadGuardForHome.mockResolvedValue({ state: null, incidents: [] });
     const out = await loadGuardHome({ id: "s", plan: "Standard" }, NOW);
     expect(out.status?.state).toBe("waiting");
+    expect(model.loadGuardForHome).toHaveBeenCalledWith("s", { withState: true });
   });
   it("never throws", async () => {
     model.loadGuardForHome.mockRejectedValue(new Error("db down"));

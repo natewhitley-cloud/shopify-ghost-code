@@ -44,6 +44,11 @@ export interface GuardStatusView {
   date: string | null;
   primaryHost: string | null;
   redirectHost: string | null;
+  /**
+   * ok: /cart has not been readable for PARTIAL_HOME_AUTHORITY checks in a
+   * row, so the guard reads the homepage only (audit fix).
+   */
+  cartUnread?: boolean;
 }
 
 export interface GuardHomeView {
@@ -133,7 +138,9 @@ export function guardStatusWords(s: GuardStatusView): { lead: string; tail: stri
     case "ok":
       return {
         lead: "Checkout guard last read your storefront on",
-        tail: `. It checks your homepage and cart page ${every}.`,
+        tail: s.cartUnread
+          ? `. It checks your homepage ${every}. Your cart page could not be read, so it is not checked.`
+          : `. It checks your homepage and cart page ${every}.`,
       };
     case "paused_password":
       return {

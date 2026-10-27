@@ -9,6 +9,8 @@ const model = vi.hoisted(() => ({
   loadGuard: vi.fn(),
   saveGuardCheck: vi.fn(),
   latestScanThemeHosts: vi.fn(),
+  pruneGuardIncidents: vi.fn(),
+  MAX_GUARD_INCIDENTS: 200,
   guardDomainsFrom: vi.fn(
     (d: { primaryHost: string; myshopifyHost: string | null }, now: Date) => ({
       ...d,
@@ -36,6 +38,8 @@ import type { AdminApiContext } from "../../app/types/shopify";
 
 const NOW = new Date("2026-10-27T05:17:00Z");
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 const SHOP = { id: "shop-1", domain: "shop-1.myshopify.com", plan: "Standard" };
 
 const STOREFRONT = (body: string) =>
@@ -78,6 +82,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fetchImpl = vi.fn();
   model.latestScanThemeHosts.mockResolvedValue(new Set());
+  model.pruneGuardIncidents.mockResolvedValue(0);
   model.saveGuardCheck.mockImplementation(async (input: { changed: GuardIncident[] }) => ({
     status: "saved",
     incidents: new Map(
@@ -283,6 +288,76 @@ describe("checkGuardShop", () => {
   it("never throws: a database failure is a failed shop", async () => {
     model.loadGuard.mockRejectedValue(new Error("db down"));
     expect(await checkGuardShop(SHOP, NOW, deps())).toEqual({ status: "failed" });
+  });
+
+  // Audit fix (M5): stamped with the run's fire time, not the chunk's clock.
+  it("stamps lastCheckedAt with the run's fire time", async () => {
+    const runAt = ago(40 * 60 * 1000);
+    model.loadGuard.mockResolvedValue(
+      loaded({ state: { ...EMPTY_GUARD_STATE, lastCheckedAt: ago(HOUR) } }),
+    );
+    storefront(STOREFRONT(""));
+    await checkGuardShop(SHOP, NOW, deps(), runAt);
+    const saved = model.saveGuardCheck.mock.calls[0][0];
+    expect(saved.state.lastCheckedAt).toEqual(runAt);
+    // The readable time is still the real check time.
+    expect(saved.state.lastReadableAt).toEqual(NOW);
+  });
+
+  // Audit fix: a retried chunk step never checks (or counts) a shop twice.
+  it("skips a shop already checked in this run (a retried chunk step)", async () => {
+    const runAt = ago(10 * 60 * 1000);
+    model.loadGuard.mockResolvedValue(
+      loaded({ state: { ...EMPTY_GUARD_STATE, lastCheckedAt: runAt } }),
+    );
+    expect(await checkGuardShop(SHOP, NOW, deps(), runAt)).toEqual({ status: "already_checked" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(model.saveGuardCheck).not.toHaveBeenCalled();
+  });
+
+  // Audit fix (M7): resolved rows are pruned per shop after each check.
+  it("prunes old resolved incidents after a saved check, past the cap only when the load hit it", async () => {
+    model.loadGuard.mockResolvedValue(loaded());
+    storefront(STOREFRONT(""));
+    await checkGuardShop(SHOP, NOW, deps());
+    expect(model.pruneGuardIncidents).toHaveBeenCalledWith("shop-1", NOW, false);
+
+    const full = Array.from({ length: 200 }, (_, i) => ({
+      fingerprint: `NEW_SCRIPT_HOST:h${i}.example`,
+      kind: "NEW_SCRIPT_HOST",
+      host: `h${i}.example`,
+      page: "home",
+      sourceLabel: "x",
+      state: "resolved",
+      openedAt: ago(DAY),
+      firstSeenAt: ago(DAY),
+      lastSeenAt: ago(DAY),
+      seenCount: 1,
+      cleanStreak: 2,
+      resolvedAt: ago(DAY),
+      resolution: "clean",
+      acknowledgedAt: null,
+      emailedOpenedAt: null,
+      id: `r${i}`,
+    })) as GuardIncident[];
+    model.loadGuard.mockResolvedValue(loaded({ incidents: full }));
+    await checkGuardShop(SHOP, NOW, deps());
+    expect(model.pruneGuardIncidents).toHaveBeenLastCalledWith("shop-1", NOW, true);
+  });
+
+  it("a failed prune never fails the check", async () => {
+    model.loadGuard.mockResolvedValue(loaded());
+    model.pruneGuardIncidents.mockRejectedValue(new Error("db busy"));
+    storefront(STOREFRONT(""));
+    expect(await checkGuardShop(SHOP, NOW, deps())).toMatchObject({ status: "checked" });
+  });
+
+  it("a lost race prunes nothing", async () => {
+    model.loadGuard.mockResolvedValue(loaded());
+    model.saveGuardCheck.mockResolvedValue({ status: "stale" });
+    storefront(STOREFRONT(""));
+    await checkGuardShop(SHOP, NOW, deps());
+    expect(model.pruneGuardIncidents).not.toHaveBeenCalled();
   });
 });
 

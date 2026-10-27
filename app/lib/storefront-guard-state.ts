@@ -22,7 +22,12 @@
  *   - Only an `ok` check changes incidents. Paused, unreachable and error
  *     checks are never clean and never a hit.
  *   - A PARTIAL ok check (/cart unread) adds sightings but is never clean, and
- *     never teaches or debounces new hosts (a cart-only host would look gone).
+ *     never teaches or debounces new hosts (a cart-only host would look gone),
+ *     until PARTIAL_HOME_AUTHORITY partial checks in a row: from then on /cart
+ *     is treated as absent (audit fix: a store whose /cart never reads never
+ *     finished learning and never resolved a `both` incident). The homepage
+ *     alone then teaches and debounces new hosts and clears home and `both`
+ *     incidents; an incident seen only on /cart still needs a complete check.
  *
  * Resolve, flap, merge, decay:
  *   - An open incident resolves after RESOLVE_CLEAN_CHECKS complete checks in
@@ -37,7 +42,9 @@
  *
  * Backoff (A3): unreachable checks in a row; from the third, the shop is not
  * checked again until now + min(2^(n-3) h, 24 h). A challenged check (403,
- * 429) backs off at once. Password and redirect pauses never grow it.
+ * 429) backs off at once. Password and redirect pauses never grow it, but a
+ * paused store is not read again for PAUSED_RECHECK_MS (audit fix: it was
+ * re-read every hour for as long as it stayed paused).
  *
  * Only hostnames and fixed labels are kept: never paths, query strings or HTML.
  */
@@ -56,14 +63,16 @@ export const AUTO_MERGE_MS = 14 * DAY_MS;
 export const BASELINE_DECAY_MS = 30 * DAY_MS;
 export const BACKOFF_AFTER = 3;
 /**
- * From this many partial checks in a row (homepage read, /cart not), the
- * homepage alone may clear incidents seen only on the homepage, so a store
- * whose /cart never reads does not keep a resolved incident open forever.
- * Incidents seen on /cart, learning and new-host debounce still need a
- * complete check.
+ * From this many partial checks in a row (homepage read, /cart not), /cart is
+ * treated as absent: the homepage alone completes learning, debounces new
+ * hosts and clears incidents seen on the homepage (home or both), so a store
+ * whose /cart never reads still learns and never keeps a resolved incident
+ * open forever. An incident seen only on /cart still needs a complete check.
  */
 export const PARTIAL_HOME_AUTHORITY = 3;
 export const MAX_BACKOFF_MS = DAY_MS;
+/** A password-protected or redirecting store is read again after this long. */
+export const PAUSED_RECHECK_MS = 6 * HOUR_MS;
 /** Bounds on stored host lists (a page with thousands of hosts stays small). */
 export const MAX_HOSTS_PER_CHECK = 200;
 export const MAX_BASELINE_HOSTS = 500;
@@ -245,8 +254,12 @@ export function applyGuardCheck(
     check.sightings.map((s) => s.host).filter((h): h is string => h !== null),
   );
 
-  // --- New hosts (complete checks only) --------------------------------------
-  if (check.complete) {
+  // After PARTIAL_HOME_AUTHORITY partial checks in a row, /cart is absent and
+  // the homepage reads as the whole storefront.
+  const homeAuthoritative = !check.complete && state.consecutivePartial >= PARTIAL_HOME_AUTHORITY;
+
+  // --- New hosts (complete checks, or the homepage once /cart is absent) -----
+  if (check.complete || homeAuthoritative) {
     const hostPages = new Map<string, { page: IncidentPages; sourceLabel: string }>();
     for (const h of check.hosts) {
       if (sightedHosts.has(h.host)) continue; // already its own (stronger) incident
@@ -318,13 +331,12 @@ export function applyGuardCheck(
     }
   }
 
-  // --- Clean streaks (complete checks; home-only incidents after a run of
-  // partial checks, see PARTIAL_HOME_AUTHORITY) --------------------------------
-  const homeAuthoritative = !check.complete && state.consecutivePartial >= PARTIAL_HOME_AUTHORITY;
+  // --- Clean streaks (complete checks; home and both incidents once /cart is
+  // absent, see PARTIAL_HOME_AUTHORITY) ----------------------------------------
   if (check.complete || homeAuthoritative) {
     for (const i of byFingerprint.values()) {
       if (seen.has(i.fingerprint)) continue;
-      if (!check.complete && i.page !== "home") continue;
+      if (!check.complete && i.page === "cart") continue;
       if (i.state === "pending") {
         touch(resolve(i, now, "lapsed"));
       } else if (i.state === "open") {
@@ -348,9 +360,19 @@ function applyNonOk(
 ): GuardStateData {
   switch (check.outcome) {
     case "paused_password":
-      return { ...state, lastOutcome: "paused_password", lastRedirectHost: null };
+      return {
+        ...state,
+        lastOutcome: "paused_password",
+        lastRedirectHost: null,
+        backoffUntil: pausedUntil(state, now),
+      };
     case "paused_redirect":
-      return { ...state, lastOutcome: "paused_redirect", lastRedirectHost: check.redirectHost };
+      return {
+        ...state,
+        lastOutcome: "paused_redirect",
+        lastRedirectHost: check.redirectHost,
+        backoffUntil: pausedUntil(state, now),
+      };
     case "error":
       // Our own analyzer failed: never the store's fault, so no backoff.
       return { ...state, lastOutcome: "error" };
@@ -368,6 +390,12 @@ function applyNonOk(
       };
     }
   }
+}
+
+/** A paused store's next read: PAUSED_RECHECK_MS out, never shortening a longer backoff. */
+function pausedUntil(state: GuardStateData, now: Date): Date {
+  const floor = new Date(now.getTime() + PAUSED_RECHECK_MS);
+  return state.backoffUntil && state.backoffUntil > floor ? state.backoffUntil : floor;
 }
 
 function withinFlapWindow(i: GuardIncident, now: Date): boolean {
