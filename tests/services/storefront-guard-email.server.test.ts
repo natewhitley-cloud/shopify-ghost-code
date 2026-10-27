@@ -77,7 +77,7 @@ const SHOP: GuardEmailShop = {
   uninstalledAt: null,
   guardEmailNoticeShownAt: new Date("2026-10-20T00:00:00Z"),
   guardEmailOffAt: null,
-  guardEmailConsentHash: null,
+  guardEmailConsentHash: guardConsentHash("owner@example.com"),
 };
 
 function incident(
@@ -129,7 +129,7 @@ afterEach(() => {
 });
 
 describe("guard email notice: offered by the loader, claimed after render (gc-1q1s.11)", () => {
-  const noticeShop = { ...SHOP, guardEmailNoticeShownAt: null };
+  const noticeShop = { ...SHOP, guardEmailNoticeShownAt: null, guardEmailConsentHash: null };
 
   it("the loader offers it naming the owner email and writes nothing (Standard and Professional)", async () => {
     for (const plan of ["Standard", "Professional"]) {
@@ -164,11 +164,34 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
-  it("the generic notice (no address known) stamps no hash", async () => {
-    const generic = { ...noticeShop, alertEmail: null };
-    expect(await guardEmailNoticeForHome(generic, null)).toEqual({ email: null });
-    expect(await claimGuardEmailNoticeRendered(generic, null, null)).toBe("claimed");
-    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(SHOP.domain, null);
+  // gc-1q1s.12: email goes only to the address the notice named, so with no
+  // address known there is no notice and nothing to claim.
+  it("no owner email known: no notice, and a claim is refused (gc-1q1s.12)", async () => {
+    const noAddress = { ...noticeShop, alertEmail: null };
+    contact.refreshShopAlertEmail.mockResolvedValue(null);
+    expect(await guardEmailNoticeForHome(noAddress, null)).toBeNull();
+    expect(await guardEmailNoticeForHome(noAddress, {} as AdminApiContext)).toBeNull();
+    expect(await claimGuardEmailNoticeRendered(noAddress, null, null)).toBe("not_claimed");
+    expect(await claimGuardEmailNoticeRendered(noAddress, null, {} as AdminApiContext)).toBe(
+      "not_claimed",
+    );
+    expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("a legacy stamp with no address hash is no consent: the notice is offered and claimed again (gc-1q1s.12)", async () => {
+    const legacy = {
+      ...noticeShop,
+      guardEmailNoticeShownAt: new Date("2026-10-20T00:00:00Z"),
+      guardEmailConsentHash: null,
+    };
+    expect(await guardEmailNoticeForHome(legacy, null)).toEqual({ email: "owner@example.com" });
+    expect(await claimGuardEmailNoticeRendered(legacy, "owner@example.com", null)).toBe("claimed");
+    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
+      SHOP.domain,
+      guardConsentHash("owner@example.com"),
+    );
+    // Turned off still wins over a legacy stamp.
+    expect(await guardEmailNoticeForHome({ ...legacy, guardEmailOffAt: NOW }, null)).toBeNull();
   });
 
   it("a double post: the atomic claim stamps once, the repeat reports false", async () => {
@@ -189,7 +212,13 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
 
   it.each([
     ["Free", { plan: "free" }],
-    ["already shown", { guardEmailNoticeShownAt: NOW }],
+    [
+      "already shown",
+      {
+        guardEmailNoticeShownAt: NOW,
+        guardEmailConsentHash: guardConsentHash("owner@example.com"),
+      },
+    ],
     ["turned off", { guardEmailOffAt: NOW }],
     ["unsubscribed", { alertsEnabled: false }],
   ])("is never offered (and never claimed) when %s", async (_label, over) => {
@@ -223,12 +252,11 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
     );
   });
 
-  it("reads the owner email when none is cached; generic copy when unknown", async () => {
+  it("reads the owner email when none is cached, and names it", async () => {
     contact.refreshShopAlertEmail.mockResolvedValue("fresh@example.com");
     expect(
       await guardEmailNoticeForHome({ ...noticeShop, alertEmail: null }, {} as AdminApiContext),
     ).toEqual({ email: "fresh@example.com" });
-    expect(guardNoticeLead(null)).toContain("your store's owner email address");
     expect(guardNoticeLead("a@b.co")).toMatch(
       /^Checkout guard alerts will be emailed to a@b\.co\./,
     );
@@ -242,6 +270,7 @@ describe("guardEmailShopSkipReason", () => {
     ["shop_opted_out", { alertsEnabled: false }],
     ["guard_email_off", { guardEmailOffAt: NOW }],
     ["no_consent", { guardEmailNoticeShownAt: null }],
+    ["no_consent_address", { guardEmailConsentHash: null }],
   ])("%s", (reason, over) => {
     expect(guardEmailShopSkipReason({ ...SHOP, ...over })).toBe(reason);
   });
@@ -403,6 +432,25 @@ describe("sendGuardIncidentEmail", () => {
     expect(ledger.resetGuardEmailNotice).toHaveBeenCalledWith("shop-1");
     expect(alerts.sendMerchantAlert).not.toHaveBeenCalled();
     expect(guardModel.markIncidentsEmailed).not.toHaveBeenCalled();
+  });
+
+  // gc-1q1s.12: a consent stamp with no address hash (a legacy generic-wording
+  // claim) is no consent; never "whatever the owner email is at send time".
+  it("a consent stamp with no address hash sends nothing, even with an owner email (gc-1q1s.12)", async () => {
+    contact.refreshShopContact.mockResolvedValue({ email: "new@example.com", storeName: null });
+    for (const admin of [null, {} as AdminApiContext]) {
+      const out = await sendGuardIncidentEmail({
+        shop: { ...SHOP, guardEmailConsentHash: null },
+        incidentIds: ["inc-1"],
+        admin,
+        now: NOW,
+      });
+      expect(out).toEqual({ sent: false, reason: "no_consent_address" });
+    }
+    expect(alerts.sendMerchantAlert).not.toHaveBeenCalled();
+    expect(guardModel.loadIncidentsToEmail).not.toHaveBeenCalled();
+    expect(guardModel.markIncidentsEmailed).not.toHaveBeenCalled();
+    expect(ledger.recordMerchantAlert).not.toHaveBeenCalled();
   });
 
   it("never throws", async () => {

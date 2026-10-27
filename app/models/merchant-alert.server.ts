@@ -136,16 +136,21 @@ export function countGuardAlertsSince(shopId: string, since: Date): Promise<numb
 /**
  * Claim the render of Home's checkout guard email notice (gc-1q1s.7): stamps
  * guardEmailNoticeShownAt once, only while the merchant has not turned guard
- * email off, together with `consentHash` (the hashed address the notice names,
- * or null for the generic wording). Of concurrent loads exactly one wins.
- * Returns true IFF this call stamped it (that stamp is the consent).
+ * email off, together with `consentHash` (the hashed address the notice
+ * names). Also claimable over a legacy stamp with no hash (gc-1q1s.12: that
+ * is no consent, so the notice is shown again). Of concurrent loads exactly
+ * one wins. Returns true IFF this call stamped it (that stamp is the consent).
  */
 export async function claimGuardEmailNoticeShown(
   domain: string,
-  consentHash: string | null,
+  consentHash: string,
 ): Promise<boolean> {
   const { count } = await db.shop.updateMany({
-    where: { domain, guardEmailNoticeShownAt: null, guardEmailOffAt: null },
+    where: {
+      domain,
+      guardEmailOffAt: null,
+      OR: [{ guardEmailNoticeShownAt: null }, { guardEmailConsentHash: null }],
+    },
     data: { guardEmailNoticeShownAt: new Date(), guardEmailConsentHash: consentHash },
   });
   return count === 1;
@@ -183,21 +188,23 @@ export async function turnOffGuardEmail(shopId: string): Promise<void> {
 /**
  * Settings' checkout guard email toggle turned ON (gc-njwa #5): the merchant
  * read the address on the card, so this is consent, stamped like the notice:
- * guardEmailNoticeShownAt now, with `consentHash` (the hashed address shown,
- * or null for the generic wording), and any "Turn off" cleared. A shop
+ * guardEmailNoticeShownAt now, with `consentHash` (the hashed address shown),
+ * and any "Turn off" cleared (a legacy stamp with no hash counts as off,
+ * gc-1q1s.12). A shop
  * already on keeps its first consent time, but its consent hash is re-stamped
  * to the address shown (wave 3 U5: a stale hash from an old owner email would
  * otherwise keep every email blocked while the card says "on"). Returns true
  * IFF this call turned it on.
  */
-export async function enableGuardEmail(
-  shopId: string,
-  consentHash: string | null,
-): Promise<boolean> {
+export async function enableGuardEmail(shopId: string, consentHash: string): Promise<boolean> {
   const { count } = await db.shop.updateMany({
     where: {
       id: shopId,
-      OR: [{ guardEmailOffAt: { not: null } }, { guardEmailNoticeShownAt: null }],
+      OR: [
+        { guardEmailOffAt: { not: null } },
+        { guardEmailNoticeShownAt: null },
+        { guardEmailConsentHash: null },
+      ],
     },
     data: {
       guardEmailOffAt: null,
@@ -217,7 +224,12 @@ export async function enableGuardEmail(
 export async function getGuardEmailConsent(shopId: string) {
   return db.shop.findUnique({
     where: { id: shopId },
-    select: { alertsEnabled: true, guardEmailNoticeShownAt: true, guardEmailOffAt: true },
+    select: {
+      alertsEnabled: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
+      guardEmailConsentHash: true,
+    },
   });
 }
 

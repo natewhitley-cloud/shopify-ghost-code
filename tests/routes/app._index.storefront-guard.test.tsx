@@ -175,6 +175,7 @@ const SHOP = {
   summaryOptedInAt: null as Date | null,
   guardEmailNoticeShownAt: null as Date | null,
   guardEmailOffAt: null as Date | null,
+  guardEmailConsentHash: null as string | null,
 };
 const COMPLETED = {
   id: "scan-2",
@@ -459,9 +460,32 @@ describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
 
   it("already shown or turned off: never again", async () => {
     live();
-    expect((await load({ guardEmailNoticeShownAt: T })).guardEmailNotice).toBeNull();
+    const consented = { guardEmailNoticeShownAt: T, guardEmailConsentHash: "h" };
+    expect((await load(consented)).guardEmailNotice).toBeNull();
     expect((await load({ guardEmailOffAt: T })).guardEmailNotice).toBeNull();
     expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  // gc-1q1s.12: guard email goes only to the address the notice named.
+  it("no owner email known: no notice, and the claim is refused (gc-1q1s.12)", async () => {
+    live();
+    const data = await load({ alertEmail: null });
+    expect(data.guardEmailNotice).toBeNull();
+    expect(renderDashboard(data)).not.toContain("Checkout guard alerts are on");
+    mock(getShopMetadata).mockResolvedValue({ ...SHOP, alertEmail: null });
+    await expect(post({ intent: "guard-email-notice-shown" })).resolves.toEqual({
+      noticeClaimed: false,
+    });
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("a legacy stamp with no address hash: the notice is shown again, naming the address (gc-1q1s.12)", async () => {
+    live();
+    const data = await load({ guardEmailNoticeShownAt: T, guardEmailConsentHash: null });
+    expect(data.guardEmailNotice).toEqual({ email: "owner@example.com" });
+    expect(renderDashboard(data)).toContain(
+      "Checkout guard alerts will be emailed to owner@example.com.",
+    );
   });
 
   const post = (body: Record<string, string>) =>

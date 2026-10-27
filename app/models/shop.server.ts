@@ -48,6 +48,7 @@ export type ShopMetadata = {
   // Checkout guard email consent (gc-1q1s.7).
   guardEmailNoticeShownAt: Date | null;
   guardEmailOffAt: Date | null;
+  guardEmailConsentHash: string | null;
 };
 
 /**
@@ -132,6 +133,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       summaryOptInFirstShownAt: true,
       guardEmailNoticeShownAt: true,
       guardEmailOffAt: true,
+      guardEmailConsentHash: true,
     },
   });
 }

@@ -226,7 +226,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       securityRisks: [] as SecurityRisk[],
       securityRiskSource: null as SecurityRiskSource | null,
       guard: null as GuardHomeView | null,
-      guardEmailNotice: null as { email: string | null } | null,
+      guardEmailNotice: null as { email: string } | null,
       riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,

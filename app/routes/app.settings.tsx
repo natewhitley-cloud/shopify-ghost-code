@@ -17,6 +17,7 @@ import { PLANS } from "../lib/plans";
 import {
   GUARD_SETTINGS_HEADING,
   GUARD_SETTINGS_MAIL_OFF,
+  GUARD_SETTINGS_NO_ADDRESS,
   GUARD_SETTINGS_REFUSED,
   GUARD_SETTINGS_SAVED_OFF,
   GUARD_SETTINGS_SAVED_ON,
@@ -275,13 +276,16 @@ function SummaryEmailsCard({
  * The turn-back-on control for guard email (the notice's "Turn off" had none).
  * Shows the address the consent covers; checking it posts that address, and
  * the server stamps consent only for it. Disabled while all GhostCode mail is
- * off for the store (alertsEnabled), since nothing could be sent.
+ * off for the store (alertsEnabled), since nothing could be sent, and cannot
+ * be turned on while no owner email is known (gc-1q1s.12: guard email goes
+ * only to a named address; the server refuses it too).
  */
 function GuardEmailCard({ setting }: { setting: GuardEmailSetting }) {
   const fetcher = useFetcher<typeof action>();
   const saving = fetcher.state !== "idle";
   const checked = fetcher.formData ? fetcher.formData.get("enabled") === "true" : setting.on;
   const data = fetcher.state === "idle" ? fetcher.data : undefined;
+  const cannotTurnOn = !setting.email && !checked;
   return (
     <section>
       <h2 style={h2Style}>{GUARD_SETTINGS_HEADING}</h2>
@@ -290,7 +294,7 @@ function GuardEmailCard({ setting }: { setting: GuardEmailSetting }) {
           <s-checkbox
             label={GUARD_SETTINGS_TOGGLE}
             checked={checked && setting.mailOn ? true : undefined}
-            disabled={saving || !setting.mailOn ? true : undefined}
+            disabled={saving || !setting.mailOn || cannotTurnOn ? true : undefined}
             onChange={(e: unknown) =>
               fetcher.submit(
                 {
@@ -303,7 +307,11 @@ function GuardEmailCard({ setting }: { setting: GuardEmailSetting }) {
             }
           />
           <p style={subdued}>
-            {setting.mailOn ? guardSettingsParagraph(setting.email) : GUARD_SETTINGS_MAIL_OFF}
+            {!setting.mailOn
+              ? GUARD_SETTINGS_MAIL_OFF
+              : setting.email
+                ? guardSettingsParagraph(setting.email)
+                : GUARD_SETTINGS_NO_ADDRESS}
           </p>
           {data && "guardEmailError" in data && (
             <s-banner tone="critical">{data.guardEmailError}</s-banner>

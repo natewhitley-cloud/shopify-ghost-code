@@ -207,11 +207,10 @@ export const GUARD_NOTICE_HEADING = "Checkout guard alerts are on";
 export const GUARD_NOTICE_TURN_OFF = "Turn off";
 export const GUARD_NOTICE_OK = "Got it";
 
-/** The notice's sentence; a generic address when the owner email is unknown. */
-export function guardNoticeLead(email: string | null): string {
-  const to = email ?? "your store's owner email address";
+/** The notice's sentence. It always names the address (gc-1q1s.12: no address, no notice). */
+export function guardNoticeLead(email: string): string {
   return (
-    `Checkout guard alerts will be emailed to ${to}. ` +
+    `Checkout guard alerts will be emailed to ${email}. ` +
     "We email only when GhostCode finds known malicious code or a script loader on your live store, never routine updates."
   );
 }
@@ -222,10 +221,9 @@ export const GUARD_SETTINGS_HEADING = "Checkout guard emails";
 export const GUARD_SETTINGS_TOGGLE = "Email me when the checkout guard finds a problem";
 
 /** The card's paragraph: the address this consent covers, and when mail goes out. */
-export function guardSettingsParagraph(email: string | null): string {
-  const to = email ?? "your store's owner email address";
+export function guardSettingsParagraph(email: string): string {
   return (
-    `We email ${to} only when GhostCode's hourly check finds known malicious code or a script loader on your live store, never routine updates. ` +
+    `We email ${email} only when GhostCode's hourly check finds known malicious code or a script loader on your live store, never routine updates. ` +
     "Every alert is also shown in the app."
   );
 }
@@ -233,6 +231,12 @@ export function guardSettingsParagraph(email: string | null): string {
 /** Shown, with the control disabled, while all GhostCode email is off for the store. */
 export const GUARD_SETTINGS_MAIL_OFF =
   "Emails from GhostCode are off for this store (unsubscribed, or turned off under Summary emails). Turn them on there to get checkout guard emails.";
+/**
+ * Shown when the owner email can't be read (gc-1q1s.12): guard email goes
+ * only to a named address, so the control can't be turned on.
+ */
+export const GUARD_SETTINGS_NO_ADDRESS =
+  "We couldn't read your store's owner email address. Checkout guard emails go only to that address, so they can't be turned on right now. Reload the page to try again.";
 export const GUARD_SETTINGS_SAVED_ON = "Checkout guard emails are on.";
 export const GUARD_SETTINGS_SAVED_OFF =
   "Checkout guard emails are off. Alerts still show in the app.";

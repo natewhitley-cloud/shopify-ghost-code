@@ -1007,6 +1007,7 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
     plan: "Standard",
     guardEmailNoticeShownAt: null as Date | null,
     guardEmailOffAt: new Date("2026-10-26T10:00:00Z") as Date | null,
+    guardEmailConsentHash: null as string | null,
   };
   const live = () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
@@ -1046,8 +1047,20 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
         ...GUARD_SHOP,
         guardEmailNoticeShownAt: new Date(),
         guardEmailOffAt: null,
+        guardEmailConsentHash: "h",
       });
       expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail?.on).toBe(true);
+    });
+
+    it("a legacy stamp with no address hash reads off: it is no consent (gc-1q1s.12)", async () => {
+      live();
+      mockGetShopMetadata.mockResolvedValue({
+        ...GUARD_SHOP,
+        guardEmailNoticeShownAt: new Date(),
+        guardEmailOffAt: null,
+        guardEmailConsentHash: null,
+      });
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail?.on).toBe(false);
     });
 
     it("all mail off: offered with mailOn false", async () => {
@@ -1075,11 +1088,22 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
       alertsEnabled: boolean;
       guardEmailNoticeShownAt: Date | null;
       guardEmailOffAt: Date | null;
+      guardEmailConsentHash: string | null;
     };
     beforeEach(() => {
-      stored = { alertsEnabled: true, guardEmailNoticeShownAt: null, guardEmailOffAt: null };
-      vi.mocked(enableGuardEmail).mockImplementation(async () => {
-        stored = { ...stored, guardEmailNoticeShownAt: new Date(), guardEmailOffAt: null };
+      stored = {
+        alertsEnabled: true,
+        guardEmailNoticeShownAt: null,
+        guardEmailOffAt: null,
+        guardEmailConsentHash: null,
+      };
+      vi.mocked(enableGuardEmail).mockImplementation(async (_id, hash) => {
+        stored = {
+          ...stored,
+          guardEmailNoticeShownAt: new Date(),
+          guardEmailOffAt: null,
+          guardEmailConsentHash: hash,
+        };
         return true;
       });
       vi.mocked(turnOffGuardEmail).mockImplementation(async () => {
@@ -1098,7 +1122,12 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
       });
       await expect(post(on)).resolves.toHaveProperty("guardEmailError");
       // A shop already on (enable changes nothing) still reads on.
-      stored = { alertsEnabled: true, guardEmailNoticeShownAt: new Date(), guardEmailOffAt: null };
+      stored = {
+        alertsEnabled: true,
+        guardEmailNoticeShownAt: new Date(),
+        guardEmailOffAt: null,
+        guardEmailConsentHash: "h",
+      };
       vi.mocked(enableGuardEmail).mockResolvedValueOnce(false);
       await expect(post(on)).resolves.toEqual({ guardEmail: "on" });
     });
@@ -1141,6 +1170,19 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
       mockGetPlanFeatures.mockReturnValue(PAID_GUARD);
       delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
       await expect(post(on)).resolves.toHaveProperty("guardEmailError");
+      expect(enableGuardEmail).not.toHaveBeenCalled();
+    });
+
+    // gc-1q1s.12: guard email goes only to a named address.
+    it("refuses on when no owner email is known; nothing written (gc-1q1s.12)", async () => {
+      live();
+      mockGetShopMetadata.mockResolvedValue({ ...GUARD_SHOP, alertEmail: null });
+      await expect(post({ intent: "set-guard-email", enabled: "true" })).resolves.toHaveProperty(
+        "guardEmailError",
+      );
+      await expect(
+        post({ intent: "set-guard-email", enabled: "true", email: "" }),
+      ).resolves.toHaveProperty("guardEmailError");
       expect(enableGuardEmail).not.toHaveBeenCalled();
     });
 
@@ -1198,6 +1240,17 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
         /<s-checkbox[^>]*label="Email me when the checkout guard[^"]*"[^>]*checked/,
       );
       expect(off).toContain("Emails from GhostCode are off for this store");
+    });
+
+    it("no owner email known: cannot be turned on, and says why (gc-1q1s.12)", () => {
+      const html = render({ email: null, on: false, mailOn: true });
+      expect(html).toMatch(/<s-checkbox[^>]*disabled/);
+      expect(html).toContain("We couldn&#x27;t read your store&#x27;s owner email address");
+      expect(html).not.toContain("your store&#x27;s owner email address only when");
+      // Already on: it can still be turned off.
+      expect(render({ email: null, on: true, mailOn: true })).not.toMatch(
+        /<s-checkbox[^>]*disabled/,
+      );
     });
 
     it("no card when not offered (Free, dark)", () => {

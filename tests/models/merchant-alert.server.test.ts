@@ -25,6 +25,7 @@ import {
   countGuardAlertsSince,
   turnOffGuardEmail,
   enableGuardEmail,
+  getGuardEmailConsent,
   claimSummaryNoticeShown,
   claimSummaryOptInFirstShown,
   declineSummaryOptIn,
@@ -548,10 +549,11 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
     await expect(claimGuardEmailNoticeShown("a.myshopify.com", "h1")).resolves.toBe(true);
     const { where, data } = mockDb.shop.updateMany.mock.calls[0][0];
+    // Unstamped, or a legacy stamp with no address hash (gc-1q1s.12: no consent).
     expect(where).toEqual({
       domain: "a.myshopify.com",
-      guardEmailNoticeShownAt: null,
       guardEmailOffAt: null,
+      OR: [{ guardEmailNoticeShownAt: null }, { guardEmailConsentHash: null }],
     });
     // The consented address's hash is stamped with the consent (audit fix).
     expect(data).toEqual({
@@ -559,7 +561,7 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
       guardEmailConsentHash: "h1",
     });
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
-    await expect(claimGuardEmailNoticeShown("a.myshopify.com", null)).resolves.toBe(false);
+    await expect(claimGuardEmailNoticeShown("a.myshopify.com", "h1")).resolves.toBe(false);
   });
 
   it("resetGuardEmailNotice clears the consent so Home asks again, unless turned off", async () => {
@@ -586,7 +588,11 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: {
         id: "shop-1",
-        OR: [{ guardEmailOffAt: { not: null } }, { guardEmailNoticeShownAt: null }],
+        OR: [
+          { guardEmailOffAt: { not: null } },
+          { guardEmailNoticeShownAt: null },
+          { guardEmailConsentHash: null },
+        ],
       },
       data: {
         guardEmailOffAt: null,
@@ -595,7 +601,7 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
       },
     });
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
-    await expect(enableGuardEmail("shop-1", null)).resolves.toBe(false);
+    await expect(enableGuardEmail("shop-1", "hash-1")).resolves.toBe(false);
   });
 
   it("enableGuardEmail on a shop already on re-stamps a stale hash to the address shown (wave 3 U5)", async () => {
@@ -604,6 +610,20 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
     expect(mockDb.shop.updateMany).toHaveBeenLastCalledWith({
       where: { id: "shop-1", guardEmailOffAt: null, guardEmailNoticeShownAt: { not: null } },
       data: { guardEmailConsentHash: "hash-new" },
+    });
+  });
+
+  it("getGuardEmailConsent reads the consent hash too (gc-1q1s.12: no hash is no consent)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    await getGuardEmailConsent("shop-1");
+    expect(mockDb.shop.findUnique).toHaveBeenCalledWith({
+      where: { id: "shop-1" },
+      select: {
+        alertsEnabled: true,
+        guardEmailNoticeShownAt: true,
+        guardEmailOffAt: true,
+        guardEmailConsentHash: true,
+      },
     });
   });
 

@@ -15,6 +15,8 @@
  * (guardEmailNoticeShownAt, claimed once like summaryNoticeShownAt), the
  * merchant has not pressed its "Turn off" (guardEmailOffAt), and mail is not
  * unsubscribed (alertsEnabled; the email's unsubscribe link turns it off).
+ * Email goes ONLY to the address the notice or Settings named
+ * (guardEmailConsentHash); no hash is no consent (gc-1q1s.12).
  *
  * DARK: STOREFRONT_GUARD_EMAIL_ENABLED (and the guard flag) plus the merchant
  * mail transport (MERCHANT_ALERTS_ENABLED + sender). While dark the notice is
@@ -187,8 +189,6 @@ export type GuardEmailShop = GuardEmailNoticeShop & {
   id: string;
   storeName: string | null;
   uninstalledAt: Date | null;
-  /** guardConsentHash of the address the notice named (null: the generic wording). */
-  guardEmailConsentHash: string | null;
 };
 
 export type GuardEmailSkipReason =
@@ -196,7 +196,8 @@ export type GuardEmailSkipReason =
   | "plan_not_eligible"
   | "shop_opted_out"
   | "guard_email_off"
-  | "no_consent";
+  | "no_consent"
+  | "no_consent_address";
 
 /** The shop-level gates (no I/O): the first failing reason, or null. */
 export function guardEmailShopSkipReason(shop: GuardEmailShop): GuardEmailSkipReason | null {
@@ -205,6 +206,10 @@ export function guardEmailShopSkipReason(shop: GuardEmailShop): GuardEmailSkipRe
   if (!shop.alertsEnabled) return "shop_opted_out";
   if (shop.guardEmailOffAt) return "guard_email_off";
   if (!shop.guardEmailNoticeShownAt) return "no_consent";
+  // Consent names one address (gc-1q1s.12): a stamp without its hash (a
+  // legacy generic-wording claim) is no consent, never "whatever the owner
+  // email is at send time". Home offers the notice again with the address.
+  if (!shop.guardEmailConsentHash) return "no_consent_address";
   return null;
 }
 
@@ -339,8 +344,9 @@ export async function sendGuardIncidentEmail(args: {
     const storeName = fresh?.storeName ?? shop.storeName;
     if (!recipient) return skip("no_recipient");
     // Consent covers the address the notice named (audit fix): a different
-    // owner email gets the notice again first, and no email until then.
-    if (shop.guardEmailConsentHash && guardConsentHash(recipient) !== shop.guardEmailConsentHash) {
+    // owner email gets the notice again first, and no email until then. The
+    // hash is never null here (guardEmailShopSkipReason, gc-1q1s.12).
+    if (guardConsentHash(recipient) !== shop.guardEmailConsentHash) {
       await resetGuardEmailNotice(shop.id);
       return skip("recipient_changed");
     }

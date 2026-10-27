@@ -182,6 +182,8 @@ describe("getShopMetadata", () => {
         // gc-1q1s.7: Home's checkout guard email consent notice gates.
         guardEmailNoticeShownAt: true,
         guardEmailOffAt: true,
+        // gc-1q1s.12: consent names an address (no hash: no consent).
+        guardEmailConsentHash: true,
       },
     });
   });
