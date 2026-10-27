@@ -157,6 +157,7 @@ import {
 const HOME_SECURITY_TYPES: readonly FindingType[] = [
   FindingType.MALICIOUS_SCRIPT,
   FindingType.APP_INCIDENT_ADVISORY,
+  FindingType.MENU_INJECTION,
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -384,6 +385,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Non-ignored affected-app advisories in the latest scan (gc-14x5). They
   // are in no lane, so the top card names them in one line of their own.
   const advisoryCount = latestTypeCounts?.APP_INCIDENT_ADVISORY ?? 0;
+  // Non-ignored code in a menu (gc-7gjj.1): in no lane either, same treatment.
+  const menuCount = latestTypeCounts?.MENU_INJECTION ?? 0;
 
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
 
@@ -451,6 +454,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // malicious ones (the lanes count those too).
   const riskSummaryLine = homeRiskSummaryLine({
     advisories: advisoryCount,
+    menu: menuCount,
     malicious: maliciousCount,
     leftover:
       laneSummary.reduce((sum, row) => sum + row.count, 0) -
@@ -487,10 +491,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (!read) {
       const found = await getTypeCountsForScan(scanId, HOME_SECURITY_TYPES);
       const advisories = areStoredAdvisoriesShown() ? found.APP_INCIDENT_ADVISORY : 0;
-      if (found.MALICIOUS_SCRIPT === 0 && advisories === 0) return null;
-      if (!hasIgnores || advisories === 0) {
+      const menu = found.MENU_INJECTION;
+      if (found.MALICIOUS_SCRIPT === 0 && advisories === 0 && menu === 0) return null;
+      if (!hasIgnores || advisories + menu === 0) {
         return {
-          keptByType: { APP_INCIDENT_ADVISORY: advisories },
+          keptByType: { APP_INCIDENT_ADVISORY: advisories, MENU_INJECTION: menu },
           keptFindings: null,
           maliciousFound: found.MALICIOUS_SCRIPT,
         };
@@ -499,7 +504,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { summary, keptFindings, ignoredMalicious } =
       read ?? (await getFilteredFindingSummaryAndKept(scanId, ignores));
     const maliciousFound = (summary.byType.MALICIOUS_SCRIPT ?? 0) + ignoredMalicious;
-    if (maliciousFound === 0 && (summary.byType.APP_INCIDENT_ADVISORY ?? 0) === 0) return null;
+    if (
+      maliciousFound === 0 &&
+      (summary.byType.APP_INCIDENT_ADVISORY ?? 0) === 0 &&
+      (summary.byType.MENU_INJECTION ?? 0) === 0
+    ) {
+      return null;
+    }
     return { keptByType: summary.byType, keptFindings, maliciousFound };
   };
   if (hasResults && latestScan && latestTypeCounts) {
@@ -553,8 +564,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         filteredTotal: latestFilteredTotal,
         maliciousFound: maliciousCount,
         maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
-        // gc-q5z8: a non-ignored advisory is a security risk too (red tile).
-        advisoryKept: advisoryCount,
+        // gc-q5z8: a non-ignored advisory is a security risk too (red tile),
+        // and so is non-ignored code in a menu (gc-7gjj.1).
+        advisoryKept: advisoryCount + menuCount,
         // gc-xtno: "k security risks" counts the banners, not finding lines.
         distinctRisks: securityRisks.length,
       })

@@ -137,11 +137,12 @@ describe("add_change_log migration (gc-rrh.4)", () => {
     }
   });
 
-  it("is the latest migration (applied last on deploy), right after the advisory type", () => {
+  it("sorts right after the advisory type (later migrations follow it, gc-7gjj.1)", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations"))
       .filter((d) => /^\d{14}_/.test(d))
       .sort();
-    expect(dirs.at(-1)).toBe(NAME);
-    expect(dirs.at(-2)).toBe("20261019120000_add_app_incident_advisory_finding_type");
+    const self = dirs.indexOf(NAME);
+    expect(self).toBeGreaterThan(0);
+    expect(dirs[self - 1]).toBe("20261019120000_add_app_incident_advisory_finding_type");
   });
 });

@@ -35,6 +35,7 @@ const VALID_LOCATOR: Record<string, string> = {
   GHOST_PAGE: "pages/summer-sale",
   GHOST_REDIRECT: "redirects/gid://shopify/UrlRedirect/456",
   GHOST_TRANSLATION: "translations/fr/PRODUCT",
+  MENU_INJECTION: "menus/123/items/456",
 };
 
 describe("numericIdFromGidLocator", () => {
@@ -62,6 +63,31 @@ describe("numericIdFromGidLocator", () => {
 
   it("returns null for a malformed GID with no numeric id", () => {
     expect(numericIdFromGidLocator("products/gid://shopify/Product/abc")).toBeNull();
+  });
+});
+
+describe("MENU_INJECTION links (gc-7gjj.1)", () => {
+  it("links the menu by its numeric id", () => {
+    expect(buildAdminResourceUrl(SHOP, "MENU_INJECTION", "menus/123/items/456")).toBe(
+      `${ADMIN_BASE}/content/menus/123`,
+    );
+  });
+
+  it("falls back to the menus list when the locator has no numeric menu id", () => {
+    for (const locator of ["menus/abc/items/1", "menus/", "", null, undefined]) {
+      expect(buildAdminResourceUrl(SHOP, "MENU_INJECTION", locator), String(locator)).toBe(
+        `${ADMIN_BASE}/content/menus`,
+      );
+    }
+  });
+
+  it("labels the link and the location in plain words", () => {
+    expect(adminResourceLinkLabel("MENU_INJECTION")).toBe("Open menu");
+    expect(adminResourceLocatorLabel("MENU_INJECTION", "menus/123/items/456")).toBe("Menu item");
+  });
+
+  it("returns null without a shop domain", () => {
+    expect(buildAdminResourceUrl("", "MENU_INJECTION", "menus/123/items/456")).toBeNull();
   });
 });
 

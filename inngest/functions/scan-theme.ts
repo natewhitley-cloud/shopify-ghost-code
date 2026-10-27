@@ -140,6 +140,7 @@ import {
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import {
   isAdvisoryCheckLive,
+  isMenuInjectionLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
 } from "../../app/services/soft-launch-flags.server";
@@ -362,6 +363,91 @@ async function runAuditStep(opts: {
   // Scope was present (the scope-absence early return above is the ONLY skip
   // path), so this category was audited: `skipped` is false.
   return { findingCount: findings.length, skipped: false };
+}
+
+/**
+ * What the menu audit step returns (gc-7gjj.1). `audited` is true only when
+ * the walk ran (flag on, shop found, scope granted): a scan where it is false
+ * records MENU_INJECTION as not live, so the differ treats the type as
+ * un-audited (never new, never fixed). `skipped` (scope missing) and `capped`
+ * (MENU_CAP / MENU_ITEM_CAP hit) feed skippedCategories / cappedCategories.
+ */
+type MenuAuditStepResult = CappableAuditStepResult & {
+  audited: boolean;
+  itemCount: number;
+  pageCount: number;
+  throttleSleepMs: number;
+  cost: QueryCostStats;
+};
+
+/**
+ * The menu-label injection audit (gc-7gjj.1, spike §2.5): read every menu
+ * item's title and URL (Admin `menus`, read_online_store_navigation, the
+ * redirect audit's scope and probe) and persist one MENU_INJECTION finding per
+ * item that holds code. Dark behind MENU_INJECTION_LIVE_ENABLED: off = inert,
+ * no request at all, and neither a scope skip nor capped.
+ */
+async function runMenuAudit(opts: {
+  scanId: string;
+  shopId: string;
+  grantedOptionalScopes: GrantedOptionalScopes;
+}): Promise<MenuAuditStepResult> {
+  const none = {
+    findingCount: 0,
+    skipped: false,
+    capped: false,
+    audited: false,
+    itemCount: 0,
+    pageCount: 0,
+    throttleSleepMs: 0,
+    cost: sumQueryCost([]),
+  };
+  if (!isMenuInjectionLive()) return none;
+
+  const db = (await import("../../app/db.server")).default;
+  const shop = await db.shop.findUnique({ where: { id: opts.shopId } });
+  // No shop record: a no-op, not a scope skip.
+  if (!shop) return none;
+
+  const { unauthenticated } = await import("../../app/shopify.server");
+  const { admin } = await unauthenticated.admin(shop.domain);
+  const { hasNavigationScope } = await import("../../app/services/redirect-fetcher.server");
+  if (!(await hasNavigationScope(admin, opts.grantedOptionalScopes))) {
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.info("scope not available — skipping audit step", {
+      function: "scan-theme",
+      stepName: "menu-audit",
+      shopId: opts.shopId,
+    });
+    // Scope not granted: NOT audited (skippedCategories keeps prior findings).
+    return { ...none, skipped: true };
+  }
+
+  const { fetchMenuItems } = await import("../../app/services/menu-fetcher.server");
+  const { detectMenuInjection } = await import("../../app/services/menu-injection-detector.server");
+  const stats: PaginateStats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+  const { items, capped } = await fetchMenuItems(admin, stats);
+  const findings = detectMenuInjection(items);
+
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.MENU_INJECTION,
+    findings,
+    event: "menu-audit_findings",
+    logMessage: "audit step findings persisted",
+  });
+
+  return {
+    findingCount: findings.length,
+    skipped: false,
+    capped,
+    audited: true,
+    itemCount: items.length,
+    pageCount: stats.pageCount,
+    throttleSleepMs: stats.throttleSleepMs,
+    cost: sumQueryCost([stats.cost]),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1810,6 +1896,15 @@ export const scanTheme = inngest.createFunction(
 
       const redirectsMs = Date.now() - redirectsStart;
 
+      // Menu-label injection audit (gc-7gjj.1): one walk, no chunking (the
+      // caps bound it to MENU_CAP / MENU_PAGE_SIZE pages). Dark unless
+      // MENU_INJECTION_LIVE_ENABLED is "true" (inert: no request).
+      const menusStart = Date.now();
+      const menuResult = await step.run("menu-audit", () =>
+        runMenuAudit({ scanId, shopId, grantedOptionalScopes }),
+      );
+      const menusMs = Date.now() - menusStart;
+
       // What the capped walks covered (gc-747u), for the differ and the scan
       // page disclosure. Only walks that ran get a key. A walk whose first step
       // was memoized before gc-747u (no `cap` in its output) walked the old
@@ -2261,6 +2356,9 @@ export const scanTheme = inngest.createFunction(
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
         [jsonLdPriceResult.skipped, FindingType.JSON_LD_PRICE_CONFLICT],
         [danglingRefResult.skipped, FindingType.DANGLING_REFERENCE],
+        // gc-7gjj.1: its own type, so a missing navigation scope never makes
+        // the theme or homepage MALICIOUS_SCRIPT findings un-audited.
+        [menuResult.skipped, FindingType.MENU_INJECTION],
       ]);
 
       // Categories whose audit ran (scope granted) but a SIZE cap left part of
@@ -2274,6 +2372,8 @@ export const scanTheme = inngest.createFunction(
         // gc-747u: the bulk-redirect tally outgrew its step-boundary budget, so
         // bulk patterns were not checked this scan.
         [redirectResult.capped, FindingType.GHOST_REDIRECT],
+        // gc-7gjj.1: MENU_CAP or MENU_ITEM_CAP left some menu items unread.
+        [menuResult.capped, FindingType.MENU_INJECTION],
         // gc-wr81: the missing-snippet index was cut (more missing snippets
         // than it keeps, or a snippet rendered by more files than it keeps),
         // so an error naming one past a cut could not be confirmed. gc-wnhs
@@ -2358,10 +2458,13 @@ export const scanTheme = inngest.createFunction(
         ? [
             ...persistedLiveFindingTypes.filter(
               (t) =>
-                !isStorefrontFinding(t) ||
-                (scriptTagResult.audited &&
-                  (t !== FindingType.LIQUID_ERROR_RENDERED ||
-                    scriptTagResult.liquidAudited !== false)),
+                (!isStorefrontFinding(t) ||
+                  (scriptTagResult.audited &&
+                    (t !== FindingType.LIQUID_ERROR_RENDERED ||
+                      scriptTagResult.liquidAudited !== false))) &&
+                // gc-7gjj.1: the menu audit is live for this scan only when
+                // its walk actually ran (flag flipped mid-run, no shop: not).
+                (t !== FindingType.MENU_INJECTION || menuResult.audited === true),
             ),
             ...(scriptTagResult.homepageMaliciousCount !== undefined
               ? [HOMEPAGE_MALICIOUS_COVERAGE_KEY]
@@ -2702,10 +2805,12 @@ export const scanTheme = inngest.createFunction(
                 products: productsMs,
                 pages: pagesMs,
                 redirects: redirectsMs,
+                menus: menusMs,
               },
               pageCounts: {
                 products: productResult.pageCount,
                 redirects: redirectResult.pageCount,
+                menus: menuResult.pageCount,
               },
               throttleSleepMs: productResult.throttleSleepMs + redirectResult.throttleSleepMs,
               truncatedWalks,
@@ -2719,7 +2824,12 @@ export const scanTheme = inngest.createFunction(
               queryCost: {
                 products: walkCostSignal(productResult.cost, productResult.pageCount),
                 redirects: walkCostSignal(redirectResult.cost, redirectResult.pageCount),
+                // gc-7gjj.1: the menus query's cost is undocumented; this is
+                // where the first live scans measure it (with gc-7gjj.5).
+                menus: walkCostSignal(menuResult.cost, menuResult.pageCount),
               },
+              // gc-7gjj.1: menu items read (counts only, no menu text).
+              menuItemCount: menuResult.itemCount,
               walkThrottleSleepMs: {
                 products: productResult.throttleSleepMs,
                 redirects: redirectResult.throttleSleepMs,

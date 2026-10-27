@@ -85,7 +85,7 @@ export function optionalScopeUnlocks(scope: OptionalScope, brokenLinksIncluded: 
  *   - GHOST_TAG / GHOST_PRICE / GHOST_METAFIELD,
  *     JSON_LD_PRICE_CONFLICT                         → read_products                (hasProductScope)
  *   - GHOST_PAGE                                     → read_content                 (hasContentScope)
- *   - GHOST_REDIRECT                                 → read_online_store_navigation (hasNavigationScope)
+ *   - GHOST_REDIRECT, MENU_INJECTION                 → read_online_store_navigation (hasNavigationScope)
  *   - DANGLING_REFERENCE                             → read_products + read_content (either unlocks part)
  *   - SCRIPT_TAG_SUNSET, LIQUID_ERROR_RENDERED      → none: never scope-skipped, only
  *                                                      `unreachableCategories` (storefront
@@ -108,6 +108,7 @@ export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: Op
   JSON_LD_PRICE_CONFLICT: { label: "Structured-data prices", scopes: ["read_products"] },
   GHOST_PAGE: { label: "Content pages", scopes: ["read_content"] },
   GHOST_REDIRECT: { label: "URL redirects", scopes: ["read_online_store_navigation"] },
+  MENU_INJECTION: { label: "Menu labels", scopes: ["read_online_store_navigation"] },
   DANGLING_REFERENCE: { label: "Broken links", scopes: ["read_products", "read_content"] },
   SCRIPT_TAG_SUNSET: { label: "Script tag sunset", scopes: [] },
   LIQUID_ERROR_RENDERED: { label: "Liquid errors on your homepage", scopes: [] },

@@ -105,6 +105,10 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // their checkout today. The detector sets HIGH directly (like
   // MALICIOUS_SCRIPT); this entry keeps the exhaustive map honest.
   [FindingType.APP_INCIDENT_ADVISORY]: Severity.HIGH,
+  // MENU_INJECTION is HIGH (gc-7gjj.1): a menu label or URL holds code that can
+  // run in shoppers' browsers (the October 2026 checkout hijack). The detector
+  // sets HIGH directly; this entry keeps the exhaustive map honest.
+  [FindingType.MENU_INJECTION]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

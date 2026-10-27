@@ -166,7 +166,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(39);
+    expect(allTypes).toHaveLength(40);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -183,7 +183,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(39);
+    expect(signature.length + heuristic.length).toBe(40);
   });
 });
 
@@ -258,7 +258,7 @@ describe("isThemeFileFinding", () => {
   // fails here, forcing a deliberate theme-file / Admin-resource / storefront call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(39);
+    expect(allTypes).toHaveLength(40);
 
     for (const type of allTypes) {
       const memberships = [
@@ -280,7 +280,7 @@ describe("isThemeFileFinding", () => {
       ...THEME_FILE_TYPE_SETS.storefront,
     ];
     expect(new Set(all).size).toBe(all.length);
-    expect(all.length).toBe(39);
+    expect(all.length).toBe(40);
   });
 
   it("classifies SCRIPT_TAG_SUNSET as storefront only (no editor or admin link)", () => {

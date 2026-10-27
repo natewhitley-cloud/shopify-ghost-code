@@ -842,6 +842,16 @@ enum FindingType {
   // plans, never paywalled, honours ignores. Soft-launched behind
   // APP_INCIDENT_ADVISORY_LIVE_ENABLED.
   APP_INCIDENT_ADVISORY
+  // Emitted EXCLUSIVELY by the menu audit (menu-injection-detector.server.ts,
+  // gc-7gjj.1): a navigation menu item's title or URL holds code that can run in
+  // shoppers' browsers (a script tag, an on*= handler inside a tag, a frame, a
+  // javascript: URL) or names a listed malicious domain. Read through the Admin
+  // `menus` query, so it is scope-gated (read_online_store_navigation) and has
+  // its own type: sharing MALICIOUS_SCRIPT would put that type in
+  // skippedCategories whenever the scope is missing and break its diffing.
+  // Always HIGH, all plans, never paywalled, honours ignores. Soft-launched
+  // behind MENU_INJECTION_LIVE_ENABLED.
+  MENU_INJECTION
 }
 
 enum SubmissionStatus {

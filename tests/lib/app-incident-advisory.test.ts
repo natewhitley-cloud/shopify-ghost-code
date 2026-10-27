@@ -81,7 +81,12 @@ import { isUpgradeReturnEligible } from "../../app/lib/upgrade-return";
 
 const ADVISORY = "APP_INCIDENT_ADVISORY" as const;
 const ALL_TYPES = Object.values(FindingType);
-const OTHER_TYPES = ALL_TYPES.filter((t) => t !== ADVISORY && t !== "MALICIOUS_SCRIPT");
+// MENU_INJECTION (gc-7gjj.1) is a fellow security type with its own tests
+// (tests/services/menu-injection.server.test.ts), so it is not an "other" type.
+const MENU = "MENU_INJECTION" as const;
+const OTHER_TYPES = ALL_TYPES.filter(
+  (t) => t !== ADVISORY && t !== "MALICIOUS_SCRIPT" && t !== MENU,
+);
 const SEVERITIES: Severity[] = ["HIGH", "MEDIUM", "LOW"];
 
 function c(id: string, findingType: FindingType, severity: Severity = "HIGH", minute = 0) {
@@ -115,10 +120,11 @@ describe("isNeverPaywalledFindingType (the one plan-gating exemption list)", () 
     expect(isNeverPaywalledFindingType(value)).toBe(false);
   });
 
-  it("the list is exactly those two types, each a real FindingType, none repeated", () => {
+  it("the list is exactly the three security types, each a real FindingType, none repeated", () => {
     expect([...NEVER_PAYWALLED_FINDING_TYPES]).toEqual([
       "MALICIOUS_SCRIPT",
       "APP_INCIDENT_ADVISORY",
+      "MENU_INJECTION",
     ]);
     for (const type of NEVER_PAYWALLED_FINDING_TYPES) expect(ALL_TYPES).toContain(type);
     expect(new Set(NEVER_PAYWALLED_FINDING_TYPES).size).toBe(NEVER_PAYWALLED_FINDING_TYPES.length);
@@ -385,8 +391,8 @@ describe("Start here presentation", () => {
     expect(view.linkLabel).toBe("See what to check");
   });
 
-  it("no other type's row gets a title or link text override", () => {
-    for (const type of ALL_TYPES.filter((t) => t !== ADVISORY)) {
+  it("no other type's row gets a title or link text override (but code in a menu)", () => {
+    for (const type of ALL_TYPES.filter((t) => t !== ADVISORY && t !== MENU)) {
       const [view] = toTopFindingViews("scan-1", [{ ...finding, findingType: type }], true);
       expect(view.title, type).toBeUndefined();
       expect(view.linkLabel, type).toBeUndefined();
@@ -477,10 +483,10 @@ describe("theme health: an advisory is not in the checklist at all (round 3)", (
       scriptTagsStopped: false,
     });
 
-  it("is in no category: the map covers every other type and not this one", () => {
+  it("is in no category: the map covers every other type (but code in a menu) and not this one", () => {
     expect(Object.keys(HEALTH_CATEGORY_OF)).not.toContain(ADVISORY);
     expect(Object.keys(HEALTH_CATEGORY_OF).sort()).toEqual(
-      ALL_TYPES.filter((t) => t !== ADVISORY).sort(),
+      ALL_TYPES.filter((t) => t !== ADVISORY && t !== MENU).sort(),
     );
     for (const category of HEALTH_CATEGORIES) {
       expect(typesForHealthCategory(category.key)).not.toContain(ADVISORY);
@@ -622,9 +628,9 @@ describe("classification", () => {
       expect(laneForType(ADVISORY)).toBeNull();
     });
 
-    it("it is the ONLY type without a lane", () => {
+    it("it and code in a menu (gc-7gjj.1) are the only types without a lane", () => {
       const unlaned = ALL_TYPES.filter((t) => CONSEQUENCE_MAP[t].primary === null);
-      expect(unlaned).toEqual([ADVISORY]);
+      expect(unlaned).toEqual([ADVISORY, MENU]);
     });
 
     it.each(LANES.map((l) => l.key))(
@@ -676,13 +682,13 @@ describe("classification", () => {
   });
 
   describe("shown in its own section, never in the findings list", () => {
-    it("is the one own-section type", () => {
-      expect([...OWN_SECTION_FINDING_TYPES]).toEqual(["APP_INCIDENT_ADVISORY"]);
+    it("is an own-section type, with code in a menu (gc-7gjj.1)", () => {
+      expect([...OWN_SECTION_FINDING_TYPES]).toEqual(["APP_INCIDENT_ADVISORY", "MENU_INJECTION"]);
       expect(isOwnSectionFindingType(ADVISORY)).toBe(true);
     });
 
     it("no other type is, malicious code included (it has the security alert and stays in the list)", () => {
-      for (const type of ALL_TYPES.filter((t) => t !== ADVISORY)) {
+      for (const type of ALL_TYPES.filter((t) => t !== ADVISORY && t !== MENU)) {
         expect(isOwnSectionFindingType(type), type).toBe(false);
       }
       expect(isOwnSectionFindingType("")).toBe(false);
@@ -848,7 +854,7 @@ describe("getFindingCardCopy", () => {
     });
   });
 
-  it.each([...ALL_TYPES.filter((t) => t !== ADVISORY), "SOME_FUTURE_TYPE", ""])(
+  it.each([...ALL_TYPES.filter((t) => t !== ADVISORY && t !== MENU), "SOME_FUTURE_TYPE", ""])(
     "%s keeps the default card presentation",
     (type) => {
       expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
@@ -885,7 +891,7 @@ describe("the advisory steps: one source for the card's list and the how-to stri
     }
   });
 
-  it.each(ALL_TYPES.filter((t) => t !== ADVISORY))(
+  it.each(ALL_TYPES.filter((t) => t !== ADVISORY && t !== MENU))(
     "%s has no step list: its card renders its how-to string as before",
     (type) => {
       expect(getFindingCardCopy(type).steps).toBeNull();

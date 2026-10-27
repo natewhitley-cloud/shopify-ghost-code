@@ -35,8 +35,8 @@ describe("add_app_incident_advisory_finding_type migration (gc-14x5)", () => {
     expect(SQL).toMatch(/Enum values cannot be dropped in Postgres/);
   });
 
-  it("matches the Prisma schema (the enum's last value)", () => {
-    expect(SCHEMA).toMatch(/enum FindingType \{[^}]*?\n\s+APP_INCIDENT_ADVISORY\n\}/);
+  it("matches the Prisma schema (a value of the enum)", () => {
+    expect(SCHEMA).toMatch(/enum FindingType \{[^}]*?\n\s+APP_INCIDENT_ADVISORY\n/);
   });
 
   it("sorts right after theme health and before the change log", () => {

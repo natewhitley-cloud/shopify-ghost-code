@@ -37,6 +37,7 @@ import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.serve
 import { getPlanFeatures } from "../lib/billing.server";
 import { isHomepageMaliciousFinding } from "../lib/finding-classification";
 import { computeLaneSummary, soWhatForLane } from "../lib/finding-consequence";
+import { FINDING_TYPE_LABELS } from "../lib/finding-type-labels";
 import { buildFindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
@@ -257,12 +258,17 @@ export async function getSidekickScanSummary(
  * except an affected-app advisory, which stays "Security advisory". The
  * extension's instructions.md keys its "never say the store was hacked"
  * guidance on that exact label, so it must not become "Security risk" here
- * even though the in-app card shows it as one. An advisory is the only
- * finding in no lane (CONSEQUENCE_MAP, APP_INCIDENT_ADVISORY).
+ * even though the in-app card shows it as one. The advisory and code in a
+ * menu (gc-7gjj.1) are the findings in no lane (CONSEQUENCE_MAP). Code in a
+ * menu is "Security risk": it is not about a report, it is code GhostCode
+ * found in the store's own menus.
  */
 export const SIDEKICK_ADVISORY_IMPACT = "Security advisory";
 
-export function sidekickTopFindingImpact(f: Pick<TopFindingView, "securityRisk" | "lane">): string {
+export function sidekickTopFindingImpact(
+  f: Pick<TopFindingView, "securityRisk" | "lane" | "typeLabel">,
+): string {
+  if (f.typeLabel === FINDING_TYPE_LABELS.MENU_INJECTION) return topFindingLabel(f);
   return f.lane === null ? SIDEKICK_ADVISORY_IMPACT : topFindingLabel(f);
 }
 

@@ -117,6 +117,8 @@ const CATEGORY_ORDER = new Map<string, number>([
   ...HEALTH_CATEGORIES.map((c, i) => [c.key, i] as const),
   // The advisory check (gc-q5z8) sits right after known malicious code.
   ["app-advisories", HEALTH_CATEGORIES.findIndex((c) => c.key === "malicious") + 0.5] as const,
+  // The menu check (gc-7gjj.1) sits right after the advisory check.
+  ["menu-labels", HEALTH_CATEGORIES.findIndex((c) => c.key === "malicious") + 0.6] as const,
 ]);
 
 /**
@@ -236,11 +238,12 @@ export function ThemeHealthChecklist({
   malicious?: HealthRow | null;
 }) {
   const groups = groupHealthRows(rows, maliciousRow);
-  const { theme, unpublished, clean, gaps, malicious, advisory } = groups;
+  const { theme, unpublished, clean, gaps, malicious, advisory, menu } = groups;
   const facts = themeFacts(theme, unpublished?.detail ?? null);
-  // An open advisory is a failed chip, first (gc-q5z8); then every other chip
-  // in category order.
+  // Open security checks are failed chips, first: code in a menu (gc-7gjj.1),
+  // then an advisory (gc-q5z8); then every other chip in category order.
   const chips = [
+    ...(menu ? [menu] : []),
     ...(advisory ? [advisory] : []),
     ...[...clean, ...gaps].sort(
       (a, b) => (CATEGORY_ORDER.get(a.key) ?? 0) - (CATEGORY_ORDER.get(b.key) ?? 0),

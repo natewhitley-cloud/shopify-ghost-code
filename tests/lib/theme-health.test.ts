@@ -69,9 +69,11 @@ describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", 
   const CATEGORY_KEYS = HEALTH_CATEGORIES.map((c) => c.key);
 
   // gc-14x5: an affected-app advisory is deliberately in NO category (it is a
-  // notice, not something wrong in the theme). Every other type must be placed.
+  // notice, not something wrong in the theme), and so is MENU_INJECTION
+  // (gc-7gjj.1, its own "Menu labels" check). Every other type must be placed.
   const HEALTH_TYPES = ALL_TYPES.filter(
-    (t): t is Exclude<FindingType, "APP_INCIDENT_ADVISORY"> => t !== "APP_INCIDENT_ADVISORY",
+    (t): t is Exclude<FindingType, "APP_INCIDENT_ADVISORY" | "MENU_INJECTION"> =>
+      t !== "APP_INCIDENT_ADVISORY" && t !== "MENU_INJECTION",
   );
 
   it("maps every FindingType enum member but the advisory (a new type must be placed here)", () => {

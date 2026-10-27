@@ -711,8 +711,8 @@ describe("sidekickTopFindingImpact: the extension's impact contract", () => {
     expect(advisoryOnly.map(([type]) => type)).toEqual(["APP_INCIDENT_ADVISORY"]);
   });
 
-  it("only known malicious code is a security risk", () => {
+  it("only known malicious code and code in a menu (gc-7gjj.1) are a security risk", () => {
     const risky = allImpacts().filter(([, impact]) => impact === "Security risk");
-    expect(risky.map(([type]) => type)).toEqual(["MALICIOUS_SCRIPT"]);
+    expect(risky.map(([type]) => type)).toEqual(["MALICIOUS_SCRIPT", "MENU_INJECTION"]);
   });
 });

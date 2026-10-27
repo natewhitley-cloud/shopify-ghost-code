@@ -1,9 +1,10 @@
 /**
- * Security risk banner (gc-q5z8): the merchant-facing view of the two finding
+ * Security risk banner (gc-q5z8): the merchant-facing view of the finding
  * types that are a security risk, an app named in a public security incident
- * (APP_INCIDENT_ADVISORY) and code from a known malicious source
- * (MALICIOUS_SCRIPT), and every sentence the banner, Home's findings tile and
- * the scan page's "Total findings" note say about them.
+ * (APP_INCIDENT_ADVISORY), code from a known malicious source
+ * (MALICIOUS_SCRIPT) and code in a menu label or link (MENU_INJECTION,
+ * gc-7gjj.1), and every sentence the banner, Home's findings tile and the
+ * scan page's "Total findings" note say about them.
  *
  * The views are built on the server (app/services/security-risk.server.ts),
  * where the curated lists live, and passed to the page as plain values. This
@@ -16,6 +17,8 @@
  * Which findings become a view (the caller's job, see the server builder):
  *   - Advisory: honours ignores, like the scan page's old advisory section. An
  *     ignored advisory has no banner, and is not counted as a security risk.
+ *   - Menu (gc-7gjj.1): honours ignores the same way (an `onclick` in a label
+ *     can be on purpose), one banner per menu item.
  *   - Malicious: shown whether or not it was ignored, like the scan page's
  *     security alert has always been (ignoring it does not take the code out
  *     of the theme). Counted the way each surface already counts it: Home's
@@ -92,7 +95,23 @@ export interface MaliciousRisk {
   description: string;
 }
 
-export type SecurityRisk = AdvisoryRisk | MaliciousRisk;
+/**
+ * Code in one navigation menu item's label or link (one MENU_INJECTION
+ * finding, gc-7gjj.1). Built from the stored finding only: the menu path and
+ * the bounded excerpt are its snippet's two lines.
+ */
+export interface MenuRisk {
+  kind: "menu";
+  finding: SecurityRiskFinding;
+  /** "Main menu > Shop", the snippet's first line. */
+  menuPath: string;
+  /** "Label: <img src=x onerror=...>", the snippet's second line, or null. */
+  seenAs: string | null;
+  /** The stored description (what kind of code, fixed wording). */
+  description: string;
+}
+
+export type SecurityRisk = AdvisoryRisk | MaliciousRisk | MenuRisk;
 
 /** The red bar's label. */
 export const SECURITY_RISK_LABEL = "Security risk";
@@ -108,14 +127,18 @@ export const SEE_WHAT_TO_CHECK = "See what to check";
  * the banner gets its own id.
  */
 export function securityRiskAnchorId(risk: SecurityRisk): string {
-  if (risk.kind === "advisory") return `finding-${risk.finding.id}`;
+  if (risk.kind === "advisory" || risk.kind === "menu") return `finding-${risk.finding.id}`;
   // A speed-test hit has no finding: its banner lives on the Store speed page.
   if (risk.seenIn === "speed_test") return `security-risk-speed-${risk.domain ?? "unknown"}`;
   return `security-risk-${risk.findings[0].id}`;
 }
 
+/** The menu banner's title (gc-7gjj.1). */
+export const MENU_RISK_TITLE = "A menu item in your store contains code";
+
 /** The banner's title. Names the app, or the domain. */
 export function securityRiskTitle(risk: SecurityRisk): string {
+  if (risk.kind === "menu") return MENU_RISK_TITLE;
   if (risk.kind === "malicious") {
     const what = risk.domain ? `${risk.domain}, a domain` : "a domain";
     if (risk.seenIn === "homepage")
@@ -148,8 +171,13 @@ function speedPagesLabel(pages: ReadonlyArray<"home" | "product">): string {
   return names.length > 0 ? names.join(" and ") : "store";
 }
 
-/** What GhostCode found (in the theme, on the homepage, or in the speed test). */
+/** What GhostCode found (in the theme, on the homepage, the speed test, or a menu). */
 export function securityRiskFound(risk: SecurityRisk): string {
+  if (risk.kind === "menu") {
+    return risk.seenAs
+      ? `GhostCode found it in ${risk.menuPath}. ${risk.seenAs}`
+      : `GhostCode found it in ${risk.menuPath}.`;
+  }
   if (risk.kind === "malicious") {
     const what = risk.domain ?? "it";
     if (risk.seenIn === "homepage") {
@@ -190,6 +218,9 @@ function sentenceEnd(text: string): string {
 
 /** The banner's body: the source's facts, what GhostCode found, and what to do. */
 export function securityRiskBody(risk: SecurityRisk): string {
+  if (risk.kind === "menu") {
+    return `${sentenceEnd(risk.description)} ${securityRiskFound(risk)} Whether it runs depends on how your theme shows menu labels, so remove it now.`;
+  }
   if (risk.kind === "malicious") {
     // The note's grammar varies by entry ("lookalike of ...", "sold in 2024
     // and then ..."), so it stays in brackets, as in the stored description.
@@ -211,7 +242,7 @@ export function securityRiskBody(risk: SecurityRisk): string {
 
 /** The secondary link's text, or null when there is no source to link. */
 export function securityRiskSourceLabel(risk: SecurityRisk): string | null {
-  if (risk.kind === "malicious" || risk.sourceUrl === null) return null;
+  if (risk.kind !== "advisory" || risk.sourceUrl === null) return null;
   return risk.reportedByDeveloper && risk.appName
     ? `Read ${risk.appName}'s statement`
     : "Read the report";
@@ -279,8 +310,8 @@ export const SECURITY_RISK_PLAN_NOTE = "shown on every plan";
 
 /**
  * The distinct security risks a set of banners makes once ignored findings
- * are left out (gc-xtno): every advisory banner (only non-ignored advisories
- * get one) and every malicious banner with at least one finding not in
+ * are left out (gc-xtno): every advisory and menu banner (only non-ignored
+ * ones get one) and every malicious banner with at least one finding not in
  * `ignoredFindingIds`. The scan page's ignore-filtered total counts these.
  */
 export function countKeptSecurityRisks(
@@ -288,7 +319,7 @@ export function countKeptSecurityRisks(
   ignoredFindingIds: ReadonlySet<string>,
 ): number {
   return risks.filter(
-    (risk) => risk.kind === "advisory" || risk.findings.some((f) => !ignoredFindingIds.has(f.id)),
+    (risk) => risk.kind !== "malicious" || risk.findings.some((f) => !ignoredFindingIds.has(f.id)),
   ).length;
 }
 
@@ -361,14 +392,18 @@ export function homeRiskSummaryLine(input: {
   advisories: number;
   malicious: number;
   leftover: number;
+  /** MENU_INJECTION findings left after ignores (gc-7gjj.1). Omitted = 0. */
+  menu?: number;
 }): string | null {
-  if (input.advisories <= 0 && input.malicious <= 0) return null;
+  const menu = input.menu ?? 0;
+  if (input.advisories <= 0 && input.malicious <= 0 && menu <= 0) return null;
   const parts: string[] = [];
   if (input.malicious > 0) {
     parts.push(
       plural(input.malicious, "piece of known malicious code", "pieces of known malicious code"),
     );
   }
+  if (menu > 0) parts.push(plural(menu, "menu item with code", "menu items with code"));
   if (input.advisories > 0) {
     parts.push(plural(input.advisories, "app security advisory", "app security advisories"));
   }

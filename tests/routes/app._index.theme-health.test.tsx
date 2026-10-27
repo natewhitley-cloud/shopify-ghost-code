@@ -194,7 +194,14 @@ const SCAN = {
   themeInfo: { name: "Dawn", version: "15.2.0", author: "Shopify", architecture: "os2" },
 };
 
-const TYPE_COUNTS = { GHOST_SCRIPT: 3, GHOST_STYLE: 1, GHOST_PIXEL: 2, LIQUID_ERROR_RENDERED: 1 };
+const TYPE_COUNTS = {
+  GHOST_SCRIPT: 3,
+  GHOST_STYLE: 1,
+  GHOST_PIXEL: 2,
+  LIQUID_ERROR_RENDERED: 1,
+  // getTypeCountsForScan zero-seeds every type (gc-7gjj.1 reads this one).
+  MENU_INJECTION: 0,
+};
 
 const THEMES = [
   { id: MAIN_ID, name: "Dawn - live", role: "MAIN", updatedAt: "2026-10-01T00:00:00Z" },
@@ -705,14 +712,16 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       const html = renderDashboard(data);
       const section = sectionOf(html);
       // Really built, not mocked: all eleven rows, nine of them with findings,
-      // plus the App security advisories check (gc-q5z8), which found one.
-      expect(data.themeHealth).toHaveLength(12);
-      expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(11);
+      // plus the App security advisories check (gc-q5z8) and the Menu labels
+      // check (gc-7gjj.1), which each found something.
+      expect(data.themeHealth).toHaveLength(13);
+      expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(12);
       // Rendered: every category found something, so only the theme facts show
       // (the vintage sentence and the theme library). No action box, and no
       // verdict line: the malicious line below is the verdict. The one chip is
       // the failed advisory check (a security risk is never hidden).
       expect(chipsOf(section)).toEqual([
+        { tone: "critical", glyph: "\u26a0", prefix: "Found: ", label: "Menu labels" },
         { tone: "critical", glyph: "\u26a0", prefix: "Found: ", label: "App security advisories" },
       ]);
       expect(actionOf(section)).toBeNull();
@@ -741,7 +750,8 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
           r.status === "issues" &&
           r.key !== "malicious" &&
           r.key !== "theme" &&
-          r.key !== "app-advisories",
+          r.key !== "app-advisories" &&
+          r.key !== "menu-labels",
       )) {
         expect(section, other.key).not.toContain(other.label);
       }
@@ -2295,7 +2305,7 @@ describe("Home: security risks never vanish during a rescan, and count per banne
       delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
     });
 
-    it("no security finding on the previous scan: ONE lean groupBy of the two security types", async () => {
+    it("no security finding on the previous scan: ONE lean groupBy of the three security types", async () => {
       serve([]);
       mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
 
@@ -2312,6 +2322,7 @@ describe("Home: security risks never vanish during a rescan, and count per banne
       expect(mockTypeCounts).toHaveBeenCalledWith("scan-1", [
         "MALICIOUS_SCRIPT",
         "APP_INCIDENT_ADVISORY",
+        "MENU_INJECTION",
       ]);
     });
 

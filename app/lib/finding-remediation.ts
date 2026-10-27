@@ -120,6 +120,18 @@ const ADVISORY_EMBED_REMEDIATION: Remediation = {
 };
 
 /** "1. First 2. Second ...": steps as the one-string how-to. */
+/**
+ * What to do about code in a menu label or link (gc-7gjj.1). GhostCode is
+ * read-only and never edits menus, so every step is the merchant's.
+ */
+export const MENU_INJECTION_STEPS: readonly string[] = [
+  "Open the menu in your Shopify admin (Content, Menus) and find the item named here.",
+  "Delete the code from the item's label or link, then save the menu.",
+  "Check which apps can edit your navigation (Settings, Apps) and remove any you don't recognise or no longer use.",
+  "If no app explains it, ask every staff account to change its password and turn on two-step authentication.",
+  "Contact Shopify Support and tell them what GhostCode found.",
+];
+
 function numberedSteps(steps: readonly string[]): string {
   return steps.map((step, i) => `${i + 1}. ${step}`).join(" ");
 }
@@ -329,6 +341,14 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo: numberedSteps(ADVISORY_STEPS),
   },
 
+  // ---- Code in a navigation menu label or link (gc-7gjj.1) ----
+  // Store data, not theme code: fixed in the menu, never in a theme file.
+  MENU_INJECTION: {
+    impact:
+      "A menu item holds code that can run in shoppers' browsers if your theme prints menu labels without escaping them. In October 2026 a compromised app used menu labels to load a fake checkout.",
+    howTo: numberedSteps(MENU_INJECTION_STEPS),
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:
@@ -428,6 +448,20 @@ const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
     confidence: "Matched a script address from a public incident report.",
     stepsHeading: "What to check",
     steps: ADVISORY_STEPS,
+    copyStepsLabel: "Copy steps",
+    copyStepsAccessibilityLabel: "Copy steps for this finding",
+    showSafetyBadge: false,
+    primaryEditorButton: false,
+    truncateSnippet: false,
+    startHereLinkLabel: "See what to check",
+  },
+  // Code in a menu (gc-7gjj.1): a security finding in store data. No removal
+  // badge, no code editor, and the excerpt is shown whole (it is bounded).
+  MENU_INJECTION: {
+    title: "A menu item in your store contains code",
+    confidence: "Matched code in a menu label or link.",
+    stepsHeading: "What to check",
+    steps: MENU_INJECTION_STEPS,
     copyStepsLabel: "Copy steps",
     copyStepsAccessibilityLabel: "Copy steps for this finding",
     showSafetyBadge: false,
@@ -647,11 +681,20 @@ export function buildRemovalInstructions(
   const howTo = getFindingRemediation(finding.findingType, finding.filename);
   // An affected-app advisory (gc-14x5): its description is the only thing
   // that names the app, so whoever receives the copied text knows which app.
-  if (finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description) {
+  // Code in a menu (gc-7gjj.1): the description says what kind of code.
+  if (
+    (finding.findingType === "APP_INCIDENT_ADVISORY" || finding.findingType === "MENU_INJECTION") &&
+    finding.description
+  ) {
     lines.push(finding.description);
   }
 
-  if (isAdminResourceFinding(finding.findingType)) {
+  if (finding.findingType === "MENU_INJECTION") {
+    // The stored snippet is the menu path, then the bounded excerpt.
+    lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
+    const snippet = finding.codeSnippet.trim();
+    if (snippet.length > 0) lines.push("Seen as:", snippet);
+  } else if (isAdminResourceFinding(finding.findingType)) {
     // Admin resources are edited in the Shopify Admin, not deleted as theme code:
     // show a human location label and lean on howTo (no line/snippet block).
     lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);

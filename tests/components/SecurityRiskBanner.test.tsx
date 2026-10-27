@@ -261,11 +261,11 @@ describe("buildSecurityRisks: several risks, ordering and fallbacks", () => {
       [embedFinding(SWYM, "a-swym"), embedFinding(SELLEASY, "a-sell")],
       [malFinding("m1", "layout/theme.liquid", 1)],
     );
-    expect(risks.map((r) => (r.kind === "malicious" ? r.domain : r.appName))).toEqual([
-      "biliing.top",
-      "Swym Wishlist Plus",
-      "Selleasy",
-    ]);
+    expect(
+      risks.map((r) =>
+        r.kind === "malicious" ? r.domain : r.kind === "advisory" ? r.appName : r.menuPath,
+      ),
+    ).toEqual(["biliing.top", "Swym Wishlist Plus", "Selleasy"]);
     const html = risks.map((r) => render(r)).join("");
     expect(html.match(/>Security risk</g)).toHaveLength(3);
   });

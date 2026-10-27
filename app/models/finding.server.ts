@@ -80,6 +80,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.SCRIPT_TAG_SUNSET]: 0,
     [FindingType.LIQUID_ERROR_RENDERED]: 0,
     [FindingType.APP_INCIDENT_ADVISORY]: 0,
+    [FindingType.MENU_INJECTION]: 0,
   };
 }
 

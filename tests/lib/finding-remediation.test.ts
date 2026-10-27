@@ -46,8 +46,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 39 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(39);
+  it("has 40 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(40);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {

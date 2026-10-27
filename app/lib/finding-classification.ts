@@ -198,6 +198,11 @@ const SIGNATURE_FINDING_TYPES = new Set([
   // URL host against the curated APP_INCIDENT_ADVISORIES list, whose match keys
   // are verified hosts of one named app.
   "APP_INCIDENT_ADVISORY",
+  // MENU_INJECTION (gc-7gjj.1): emits only on a positive pattern match (a
+  // script tag, an on*= handler inside a tag, a frame, a javascript: URL, or
+  // a listed malicious domain) in a menu label or link. Plain markup is never
+  // flagged, so the match is the claim.
+  "MENU_INJECTION",
 ]);
 
 /**
@@ -369,6 +374,7 @@ const THEME_FILE_FINDING_TYPES = new Set([
  *   - GHOST_TAG        → `products/{id}`                     (product-tag-detector)
  *   - GHOST_METAFIELD  → `products/{id}/metafields`          (metafield-detector)
  *   - GHOST_TRANSLATION→ `translations/{locale}/{resource}`  (translation-detector)
+ *   - MENU_INJECTION   → `menus/{menuId}/items/{itemId}`     (menu-injection-detector, gc-7gjj.1)
  *
  * NOTE: the gc-3on brief cited GHOST_TAG as a "theme-code" type, but the
  * product-tag detector attributes it to `products/{id}` — a product resource,
@@ -381,6 +387,7 @@ const ADMIN_RESOURCE_FINDING_TYPES = new Set([
   "GHOST_TAG",
   "GHOST_METAFIELD",
   "GHOST_TRANSLATION",
+  "MENU_INJECTION",
 ]);
 
 /**
@@ -506,6 +513,8 @@ export function exportLocation(finding: {
  *                             alert shows every one on every plan).
  *   - APP_INCIDENT_ADVISORY: code from an app named in a public security
  *                             incident report (gc-14x5).
+ *   - MENU_INJECTION:        code in a navigation menu label or link
+ *                             (gc-7gjj.1).
  *
  * This is the ONE list behind every PLAN-GATING exemption: the Free preview
  * (never takes a preview slot, never raises the preview count), the upgrade
@@ -516,7 +525,11 @@ export function exportLocation(finding: {
  * (filterIgnoredExceptMalicious, the findings tile, the trend chart, the
  * summary email): an advisory honours ignores like any other finding.
  */
-export const NEVER_PAYWALLED_FINDING_TYPES = ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"] as const;
+export const NEVER_PAYWALLED_FINDING_TYPES = [
+  "MALICIOUS_SCRIPT",
+  "APP_INCIDENT_ADVISORY",
+  "MENU_INJECTION",
+] as const;
 
 const NEVER_PAYWALLED_FINDING_TYPE_SET: ReadonlySet<string> = new Set(
   NEVER_PAYWALLED_FINDING_TYPES,
@@ -534,13 +547,14 @@ export function isNeverPaywalledFindingType(findingType: string): boolean {
 /**
  * Finding types the scan page shows in their OWN section above the findings
  * list, on every plan, and never repeats inside the list, its type filter or
- * its lane filter. Today: affected-app advisories. They honour ignores (an
+ * its lane filter. Today: affected-app advisories and code in a menu
+ * (gc-7gjj.1), each shown as a Security risk banner. They honour ignores (an
  * ignored one is not shown there).
  *
  * MALICIOUS_SCRIPT is not here: it has the critical security alert, which
  * shows it regardless of ignores, and it also stays in the paid list.
  */
-export const OWN_SECTION_FINDING_TYPES = ["APP_INCIDENT_ADVISORY"] as const;
+export const OWN_SECTION_FINDING_TYPES = ["APP_INCIDENT_ADVISORY", "MENU_INJECTION"] as const;
 
 const OWN_SECTION_FINDING_TYPE_SET: ReadonlySet<string> = new Set(OWN_SECTION_FINDING_TYPES);
 

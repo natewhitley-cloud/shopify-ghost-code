@@ -22,6 +22,11 @@ export const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
   // Affected-app advisory (gc-14x5): never in prod before, and it names a
   // real vendor, so it stays dark until its first output has been reviewed.
   [FindingType.APP_INCIDENT_ADVISORY]: "APP_INCIDENT_ADVISORY_LIVE_ENABLED",
+  // Menu-label injection (gc-7gjj.1): a new Admin read (menus) and a new red
+  // security banner, so it stays dark until its first output is reviewed. Also
+  // gates the menus request itself (isMenuInjectionLive): off = no request, no
+  // category, no finding, not live.
+  [FindingType.MENU_INJECTION]: "MENU_INJECTION_LIVE_ENABLED",
 };
 
 /**
@@ -63,6 +68,15 @@ export function isAdvisoryCheckLive(now: Date = new Date()): boolean {
 export function areStoredAdvisoriesShown(): boolean {
   const flag = SOFT_LAUNCH_FLAGS[FindingType.APP_INCIDENT_ADVISORY];
   return process.env[flag!] === "true";
+}
+
+/**
+ * Whether the menu-label injection audit may run (gc-7gjj.1). Gates the Admin
+ * `menus` request itself, not just persistence: the scanner never reads a
+ * store's menus while this is false.
+ */
+export function isMenuInjectionLive(): boolean {
+  return isSoftLaunchLive(FindingType.MENU_INJECTION);
 }
 
 /**

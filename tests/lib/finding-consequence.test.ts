@@ -4,7 +4,7 @@
  * Strategy:
  *   - Pure module, no dependencies — test directly.
  *   - Exhaustiveness / drift guard: every FindingType has a CONSEQUENCE_MAP entry.
- *   - Partition: PRIMARY lanes cleanly partition all 39 types (each in exactly one).
+ *   - Partition: PRIMARY lanes cleanly partition the 38 laned types (each in exactly one).
  *   - computeLaneSummary: sums, most-urgent urgency, hasAgentic, zero-lane omission.
  *   - startHereLane / dominantLane: urgency-first vs count-first tie-breaking, null.
  *   - Spot-check specific mappings against the grounded table.
@@ -43,14 +43,16 @@ const ALL_LANES: LaneKey[] = [
 describe("CONSEQUENCE_MAP exhaustiveness", () => {
   it("maps every FindingType enum member (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(39);
+    expect(allTypes).toHaveLength(40);
 
     for (const type of allTypes) {
       const entry = CONSEQUENCE_MAP[type];
       expect(entry, `${type} must have a CONSEQUENCE_MAP entry`).toBeDefined();
-      // gc-14x5: exactly one type has NO lane (an affected-app advisory).
-      if (type === "APP_INCIDENT_ADVISORY") expect(entry.primary).toBeNull();
-      else expect(ALL_LANES).toContain(entry.primary);
+      // gc-14x5 / gc-7gjj.1: exactly two types have NO lane (an affected-app
+      // advisory and code in a menu).
+      if (type === "APP_INCIDENT_ADVISORY" || type === "MENU_INJECTION") {
+        expect(entry.primary).toBeNull();
+      } else expect(ALL_LANES).toContain(entry.primary);
       for (const sec of entry.secondary) {
         expect(ALL_LANES).toContain(sec);
       }
@@ -191,11 +193,11 @@ describe("laneLabelForLane", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Partition: primary lanes cleanly cover all 39 types
+// Partition: primary lanes cleanly cover the 38 laned types
 // ---------------------------------------------------------------------------
 
 describe("typesForLane partition", () => {
-  it("primary lanes partition the 38 laned types with no type in two lanes (the advisory has none)", () => {
+  it("primary lanes partition the 38 laned types with no type in two lanes (the advisory and menu code have none)", () => {
     const seen = new Set<FindingType>();
     let total = 0;
 
@@ -211,13 +213,15 @@ describe("typesForLane partition", () => {
 
     expect(total).toBe(38);
     expect(seen.size).toBe(38);
-    // Union equals the full enum set minus the one type with no lane (gc-14x5).
+    // Union equals the full enum set minus the types with no lane (gc-14x5,
+    // gc-7gjj.1).
     expect([...seen].sort()).toEqual(
       Object.values(FindingType)
-        .filter((t) => t !== "APP_INCIDENT_ADVISORY")
+        .filter((t) => t !== "APP_INCIDENT_ADVISORY" && t !== "MENU_INJECTION")
         .sort(),
     );
     expect(laneForType("APP_INCIDENT_ADVISORY")).toBeNull();
+    expect(laneForType("MENU_INJECTION")).toBeNull();
   });
 });
 

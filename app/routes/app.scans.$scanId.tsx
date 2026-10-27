@@ -68,6 +68,7 @@ import {
   securityRiskAnchorId,
   totalFindingsNote,
   type AdvisoryRisk,
+  type MenuRisk,
 } from "../lib/security-risk";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
@@ -974,37 +975,50 @@ export function FindingRow({
 }
 
 /**
- * An affected-app advisory's Security risk banner on the scan page (gc-q5z8):
- * the banner with the "What to check" steps inline (so no "See what to check"
- * button), the Copy steps action and, under it all, Ignore. It replaces the
- * old advisory card, so the finding is shown once. The Ignore control is on
- * every plan here, Free included: after checking, a merchant must be able to
- * put it away (an advisory honours ignores; an ignored one has no banner).
+ * An affected-app advisory's (gc-q5z8) or a menu item's (gc-7gjj.1) Security
+ * risk banner on the scan page: the banner with the "What to check" steps
+ * inline (so no "See what to check" button), the Copy steps action (and, for
+ * a menu, "Open menu") and, under it all, Ignore. It is the finding's only
+ * place on the page. The Ignore control is on every plan here, Free included:
+ * after checking, a merchant must be able to put it away (both honour
+ * ignores; an ignored one has no banner).
  */
-function AdvisoryRiskBanner({
+function OwnSectionRiskBanner({
   risk,
   finding,
   scanDate,
+  shopDomain,
 }: {
-  risk: AdvisoryRisk;
+  risk: AdvisoryRisk | MenuRisk;
   /** The stored finding (for the copy text and Ignore); always present for a banner the loader built. */
   finding: FindingLike | undefined;
   scanDate: Date | string;
+  shopDomain: string;
 }) {
-  const steps = advisoryCheckSteps(risk);
-  const copy = getFindingCardCopy("APP_INCIDENT_ADVISORY", risk.finding.filename);
+  const type = risk.kind === "menu" ? "MENU_INJECTION" : "APP_INCIDENT_ADVISORY";
+  const copy = getFindingCardCopy(type, risk.finding.filename);
+  const steps = risk.kind === "menu" ? (copy.steps ?? []) : advisoryCheckSteps(risk);
+  const menuUrl =
+    risk.kind === "menu" ? buildAdminResourceUrl(shopDomain, type, risk.finding.filename) : null;
   return (
     <SecurityRiskBanner
       risk={risk}
       scanDate={scanDate}
       anchor
       actions={
-        finding && (
-          <CopyRemovalStepsButton
-            text={buildRemovalInstructions(finding, FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY)}
-            findingType={finding.findingType}
-          />
-        )
+        <>
+          {menuUrl && (
+            <s-button variant="primary" href={menuUrl} target="_top">
+              {adminResourceLinkLabel(type)}
+            </s-button>
+          )}
+          {finding && (
+            <CopyRemovalStepsButton
+              text={buildRemovalInstructions(finding, FINDING_TYPE_LABELS[type])}
+              findingType={finding.findingType}
+            />
+          )}
+        </>
       }
       footer={finding?.id && <FindingIgnoreControls finding={finding} />}
     >
@@ -2379,9 +2393,10 @@ export default function ScanDetail() {
         )}
 
         {/* Security risk banners (gc-q5z8): known malicious code (one banner
-            per domain, holding every finding's card, ignored or not) and apps
-            named in a security incident (one banner per non-ignored advisory,
-            holding its steps, Copy steps and Ignore), in full on ALL plans
+            per domain, holding every finding's card, ignored or not), apps
+            named in a security incident and code in a menu (gc-7gjj.1) (one
+            banner per non-ignored finding, holding its steps, Copy steps and
+            Ignore), in full on ALL plans
             (free included). Never paywalled; see the loader comment. Each
             carries the id Home's "See what to check" links to. */}
         {securityRisks.map((risk) =>
@@ -2407,11 +2422,12 @@ export default function ScanDetail() {
               </FindingsTable>
             </SecurityRiskBanner>
           ) : (
-            <AdvisoryRiskBanner
+            <OwnSectionRiskBanner
               key={securityRiskAnchorId(risk)}
               risk={risk}
               finding={alwaysShownFindings.find((f) => f.id === risk.finding.id)}
               scanDate={scan.completedAt ?? scan.createdAt}
+              shopDomain={shopDomain}
             />
           ),
         )}

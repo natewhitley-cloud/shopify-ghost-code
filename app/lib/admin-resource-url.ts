@@ -42,7 +42,18 @@
  *   - GHOST_TRANSLATION        → `{admin}/settings/languages` (VERIFIED — the
  *                                Shopify Help Center links localization/translation
  *                                to Settings > Languages; list-level surface)
+ *   - MENU_INJECTION           → `{admin}/content/menus/{menuId}` (UNVERIFIED,
+ *                                spike gc-7gjj §2.5: menus live under Content >
+ *                                Menus; to confirm on the dev store, gc-7gjj.5),
+ *                                falling back to `{admin}/content/menus` when the
+ *                                locator carries no numeric menu id
  */
+
+/** The numeric menu id of a MENU_INJECTION locator (`menus/{menuId}/items/{itemId}`). */
+function menuIdFromLocator(locator: string | null | undefined): string | null {
+  const match = /^menus\/(\d+)\//.exec(locator ?? "");
+  return match ? match[1] : null;
+}
 
 /**
  * Extract the numeric id from a Shopify GID embedded anywhere in a locator string.
@@ -135,6 +146,10 @@ export function buildAdminResourceUrl(
     // Verified list-level surface: Settings > Languages.
     case "GHOST_TRANSLATION":
       return `${adminBase}/settings/languages`;
+    case "MENU_INJECTION": {
+      const id = menuIdFromLocator(locator);
+      return id ? `${adminBase}/content/menus/${id}` : `${adminBase}/content/menus`;
+    }
     default:
       return null;
   }
@@ -159,6 +174,8 @@ export function adminResourceLinkLabel(findingType: string): string {
       return "Manage URL redirects";
     case "GHOST_TRANSLATION":
       return "Open translations";
+    case "MENU_INJECTION":
+      return "Open menu";
     default:
       return "View resource";
   }
@@ -184,6 +201,7 @@ export function adminResourceLinkLabel(findingType: string): string {
  *                                                             (the stored prefix has `/`
  *                                                             replaced by `_`; restored here)
  *   - GHOST_TRANSLATION (`translations/{locale}/{resource}`)→ "Translation: {locale} / {resource}"
+ *   - MENU_INJECTION (`menus/{menuId}/items/{itemId}`)     → "Menu item"
  *
  * Anything unknown or unparseable falls back to the raw locator (or the finding
  * type if the locator is blank) so the cell is never empty.
@@ -227,6 +245,8 @@ export function adminResourceLocatorLabel(
       }
       return fallback;
     }
+    case "MENU_INJECTION":
+      return "Menu item";
     default:
       return fallback;
   }

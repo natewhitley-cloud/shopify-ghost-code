@@ -160,7 +160,11 @@ describe("loadShopPromptState", () => {
           _count: {
             select: {
               findings: {
-                where: { findingType: { notIn: ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"] } },
+                where: {
+                  findingType: {
+                    notIn: ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY", "MENU_INJECTION"],
+                  },
+                },
               },
             },
           },

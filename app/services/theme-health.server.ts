@@ -24,6 +24,7 @@ import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import { safeErrorFields } from "../lib/safe-error";
 import {
   advisoryHealthRow,
+  menuHealthRow,
   buildThemeHealthChecklist,
   type HealthRow,
   type ThemeInventoryItem,
@@ -134,5 +135,7 @@ async function buildRows(input: LoadThemeHealthInput): Promise<HealthRow[]> {
   // advisory count: an advisory honours ignores, and with its flag off the
   // count is already 0 (finding-aggregation's kill switch, gc-5nok).
   const advisory = advisoryHealthRow(scan.id, typeCounts.APP_INCIDENT_ADVISORY ?? 0, coverage);
-  return advisory ? [...rows, advisory] : rows;
+  // The "Menu labels" check (gc-7gjj.1), from the ignore-filtered count.
+  const menu = menuHealthRow(scan.id, typeCounts.MENU_INJECTION ?? 0, coverage);
+  return [...rows, ...(advisory ? [advisory] : []), ...(menu ? [menu] : [])];
 }

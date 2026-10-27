@@ -415,6 +415,16 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "act-now",
     agentic: false,
   },
+  // MENU_INJECTION (gc-7gjj.1): NO LANE, like the advisory. Code in a menu
+  // label is a security risk, not leftover code with a speed, privacy or
+  // visibility cost, and whether it runs depends on how the theme prints the
+  // label. It is shown in its own section (a security banner) on every plan.
+  MENU_INJECTION: {
+    primary: null,
+    secondary: [],
+    urgency: "act-now",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -648,7 +648,7 @@ describe("app.scans.$scanId loader", () => {
         findingType: undefined,
         appName: undefined,
         // gc-14x5: advisories are shown above the list, never in it.
-        excludeFindingTypes: ["APP_INCIDENT_ADVISORY"],
+        excludeFindingTypes: ["APP_INCIDENT_ADVISORY", "MENU_INJECTION"],
       });
     });
 
@@ -664,7 +664,7 @@ describe("app.scans.$scanId loader", () => {
         findingType: undefined,
         appName: undefined,
         // gc-14x5: advisories are shown above the list, never in it.
-        excludeFindingTypes: ["APP_INCIDENT_ADVISORY"],
+        excludeFindingTypes: ["APP_INCIDENT_ADVISORY", "MENU_INJECTION"],
       });
     });
 
@@ -2921,7 +2921,7 @@ describe("app.scans.$scanId loader", () => {
         findingType: "GHOST_SCRIPT",
         appName: "Klaviyo",
         // gc-14x5: advisories are shown above the list, never in it.
-        excludeFindingTypes: ["APP_INCIDENT_ADVISORY"],
+        excludeFindingTypes: ["APP_INCIDENT_ADVISORY", "MENU_INJECTION"],
       });
     });
 
@@ -5919,7 +5919,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         expect(data.findings).toHaveLength(SCRIPTS.length);
         expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
           "scan-1",
-          expect.objectContaining({ excludeFindingTypes: ["APP_INCIDENT_ADVISORY"] }),
+          expect.objectContaining({
+            excludeFindingTypes: ["APP_INCIDENT_ADVISORY", "MENU_INJECTION"],
+          }),
         );
         expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1", {
           findingType: "APP_INCIDENT_ADVISORY",

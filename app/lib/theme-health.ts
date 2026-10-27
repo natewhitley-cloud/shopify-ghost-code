@@ -110,8 +110,11 @@ export const HEALTH_CATEGORIES: ReadonlyArray<{
  * report, not something the scan found wrong in the theme, so it is in no
  * row: it never counts under "Leftover scripts and styles", never changes a
  * row's coverage when its flag is flipped, and has no cost line here.
+ * MENU_INJECTION (gc-7gjj.1) is left out the same way: it has its own check
+ * (menuHealthRow), so a missing navigation permission never turns the known
+ * malicious code row into "not checked".
  */
-export type HealthFindingType = Exclude<FindingType, "APP_INCIDENT_ADVISORY">;
+export type HealthFindingType = Exclude<FindingType, "APP_INCIDENT_ADVISORY" | "MENU_INJECTION">;
 
 /**
  * THE MAPPING: every FindingType to the ONE checklist category it counts in.
@@ -331,8 +334,11 @@ function gapLine(reason: Gap, category: HealthCategoryKey, whole: boolean): stri
 export type HealthStatus = "issues" | "clean" | "partial" | "not_checked" | "info";
 
 export interface HealthRow {
-  /** A category key, "theme", "unpublished-themes" or "app-advisories" (see advisoryHealthRow). */
-  key: HealthCategoryKey | "theme" | "unpublished-themes" | "app-advisories";
+  /**
+   * A category key, "theme", "unpublished-themes", "app-advisories" (see
+   * advisoryHealthRow) or "menu-labels" (see menuHealthRow).
+   */
+  key: HealthCategoryKey | "theme" | "unpublished-themes" | "app-advisories" | "menu-labels";
   label: string;
   /** One line on what the row covers. Always shown. */
   checks: string;
@@ -673,6 +679,67 @@ export function advisoryHealthRow(
   };
 }
 
+export const MENU_HEALTH_LABEL = "Menu labels";
+const MENU_HEALTH_CHECKS =
+  "Your store's menus, for code in a label or link that could run in shoppers' browsers.";
+
+/**
+ * Home's "Menu labels" check (gc-7gjj.1), built on its own like
+ * advisoryHealthRow: menus are not theme code, so it is in no category row.
+ *
+ *   - `count` > 0 (non-ignored MENU_INJECTION findings: it honours ignores):
+ *     status "issues", a failed chip and the red verdict.
+ *   - Checked in full and nothing open: "clean".
+ *   - Checked, but a cap left some menu items unread: "partial".
+ *   - The navigation permission is not granted: "not_checked", with the
+ *     permission line (Settings grants it).
+ *   - Live now but this scan did not run it: "not_checked", "run a new scan".
+ *   - Null while the check is dark (MENU_INJECTION_LIVE_ENABLED off).
+ */
+export function menuHealthRow(
+  scanId: string,
+  count: number,
+  coverage: HealthCoverageInput,
+): HealthRow | null {
+  const base = {
+    key: "menu-labels" as const,
+    label: MENU_HEALTH_LABEL,
+    checks: MENU_HEALTH_CHECKS,
+  };
+  if (count > 0) {
+    return {
+      ...base,
+      status: "issues",
+      statusLabel: issuesLabel(count),
+      count,
+      detail: `${count === 1 ? "A menu item contains" : `${count} menu items contain`} code that could run in shoppers' browsers.`,
+      href: `/app/scans/${scanId}`,
+    };
+  }
+  const covered = coverageForType("MENU_INJECTION", coverage);
+  if (covered === "dark") return null;
+  const none = { count: 0, href: null };
+  if (covered === "checked") {
+    return { ...base, ...none, status: "clean", statusLabel: "Clean", detail: null };
+  }
+  if (covered === "capped") {
+    return {
+      ...base,
+      ...none,
+      status: "partial",
+      statusLabel: "Partly checked",
+      detail: GAP_COPY.capped,
+    };
+  }
+  return {
+    ...base,
+    ...none,
+    status: "not_checked",
+    statusLabel: "Not checked",
+    detail: covered === "permission" ? GAP_COPY.permission : GAP_COPY.not_run,
+  };
+}
+
 export interface ThemeHealthInput {
   scanId: string;
   /**
@@ -794,6 +861,12 @@ export interface HealthRowGroups {
    * `clean` or `gaps` like any check.
    */
   advisory: HealthRow | null;
+  /**
+   * The "Menu labels" row (gc-7gjj.1), ONLY when a menu item holds code
+   * (status "issues"); null otherwise. Like `advisory`: a failed chip and the
+   * red verdict. A clean or not-checked row goes to `clean` or `gaps`.
+   */
+  menu: HealthRow | null;
 }
 
 /**
@@ -825,6 +898,7 @@ export function groupHealthRows(
     hasIssues: false,
     malicious,
     advisory: null,
+    menu: null,
   };
   for (const row of rows) {
     if (row.key === "theme") groups.theme = row;
@@ -833,6 +907,10 @@ export function groupHealthRows(
     else if (row.key === "app-advisories" && row.status === "issues") groups.advisory ??= row;
     else if (row.key === "app-advisories" && row.status === "clean") groups.clean.push(row);
     else if (row.key === "app-advisories") groups.gaps.push(row);
+    // The menu check (menuHealthRow, gc-7gjj.1): the same three ways.
+    else if (row.key === "menu-labels" && row.status === "issues") groups.menu ??= row;
+    else if (row.key === "menu-labels" && row.status === "clean") groups.clean.push(row);
+    else if (row.key === "menu-labels") groups.gaps.push(row);
     else if (row.key === "unpublished-themes") groups.unpublished = row;
     else if (!CATEGORY_KEYS.has(row.key)) continue;
     else if (row.status === "clean") groups.clean.push(row);
@@ -857,7 +935,8 @@ export function groupHealthRows(
  *   - "warn" (amber):   a check did not (fully) run. Also the tone when the
  *                       malicious check itself did not run in full.
  *   - "critical" (red): an app named in a security incident is in the theme
- *                       (gc-q5z8), whatever else the scan found.
+ *                       (gc-q5z8), or a menu item holds code (gc-7gjj.1),
+ *                       whatever else the scan found.
  */
 export type HealthVerdictTone = "ok" | "neutral" | "warn" | "critical";
 
@@ -872,6 +951,10 @@ const VERDICT_MALICIOUS_UNCHECKED =
   "Some checks couldn't run, including the check for malicious code.";
 const VERDICT_GAPS = "No known malicious code found. Some checks couldn't run.";
 const VERDICT_PARTIAL_GAPS = "No known malicious code found. Some checks only partly ran.";
+
+/** The red verdict while a menu item holds code (gc-7gjj.1). */
+export const VERDICT_MENU =
+  "A menu in your store contains code that could run in shoppers' browsers.";
 
 /** The red verdict while an affected-app advisory is open (gc-q5z8). */
 export const VERDICT_ADVISORY = "An app named in a security incident is in your theme.";
@@ -896,6 +979,8 @@ export function themeHealthVerdict(groups: HealthRowGroups): HealthVerdict | nul
   if (groups.malicious) return null;
   // Never "No known malicious code found." (green or grey) while an advisory
   // is open (gc-q5z8): that would read as all clear over a security risk.
+  // Code in a menu is in the store now; an advisory is about a report.
+  if (groups.menu) return { tone: "critical", text: VERDICT_MENU };
   if (groups.advisory) return { tone: "critical", text: VERDICT_ADVISORY };
   const maliciousClean = groups.clean.some(
     (row) => row.key === "malicious" && row.status === "clean",

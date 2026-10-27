@@ -15,6 +15,7 @@ vi.mock("../../app/models/finding.server", () => ({
   getTopFindingsOfTypes: vi.fn(),
 }));
 
+import { isNeverPaywalledFindingType } from "../../app/lib/finding-classification";
 import { CONSEQUENCE_MAP } from "../../app/lib/finding-consequence";
 import { freePreviewCount, pickFreePreviewFindings } from "../../app/lib/free-preview";
 import { getFindingsForScan, getTopFindingsOfTypes } from "../../app/models/finding.server";
@@ -125,9 +126,10 @@ describe("getFreePreviewFindings", () => {
   it("buckets partition every non-malicious type by (primary lane, urgency)", () => {
     const all = PREVIEW_READ_BUCKETS.flat();
     // gc-14x5: an affected-app advisory is never paywalled either, so it has
-    // no preview bucket (it is shown in full outside the preview).
+    // no preview bucket (it is shown in full outside the preview); nor has
+    // code in a menu (gc-7gjj.1).
     const expected = (Object.keys(CONSEQUENCE_MAP) as FindingType[]).filter(
-      (t) => t !== "MALICIOUS_SCRIPT" && t !== "APP_INCIDENT_ADVISORY",
+      (t) => t !== "MALICIOUS_SCRIPT" && t !== "APP_INCIDENT_ADVISORY" && t !== "MENU_INJECTION",
     );
     expect([...all].sort()).toEqual([...expected].sort());
     for (const bucket of PREVIEW_READ_BUCKETS) {
@@ -269,7 +271,10 @@ describe("getFreePreviewFindings", () => {
       const got = await getFreePreviewFindings("scan-1", byType, NO_IGNORES, withheld);
 
       const visible = rows.filter((r) => !withheld.includes(r.findingType));
-      const expected = pickFreePreviewFindings(visible, freePreviewCount(rows.length));
+      // The formula counts paywalled findings only (never-paywalled ones never
+      // raise it, gc-14x5 / gc-7gjj.1).
+      const paywalled = rows.filter((r) => !isNeverPaywalledFindingType(r.findingType));
+      const expected = pickFreePreviewFindings(visible, freePreviewCount(paywalled.length));
       expect(got.map((r) => r.id)).toEqual(expected.map((r) => r.id));
     }
   });

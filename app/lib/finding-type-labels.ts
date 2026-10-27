@@ -43,6 +43,7 @@ export const FINDING_TYPE_LABELS: Record<string, string> = {
   SCRIPT_TAG_SUNSET: "Script Tag Sunset",
   LIQUID_ERROR_RENDERED: "Liquid Errors on Your Homepage",
   APP_INCIDENT_ADVISORY: "App Security Advisories",
+  MENU_INJECTION: "Code in Menu Labels",
 };
 
 /** Label for a finding type, falling back to the enum name with spaces. */

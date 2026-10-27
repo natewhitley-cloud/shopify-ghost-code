@@ -26,8 +26,8 @@ import {
 describe("REMOVAL_SAFETY — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 39 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(39);
+  it("has 40 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(40);
   });
 
   it("maps every FindingType enum member explicitly (exhaustiveness)", () => {
@@ -67,7 +67,7 @@ describe("getRemovalSafety — representative mappings", () => {
 
   // gc-xtno: the security types have their own level, so no removal-level
   // badge ("Likely safe, confirm app removed") can ever reach them.
-  const SECURITY_RISK = ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"];
+  const SECURITY_RISK = ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY", "MENU_INJECTION"];
 
   it.each(SECURITY_RISK)('classifies %s as "security-risk", never "safe-to-remove"', (type) => {
     expect(getRemovalSafety(type)).toBe("security-risk");

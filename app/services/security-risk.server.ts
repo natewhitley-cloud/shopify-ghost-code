@@ -1,11 +1,12 @@
 /**
- * Security risk banner views (gc-q5z8): resolves stored APP_INCIDENT_ADVISORY
- * and MALICIOUS_SCRIPT findings against the server-only curated lists and
+ * Security risk banner views (gc-q5z8): resolves stored APP_INCIDENT_ADVISORY,
+ * MENU_INJECTION (gc-7gjj.1) and MALICIOUS_SCRIPT findings against the server-only curated lists and
  * returns plain values for the page (see app/lib/security-risk.ts for the
  * copy and for which findings the caller passes).
  *
  * Order: malicious code first (grouped by domain, in theme order), then the
- * advisories in the order given (callers pass them ranked).
+ * own-section findings (code in a menu, affected-app advisories) in the order
+ * given (callers pass them ranked).
  */
 import type { FindingType } from "@prisma/client";
 
@@ -29,7 +30,7 @@ import { isHomepageMaliciousFinding } from "../lib/finding-classification";
 import { isAdvisoryEmbedFinding } from "../lib/finding-remediation";
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
-import type { AdvisoryRisk, MaliciousRisk, SecurityRisk } from "../lib/security-risk";
+import type { AdvisoryRisk, MaliciousRisk, MenuRisk, SecurityRisk } from "../lib/security-risk";
 import { getFindingsForScan } from "../models/finding.server";
 
 /** The stored finding fields the builder reads. */
@@ -39,6 +40,8 @@ export interface SecurityRiskSourceFinding {
   filename: string;
   lineNumber: number;
   description: string;
+  /** Read for MENU_INJECTION only (the menu path and the excerpt). */
+  codeSnippet?: string;
 }
 
 /**
@@ -95,6 +98,22 @@ function advisoryRisk(
 }
 
 /**
+ * A MENU_INJECTION finding's banner (gc-7gjj.1), from its stored snippet: the
+ * first line is the menu path, the second what was seen (both written by the
+ * detector, bounded).
+ */
+function menuRisk(finding: SecurityRiskSourceFinding): MenuRisk {
+  const [menuPath = "", seenAs = ""] = (finding.codeSnippet ?? "").split("\n");
+  return {
+    kind: "menu",
+    finding: { id: finding.id, filename: finding.filename, lineNumber: finding.lineNumber },
+    menuPath: menuPath.trim() || "a menu",
+    seenAs: seenAs.trim() || null,
+    description: finding.description,
+  };
+}
+
+/**
  * The list entry whose description a stored malicious finding carries, or
  * null: the theme wording, or the homepage wording (gc-0htk).
  */
@@ -146,8 +165,9 @@ function maliciousRisks(
 }
 
 /**
- * The banners for a scan, malicious first. Pass the advisories the page shows
- * (non-ignored) and the malicious findings it shows (all of them).
+ * The banners for a scan, malicious first. Pass the own-section findings the
+ * page shows as `advisories` (non-ignored advisories and menu findings,
+ * getOwnSectionFindings) and the malicious findings it shows (all of them).
  */
 export function buildSecurityRisks(
   input: {
@@ -167,9 +187,13 @@ export function buildSecurityRisks(
       input.malicious.filter((f) => f.findingType === "MALICIOUS_SCRIPT"),
       domainList,
     ),
-    ...input.advisories
-      .filter((f) => f.findingType === "APP_INCIDENT_ADVISORY")
-      .map((f) => advisoryRisk(f, input.now, advisoryList)),
+    ...input.advisories.flatMap((f): SecurityRisk[] => {
+      if (f.findingType === "MENU_INJECTION") return [menuRisk(f)];
+      if (f.findingType === "APP_INCIDENT_ADVISORY") {
+        return [advisoryRisk(f, input.now, advisoryList)];
+      }
+      return [];
+    }),
   ];
 }
 
@@ -212,7 +236,9 @@ export async function loadHomeSecurityRisks(input: {
   maliciousFound: number;
   now: Date;
 }): Promise<SecurityRisk[]> {
-  const advisoryCount = input.keptByType.APP_INCIDENT_ADVISORY ?? 0;
+  // Own-section findings (gc-7gjj.1: code in a menu, beside the advisories).
+  const advisoryCount =
+    (input.keptByType.APP_INCIDENT_ADVISORY ?? 0) + (input.keptByType.MENU_INJECTION ?? 0);
   if (advisoryCount <= 0 && input.maliciousFound <= 0) return [];
   try {
     const [advisories, malicious] = await Promise.all([

@@ -175,7 +175,12 @@ export type ComputedChangeSet = {
 /** Scan origins that always scan the shop's MAIN (published) theme (spec 0). */
 const MAIN_THEME_ORIGINS: ReadonlySet<string> = new Set(["SCHEDULED", "AUTO_PUBLISH"]);
 
-const SECURITY_TYPES: ReadonlySet<string> = new Set(["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"]);
+// gc-7gjj.1: code in a menu is a security row too, never a housekeeping one.
+const SECURITY_TYPES: ReadonlySet<string> = new Set([
+  "MALICIOUS_SCRIPT",
+  "APP_INCIDENT_ADVISORY",
+  "MENU_INJECTION",
+]);
 
 const CONTENT_BUILDERS: ReadonlySet<string> = new Set(
   APP_SIGNATURES.filter((s) => s.contentBuilder === true).map((s) => s.appName),

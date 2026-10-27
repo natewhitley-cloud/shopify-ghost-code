@@ -51,6 +51,9 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // may still be installed and in use, so removing it can break product options
   // on live products. Check first (the banner's steps); never "safe-to-remove".
   APP_INCIDENT_ADVISORY: "security-risk",
+  // Code in a menu label or link (gc-7gjj.1): attacker code in store data, not
+  // leftover code. The banner's steps say what to check.
+  MENU_INJECTION: "security-risk",
 
   // ---- safe-to-remove: signature-matched orphan code that is inert once the
   // source app is gone. Deleting the tag/reference cannot break anything live. --

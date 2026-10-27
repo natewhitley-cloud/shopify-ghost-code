@@ -9,7 +9,8 @@
  *
  * Ranking (compareFindingImportance), most important first:
  *   1. MALICIOUS_SCRIPT before everything else, then APP_INCIDENT_ADVISORY
- *      (gc-14x5: an app named in a public security incident report) before
+ *      (gc-14x5: an app named in a public security incident report) and
+ *      MENU_INJECTION (gc-7gjj.1: code in a menu label or link), tied, before
  *      every other finding.
  *   2. Severity: HIGH > MEDIUM > LOW.
  *   3. Consequence urgency: act-now > compounding > whenever (URGENCY_RANK of
@@ -22,7 +23,7 @@
  * type of the SAME severity (the "comparable importance" bar) is still
  * available; the best such finding takes the slot instead. A lower-severity
  * finding never displaces a higher one, so 3 HIGH scripts still beat a LOW
- * finding of another type. The two security types of step 1 are exempt:
+ * finding of another type. The security types of step 1 are exempt:
  * security findings are never displaced and always shown first.
  *
  * Plan safety is the CALLER's job: pass only findings the plan already shows
@@ -76,11 +77,12 @@ export const SECURITY_RANK_OTHER = 2;
 
 /**
  * Step 1 of the ranking: 0 for known malicious code, 1 for an affected-app
- * advisory, SECURITY_RANK_OTHER for every other finding.
+ * advisory or code in a menu (gc-7gjj.1), SECURITY_RANK_OTHER for every
+ * other finding.
  */
 export function securityRank(type: FindingType): number {
   if (type === "MALICIOUS_SCRIPT") return 0;
-  if (type === "APP_INCIDENT_ADVISORY") return 1;
+  if (type === "APP_INCIDENT_ADVISORY" || type === "MENU_INJECTION") return 1;
   return SECURITY_RANK_OTHER;
 }
 
@@ -226,6 +228,9 @@ export function findingCostLine(findingType: FindingType): string {
     // AdvisoryStartHereCopy); this is only for an entry that is no longer known.
     return "A security incident report names this app.";
   }
+  if (findingType === "MENU_INJECTION") {
+    return "This code can run in shoppers' browsers and send them to a fake checkout.";
+  }
   const lane = CONSEQUENCE_MAP[findingType].primary;
   return lane === null ? "" : soWhatForLane(lane);
 }
@@ -258,8 +263,9 @@ export function findingAnchorId(id: string): string {
 /**
  * Where a top finding links on the scan page:
  *   - Malicious: its row in the security alert (every plan).
- *   - Affected-app advisory: its Security risk banner above the list (every
- *     plan; it is not in the list). The banner carries the finding's anchor.
+ *   - Affected-app advisory or code in a menu (gc-7gjj.1): its Security risk
+ *     banner above the list (every plan; it is not in the list). The banner
+ *     carries the finding's anchor.
  *   - Free (`fullList` false): its preview row, on the same unfiltered page.
  *   - Standard / Professional: the full list filtered to its type, so the row
  *     is on the first page unless 50+ findings of that type rank above it by
