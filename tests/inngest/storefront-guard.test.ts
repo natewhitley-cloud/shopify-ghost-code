@@ -28,12 +28,16 @@ vi.mock("../../inngest/client", () => ({
     })),
   },
 }));
-vi.mock("../../app/services/storefront-guard.server", async (orig) => ({
-  ...svc,
-  compareGuardCandidates: (
-    await orig<typeof import("../../app/services/storefront-guard.server")>()
-  ).compareGuardCandidates,
-}));
+vi.mock("../../app/services/storefront-guard.server", async (orig) => {
+  const actual = await orig<typeof import("../../app/services/storefront-guard.server")>();
+  return {
+    ...svc,
+    compareGuardCandidates: actual.compareGuardCandidates,
+    selectGuardShops: actual.selectGuardShops,
+  };
+});
+const ledger = vi.hoisted(() => ({ pruneGuardIncidentLedger: vi.fn() }));
+vi.mock("../../app/models/merchant-alert.server", () => ledger);
 vi.mock("../../app/models/storefront-guard.server", () => model);
 vi.mock("../../app/services/storefront-guard-email.server", () => email);
 vi.mock("../../app/shopify.server", () => ({
@@ -71,6 +75,7 @@ function shops(n: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ledger.pruneGuardIncidentLedger.mockResolvedValue(0);
   svc.mapPool.mockImplementation(
     async (items: unknown[], _limit: number, fn: (x: unknown) => Promise<unknown>) =>
       Promise.all(items.map(fn)),
@@ -374,5 +379,84 @@ describe("storefront-guard cron: paid shops first (wave 3 B7)", () => {
     const checked = svc.checkGuardShop.mock.calls.map((c) => (c[0] as { id: string }).id);
     expect(checked).toHaveLength(MAX_GUARD_SHOPS_PER_RUN);
     expect(checked[0]).toBe("paid");
+  });
+});
+
+describe("storefront-guard cron: Free shops still progress (wave 4 LOW)", () => {
+  const free = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `f${i}`,
+      domain: `f${i}.myshopify.com`,
+      plan: "free",
+      storefrontGuardState: {
+        lastCheckedAt: new Date(Date.now() - (n - i) * 60_000 - 27 * 3600_000),
+        backoffUntil: null,
+      },
+    }));
+  const paid = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `p${i}`,
+      domain: `p${i}.myshopify.com`,
+      plan: "Standard",
+      storefrontGuardState: null,
+    }));
+
+  it("keeps 10% of a full run for due Free shops, longest-waiting first", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue([
+      ...paid(MAX_GUARD_SHOPS_PER_RUN + 100),
+      ...free(100),
+    ]);
+    await run();
+    const checked = svc.checkGuardShop.mock.calls.map((c) => (c[0] as { id: string }).id);
+    const share = Math.ceil(MAX_GUARD_SHOPS_PER_RUN * 0.1);
+    expect(checked).toHaveLength(MAX_GUARD_SHOPS_PER_RUN);
+    expect(checked.filter((id) => id.startsWith("p"))).toHaveLength(
+      MAX_GUARD_SHOPS_PER_RUN - share,
+    );
+    expect(checked.filter((id) => id.startsWith("f"))).toEqual(
+      Array.from({ length: share }, (_, i) => `f${i}`),
+    );
+  });
+
+  it("a share Free shops do not need goes back to paid shops", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue([
+      ...paid(MAX_GUARD_SHOPS_PER_RUN + 100),
+      ...free(3),
+    ]);
+    await run();
+    const checked = svc.checkGuardShop.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(checked).toHaveLength(MAX_GUARD_SHOPS_PER_RUN);
+    expect(checked.filter((id) => id.startsWith("f"))).toEqual(["f0", "f1", "f2"]);
+  });
+});
+
+describe("storefront-guard cron: email ledger retention (wave 4 M2)", () => {
+  it("prunes old per-episode ledger rows in the select step, logging the count", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue(shops(1));
+    ledger.pruneGuardIncidentLedger.mockResolvedValue(7);
+    const step = createMockInngestStep();
+    await run(step);
+    expect(ledger.pruneGuardIncidentLedger).toHaveBeenCalledExactlyOnceWith(expect.any(Date));
+    expect(step.run.mock.calls.map((c) => c[0])).not.toContain("prune-ledger");
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("pruned email ledger rows"),
+      expect.objectContaining({ count: 7 }),
+    );
+  });
+
+  it("a failed prune never fails the run", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue(shops(1));
+    ledger.pruneGuardIncidentLedger.mockRejectedValue(new Error("db down"));
+    const out = await run();
+    expect(out).toMatchObject({ due: 1 });
+    expect(svc.checkGuardShop).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("email ledger prune failed"),
+      expect.objectContaining({ event: "storefront_guard_ledger_prune_failed" }),
+    );
   });
 });

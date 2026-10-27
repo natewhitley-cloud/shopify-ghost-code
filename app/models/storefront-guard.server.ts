@@ -13,6 +13,7 @@
 import { Prisma, type StorefrontGuardState, type StorefrontIncident } from "@prisma/client";
 
 import db from "../db.server";
+import { chunks } from "../lib/chunk";
 import {
   acknowledgeNewHost,
   EMAIL_INCIDENT_KINDS,
@@ -140,11 +141,18 @@ export function toGuardIncident(row: StorefrontIncident): GuardIncident | null {
  * incident and be undone by this check's write.
  */
 export async function loadGuard(shopId: string, now: Date = new Date()): Promise<LoadedGuard> {
+  // A resolved row that never opened (a lapsed SCRIPT_LOADER candidate) is
+  // not read (wave 4 H1: rotating loader hosts left thousands inside the
+  // window); it can only start a new episode, and a re-sighting reads it by
+  // fingerprint (loadGuardIncidentsByFingerprint).
   const live = {
     shopId,
     OR: [
       { state: { not: "resolved" } },
-      { resolvedAt: { gte: new Date(now.getTime() - FLAP_WINDOW_MS) } },
+      {
+        resolvedAt: { gte: new Date(now.getTime() - FLAP_WINDOW_MS) },
+        openedAt: { not: null },
+      },
     ],
   };
   const order = [
@@ -190,10 +198,15 @@ export async function loadGuardIncidentsByFingerprint(
   shopId: string,
   fingerprints: readonly string[],
 ): Promise<GuardIncident[]> {
-  if (fingerprints.length === 0) return [];
-  const rows = await db.storefrontIncident.findMany({
-    where: { shopId, fingerprint: { in: [...fingerprints] } },
-  });
+  const rows: StorefrontIncident[] = [];
+  // Chunked (wave 4 H1): one IN list past the bind limit fails the query.
+  for (const part of chunks(fingerprints)) {
+    rows.push(
+      ...(await db.storefrontIncident.findMany({
+        where: { shopId, fingerprint: { in: part } },
+      })),
+    );
+  }
   return rows.map(toGuardIncident).filter((i): i is GuardIncident => i !== null);
 }
 
@@ -473,11 +486,20 @@ export async function loadIncidentsToEmail(
   shopId: string,
   ids: readonly string[],
 ): Promise<Array<GuardIncident & { id: string; openedAt: Date }>> {
-  if (ids.length === 0) return [];
-  const rows = await db.storefrontIncident.findMany({
-    where: { shopId, id: { in: [...ids] }, state: "open" },
-    orderBy: [{ openedAt: "asc" }, { id: "asc" }],
-  });
+  const rows: StorefrontIncident[] = [];
+  for (const part of chunks(ids)) {
+    rows.push(
+      ...(await db.storefrontIncident.findMany({
+        where: { shopId, id: { in: part }, state: "open" },
+      })),
+    );
+  }
+  // Oldest episode first, as one ordered query would return them.
+  rows.sort(
+    (a, b) =>
+      (a.openedAt?.getTime() ?? 0) - (b.openedAt?.getTime() ?? 0) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
   return rows
     .map(toGuardIncident)
     .filter(

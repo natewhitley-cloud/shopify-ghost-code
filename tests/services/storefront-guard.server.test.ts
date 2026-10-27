@@ -20,9 +20,8 @@ const model = vi.hoisted(() => ({
   ),
 }));
 vi.mock("../../app/models/storefront-guard.server", () => model);
-vi.mock("../../app/lib/logger.server", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const logger = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock("../../app/lib/logger.server", () => ({ logger }));
 
 import { EMPTY_GUARD_STATE, type GuardIncident } from "../../app/lib/storefront-guard-state";
 import type { StorefrontFetch } from "../../app/services/storefront-fetcher.server";
@@ -612,4 +611,47 @@ describe("compareGuardCandidates (wave 3 B7)", () => {
       "free-old",
     ]);
   });
+});
+
+describe("checkGuardShop: a loader flood (wave 4 H1)", () => {
+  // 2.4 MB: 40,000 image error handlers, each beaconing to its own host, plus
+  // one script from a listed malicious domain.
+  const FLOOD =
+    Array.from(
+      { length: 40_000 },
+      (_, i) => `<img src=x onerror="fetch('https://h${i}.evil.example/c')">`,
+    ).join("") + `<script src="https://cartassure.top/l2.js"></script>`;
+
+  it("completes the check with KNOWN_MALICIOUS recorded and bounded reads and writes", async () => {
+    model.loadGuard.mockResolvedValue(loaded());
+    fetchImpl.mockImplementation(async (url: URL) =>
+      url.pathname === "/" ? new Response(STOREFRONT(FLOOD)) : new Response(STOREFRONT("")),
+    );
+    const started = performance.now();
+    const out = await checkGuardShop(SHOP, NOW, deps());
+    const elapsedMs = performance.now() - started;
+    // The 15 s save transaction budget, with the whole check inside it.
+    expect(elapsedMs).toBeLessThan(15_000);
+    expect(out).toMatchObject({
+      status: "checked",
+      opened: [expect.objectContaining({ kind: "KNOWN_MALICIOUS" })],
+      toEmail: [expect.objectContaining({ kind: "KNOWN_MALICIOUS" })],
+    });
+    const saved = model.saveGuardCheck.mock.calls[0][0] as { changed: GuardIncident[] };
+    // KNOWN_MALICIOUS first, then at most MAX_LOADERS_PER_CHECK loaders.
+    expect(saved.changed[0].fingerprint).toBe("KNOWN_MALICIOUS:cartassure.top");
+    expect(saved.changed.filter((i) => i.kind === "SCRIPT_LOADER")).toHaveLength(50);
+    expect(saved.changed.length).toBeLessThanOrEqual(51);
+    const asked = model.loadGuardIncidentsByFingerprint.mock.calls[0][1] as string[];
+    expect(asked.length).toBeLessThanOrEqual(51);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("loader cap"),
+      expect.objectContaining({
+        event: "storefront_guard_loaders_capped",
+        droppedLoaders: 40_000 - 50,
+      }),
+    );
+    // Counts only: no host is logged.
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("evil.example");
+  }, 30_000);
 });

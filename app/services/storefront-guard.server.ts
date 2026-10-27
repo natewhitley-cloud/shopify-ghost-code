@@ -33,8 +33,11 @@ import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
 import {
   applyGuardCheck,
+  capGuardSightings,
   EMAIL_INCIDENT_KINDS,
   MAX_HOSTS_PER_CHECK,
+  MAX_LIVE_SCRIPT_LOADERS,
+  MAX_LOADERS_PER_CHECK,
   newHostFingerprint,
   type GuardCheckInput,
   type GuardHostSighting,
@@ -116,6 +119,29 @@ export function compareGuardCandidates(
   return la < lb ? -1 : la > lb ? 1 : 0;
 }
 
+/** Share of a capped run's slots kept for due daily (Free) shops (wave 4 LOW). */
+export const FREE_SHARE_OF_RUN = 0.1;
+
+/**
+ * The shops one run checks, at most `max`, in run order (compareGuardCandidates).
+ * Paid hourly shops go first, but FREE_SHARE_OF_RUN of the slots (rounded up)
+ * is kept for due daily shops whenever there are any, so Free shops still
+ * progress while paid shops alone would fill the run. A share Free shops do
+ * not need goes back to paid shops.
+ */
+export function selectGuardShops<T extends GuardCandidateOrderInput>(
+  due: readonly T[],
+  max: number,
+): T[] {
+  const ordered = [...due].sort(compareGuardCandidates);
+  const isHourly = (s: T) => getPlanFeatures(s.plan).storefrontGuardCadence === "hourly";
+  const hourly = ordered.filter(isHourly);
+  const daily = ordered.filter((s) => !isHourly(s));
+  const reserved = Math.min(daily.length, Math.ceil(max * FREE_SHARE_OF_RUN));
+  const paid = hourly.slice(0, max - reserved);
+  return [...paid, ...daily.slice(0, max - paid.length)];
+}
+
 /**
  * How long an unemailed incident episode keeps being offered to the email
  * step, from the LATER of the episode's opening and the shop's consent
@@ -192,6 +218,8 @@ export function toGuardCheckInput(
         host: loader.host,
         page,
         sourceLabel: loader.label,
+        region: loader.region,
+        reason: loader.reason,
       });
     }
     for (const h of result.hosts) hosts.push({ host: h.host, page, sourceLabel: h.label });
@@ -282,6 +310,11 @@ export async function checkGuardShop(
       );
       input = toGuardCheckInput(outcome);
     }
+    // Wave 4 H1: at most MAX_LOADERS_PER_CHECK loaders per check (every
+    // KNOWN_MALICIOUS kept and first), so one hostile page can never make the
+    // reads and the write below unbounded.
+    const capped = capGuardSightings(input, loaded.incidents);
+    input = capped.input;
 
     // Rows this check sighted that loadGuard's NEW_SCRIPT_HOST cap left out
     // (wave 3 B1): without them a re-sighted open episode would be re-created
@@ -293,6 +326,18 @@ export async function checkGuardShop(
       ...(await loadGuardIncidentsByFingerprint(shop.id, missing)),
     ];
     const result = applyGuardCheck(loaded.state, incidents, input, now);
+    const droppedLoaders = capped.droppedLoaders + result.droppedLoaders;
+    if (droppedLoaders > 0) {
+      // Counts only, never the hosts themselves.
+      logger.warn("checkout guard loader cap hit; lowest-priority loaders not checked", {
+        function: "storefront-guard",
+        event: "storefront_guard_loaders_capped",
+        shopId: shop.id,
+        droppedLoaders,
+        maxLoaders: MAX_LOADERS_PER_CHECK,
+        maxLiveLoaders: MAX_LIVE_SCRIPT_LOADERS,
+      });
+    }
     if (result.droppedHosts > 0) {
       // gc-njwa #4: counts only, never the hosts themselves.
       logger.warn("checkout guard host cap hit; alphabetically last hosts not checked", {

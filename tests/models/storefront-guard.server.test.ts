@@ -199,7 +199,10 @@ describe("reads", () => {
       shopId: "shop-1",
       OR: [
         { state: { not: "resolved" } },
-        { resolvedAt: { gte: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) } },
+        {
+          resolvedAt: { gte: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) },
+          openedAt: { not: null },
+        },
       ],
     };
     const orderBy = [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }];
@@ -462,5 +465,35 @@ describe("saveGuardCheck: large diffs (wave 3 B3)", () => {
     const call = tx.storefrontIncident.upsert.mock.calls[0][0];
     expect(call.update).not.toHaveProperty("emailedOpenedAt");
     expect(call.create).toHaveProperty("emailedOpenedAt", null);
+  });
+});
+
+describe("IN-list chunking (wave 4 H1)", () => {
+  const fps = Array.from({ length: 2500 }, (_, i) => `SCRIPT_LOADER:h${i}.evil.example`);
+  const listSizes = (key: "fingerprint" | "id") =>
+    mockDb.storefrontIncident.findMany.mock.calls.map(
+      (c) => (c[0] as { where: Record<string, { in: string[] }> }).where[key].in.length,
+    );
+
+  it("loadGuardIncidentsByFingerprint reads 2,500 fingerprints in chunks of at most 1,000", async () => {
+    mockDb.storefrontIncident.findMany.mockImplementation(
+      async (args: { where: { fingerprint: { in: string[] } } }) =>
+        args.where.fingerprint.in.slice(0, 1).map((fingerprint) => row({ fingerprint })),
+    );
+    const out = await loadGuardIncidentsByFingerprint("shop-1", fps);
+    expect(listSizes("fingerprint")).toEqual([1000, 1000, 500]);
+    expect(out.map((i) => i.fingerprint)).toEqual([fps[0], fps[1000], fps[2000]]);
+  });
+
+  it("loadIncidentsToEmail chunks its id list and keeps the oldest episode first", async () => {
+    const ids = Array.from({ length: 2001 }, (_, i) => `id${i}`);
+    const older = new Date(NOW.getTime() - 60_000);
+    mockDb.storefrontIncident.findMany
+      .mockResolvedValueOnce([row({ id: "b", openedAt: NOW })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([row({ id: "a", openedAt: older }), row({ id: "c", openedAt: NOW })]);
+    const out = await loadIncidentsToEmail("shop-1", ids);
+    expect(listSizes("id")).toEqual([1000, 1000, 1]);
+    expect(out.map((i) => i.id)).toEqual(["a", "b", "c"]);
   });
 });

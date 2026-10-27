@@ -60,24 +60,41 @@ export const storefrontGuard = inngest.createFunction(
 
     const { shops, firedAt } = await step.run("select-due-shops", async () => {
       const { listGuardCandidateShops } = await import("../../app/models/storefront-guard.server");
-      const { compareGuardCandidates, guardEmailConsentAt, isGuardDue } =
+      const { guardEmailConsentAt, isGuardDue, selectGuardShops } =
         await import("../../app/services/storefront-guard.server");
       const now = new Date();
+      // Housekeeping in this step (no extra Inngest step, wave 4 M2): drop
+      // per-episode email ledger rows past their retention. Never fails the run.
+      try {
+        const { pruneGuardIncidentLedger } = await import("../../app/models/merchant-alert.server");
+        const pruned = await pruneGuardIncidentLedger(now);
+        if (pruned > 0) {
+          logger.info(`[${STOREFRONT_GUARD_ID}] pruned email ledger rows`, {
+            event: "storefront_guard_ledger_pruned",
+            count: pruned,
+          });
+        }
+      } catch (err) {
+        logger.warn(`[${STOREFRONT_GUARD_ID}] email ledger prune failed`, {
+          event: "storefront_guard_ledger_prune_failed",
+          error: err instanceof Error ? err.name : "unknown",
+        });
+      }
       const candidates = await listGuardCandidateShops();
       // Hourly (paid) shops first, then never-checked, then the
       // longest-waiting, capped so one run stays well inside the hour (the
       // first live run makes every shop due; a Free backlog never starves a
-      // paid hourly check).
-      const due: DueShop[] = candidates
-        .filter((s) => isGuardDue(s, now))
-        .sort(compareGuardCandidates)
-        .slice(0, MAX_GUARD_SHOPS_PER_RUN)
-        .map((s) => ({
-          id: s.id,
-          domain: s.domain,
-          plan: s.plan,
-          emailConsentAt: guardEmailConsentAt(s)?.toISOString() ?? null,
-        }));
+      // paid hourly check, and FREE_SHARE_OF_RUN of a full run is kept for
+      // due Free shops so they progress too).
+      const due: DueShop[] = selectGuardShops(
+        candidates.filter((s) => isGuardDue(s, now)),
+        MAX_GUARD_SHOPS_PER_RUN,
+      ).map((s) => ({
+        id: s.id,
+        domain: s.domain,
+        plan: s.plan,
+        emailConsentAt: guardEmailConsentAt(s)?.toISOString() ?? null,
+      }));
       return { shops: due, firedAt: now.toISOString() };
     });
 

@@ -69,6 +69,8 @@ export interface LoaderHit {
   reason: ScriptPayloadReason | "script_in_menu" | "script_in_checkout";
   /** Merchant-facing, fixed text. */
   label: string;
+  /** The guard region it was seen in (null: elsewhere in the page). */
+  region: Region["kind"] | null;
 }
 
 export interface NewHostCandidate {
@@ -323,12 +325,17 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
   const shopHosts = ownStoreHosts(ctx.shopHosts ?? []);
 
   const loaders = new Map<string, LoaderHit>();
-  const addLoader = (host: string | null, reason: LoaderHit["reason"], label: string) => {
+  const addLoader = (
+    host: string | null,
+    reason: LoaderHit["reason"],
+    label: string,
+    region: Region["kind"] | null,
+  ) => {
     const clean = host ? cleanHost(host) : null;
     if (clean && matchMaliciousDomain(clean)) return; // reported as KNOWN_MALICIOUS
     const fingerprint = loaderFingerprint(clean, reason);
     if (!loaders.has(fingerprint))
-      loaders.set(fingerprint, { fingerprint, host: clean, reason, label });
+      loaders.set(fingerprint, { fingerprint, host: clean, reason, label, region });
   };
 
   const hosts = new Map<string, NewHostCandidate>();
@@ -369,7 +376,12 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
         const region = regionAt(regions, at);
         const where = region ? ` ${REGION_WORDS[region]}` : " in the page";
         // Code construction stays a loader; a trusted host is not its identity.
-        addLoader(trusted ? null : host, hit.reason, `Code in an ${name} attribute${where}`);
+        addLoader(
+          trusted ? null : host,
+          hit.reason,
+          `Code in an ${name} attribute${where}`,
+          region,
+        );
       },
       script(at, info) {
         if (!info.runs) return;
@@ -384,6 +396,7 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
           srcHost ?? payload!.host,
           region === "checkout" ? "script_in_checkout" : "script_in_menu",
           `A script ${REGION_WORDS[region]}`,
+          region,
         );
       },
     },

@@ -12,6 +12,7 @@ const mockDb = vi.hoisted(() => ({
     create: vi.fn(),
     createMany: vi.fn(),
     count: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -27,7 +28,9 @@ import {
   claimSummaryOptInFirstShown,
   declineSummaryOptIn,
   emailedGuardIncidentKeys,
+  GUARD_INCIDENT_LEDGER_RETENTION_MS,
   guardIncidentLedgerKey,
+  pruneGuardIncidentLedger,
   recordGuardIncidentsEmailed,
   disableAlertsByToken,
   dismissSummaryNotice,
@@ -91,6 +94,46 @@ describe("per-episode guard ledger (wave 3 B5)", () => {
     });
     await recordGuardIncidentsEmailed("s1", [], "o@example.com");
     expect(mockDb.merchantAlert.createMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("per-episode guard ledger: bounded writes and retention (wave 4 M2)", () => {
+  const keys = Array.from({ length: 2500 }, (_, i) => `guard-incident:i${i}:x`);
+
+  it("reads and records 2,500 episode keys in chunks of at most 1,000", async () => {
+    mockDb.merchantAlert.findMany.mockImplementation(
+      async (args: { where: { scanId: { in: string[] } } }) => [
+        { scanId: args.where.scanId.in[0] },
+      ],
+    );
+    expect(await emailedGuardIncidentKeys("s1", keys)).toEqual(
+      new Set([keys[0], keys[1000], keys[2000]]),
+    );
+    expect(
+      mockDb.merchantAlert.findMany.mock.calls.map(
+        (c) => (c[0] as { where: { scanId: { in: string[] } } }).where.scanId.in.length,
+      ),
+    ).toEqual([1000, 1000, 500]);
+    await recordGuardIncidentsEmailed("s1", keys, "o@example.com");
+    const writes = mockDb.merchantAlert.createMany.mock.calls.map(
+      (c) => c[0] as { data: Array<{ scanId: string }>; skipDuplicates: boolean },
+    );
+    expect(writes.map((w) => w.data.length)).toEqual([1000, 1000, 500]);
+    expect(writes.every((w) => w.skipDuplicates)).toBe(true);
+    expect(writes.flatMap((w) => w.data.map((d) => d.scanId))).toEqual(keys);
+  });
+
+  it("prunes every shop's episode rows older than the retention (90 days), nothing else", async () => {
+    mockDb.merchantAlert.deleteMany.mockResolvedValue({ count: 4 });
+    const now = new Date("2026-10-27T00:00:00Z");
+    expect(GUARD_INCIDENT_LEDGER_RETENTION_MS).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(await pruneGuardIncidentLedger(now)).toBe(4);
+    expect(mockDb.merchantAlert.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        kind: "checkout_guard_incident",
+        sentAt: { lt: new Date(now.getTime() - GUARD_INCIDENT_LEDGER_RETENTION_MS) },
+      },
+    });
   });
 });
 

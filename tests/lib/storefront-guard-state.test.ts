@@ -11,10 +11,13 @@ import {
   AUTO_MERGE_MS,
   BASELINE_DECAY_MS,
   backoffDelayMs,
+  capGuardSightings,
   EMPTY_GUARD_STATE,
   FLAP_WINDOW_MS,
   MAX_BASELINE_HOSTS,
   MAX_HOSTS_PER_CHECK,
+  MAX_LIVE_SCRIPT_LOADERS,
+  MAX_LOADERS_PER_CHECK,
   newHostFingerprint,
   PARTIAL_HOME_AUTHORITY,
   PAUSED_RECHECK_MS,
@@ -552,5 +555,141 @@ describe("flap reopen past the auto-merge age", () => {
     const after = r.incidents.get(newHostFingerprint("new.io"))!;
     expect(after.resolution).toBe("auto_merged");
     expect(r.state.baselineHosts["new.io"]).toBeDefined();
+  });
+});
+
+describe("SCRIPT_LOADER caps (wave 4 H1)", () => {
+  const loaderAt = (i: number, over: Partial<GuardSighting> = {}): GuardSighting => ({
+    kind: "SCRIPT_LOADER",
+    fingerprint: `SCRIPT_LOADER:h${String(i).padStart(5, "0")}.evil.example`,
+    host: `h${String(i).padStart(5, "0")}.evil.example`,
+    page: "home",
+    sourceLabel: "Code in an onerror attribute in the page",
+    region: null,
+    reason: "external_url",
+    ...over,
+  });
+  const flood = (n: number) => Array.from({ length: n }, (_, i) => loaderAt(i));
+  const fps = (input: GuardCheckInput) =>
+    input.outcome === "ok" ? input.sightings.map((s) => s.fingerprint) : [];
+
+  it("keeps every KNOWN_MALICIOUS, first, and at most MAX_LOADERS_PER_CHECK loaders", () => {
+    expect(MAX_LOADERS_PER_CHECK).toBe(50);
+    const input = ok({ sightings: [...flood(40_000), MAL, { ...MAL, page: "cart" }] });
+    const { input: out, droppedLoaders } = capGuardSightings(input, []);
+    expect(droppedLoaders).toBe(40_000 - 50);
+    const kept = fps(out);
+    expect(kept.slice(0, 2)).toEqual([MAL.fingerprint, MAL.fingerprint]);
+    expect(new Set(kept.filter((f) => f.startsWith("SCRIPT_LOADER:"))).size).toBe(50);
+    expect(out.outcome === "ok" && out.unread).toHaveLength(40_000 - 50);
+  });
+
+  it("is deterministic: the same page keeps the same loaders in any order", () => {
+    const a = capGuardSightings(ok({ sightings: flood(500) }), []).input;
+    const b = capGuardSightings(ok({ sightings: [...flood(500)].reverse() }), []).input;
+    expect(new Set(fps(a))).toEqual(new Set(fps(b)));
+  });
+
+  it("ranks live incidents, then checkout, then menu, then spread over reasons", () => {
+    const openRow: GuardIncident = {
+      kind: "SCRIPT_LOADER",
+      fingerprint: loaderAt(39_999).fingerprint,
+      host: loaderAt(39_999).host,
+      page: "home",
+      sourceLabel: "x",
+      state: "open",
+      openedAt: T0,
+      firstSeenAt: T0,
+      lastSeenAt: T0,
+      seenCount: 2,
+      cleanStreak: 0,
+      resolvedAt: null,
+      resolution: null,
+      acknowledgedAt: null,
+      emailedOpenedAt: null,
+    };
+    const sightings = [
+      ...flood(40_000),
+      loaderAt(90_001, { region: "checkout" }),
+      loaderAt(90_002, { region: "menu" }),
+      loaderAt(90_003, { reason: "creates_script" }),
+      loaderAt(90_004, { reason: "eval" }),
+    ];
+    const kept = fps(capGuardSightings(ok({ sightings }), [openRow]).input);
+    expect(kept.slice(0, 6)).toEqual([
+      openRow.fingerprint,
+      loaderAt(90_001).fingerprint,
+      loaderAt(90_002).fingerprint,
+      // Each reason's first fingerprint before any reason's second.
+      loaderAt(0).fingerprint,
+      loaderAt(90_003).fingerprint,
+      loaderAt(90_004).fingerprint,
+    ]);
+    expect(kept[6]).toBe(loaderAt(1).fingerprint);
+    expect(kept).toHaveLength(50);
+    expect(kept).not.toContain(loaderAt(49).fingerprint);
+  });
+
+  it("a page under the cap is passed through whole", () => {
+    const input = ok({ sightings: [...flood(50), MAL] });
+    const { input: out, droppedLoaders } = capGuardSightings(input, []);
+    expect(droppedLoaders).toBe(0);
+    expect(fps(out)).toHaveLength(51);
+    expect(out.outcome === "ok" && out.unread).toBeFalsy();
+  });
+
+  it("a dropped loader is neither seen nor clean: its open incident stays open", () => {
+    const start = run([ok({ sightings: [loaderAt(7)] }), ok({ sightings: [loaderAt(7)] })]);
+    const fp = loaderAt(7).fingerprint;
+    expect(start.incidents.get(fp)!.state).toBe("open");
+    const check: GuardCheckInput = {
+      outcome: "ok",
+      complete: true,
+      sightings: [],
+      hosts: [],
+      unread: [fp],
+    };
+    const after = run([check, check, check], {
+      state: start.state,
+      incidents: [...start.incidents.values()],
+      t: start.t,
+    });
+    expect(after.incidents.get(fp)!.state).toBe("open");
+    expect(after.incidents.get(fp)!.cleanStreak).toBe(0);
+  });
+
+  it("a dropped loader's host is never a new-host candidate instead", () => {
+    const sightings = flood(60);
+    const input: GuardCheckInput = {
+      outcome: "ok",
+      complete: true,
+      sightings,
+      hosts: sightings.map((s) => host(s.host!)),
+    };
+    const out = capGuardSightings(input, []).input;
+    expect(out.outcome === "ok" && out.hosts.map((h) => h.host)).toEqual(
+      sightings.slice(0, 50).map((s) => s.host),
+    );
+  });
+
+  it("never more than MAX_LIVE_SCRIPT_LOADERS live loader incidents per shop; KNOWN_MALICIOUS still opens", () => {
+    expect(MAX_LIVE_SCRIPT_LOADERS).toBe(50);
+    // 50 loaders confirmed, then 50 different ones while the first stay open.
+    const first = run([ok({ sightings: flood(50) }), ok({ sightings: flood(50) })]);
+    const next = flood(100).slice(50);
+    const r = applyGuardCheck(
+      first.state,
+      [...first.incidents.values()],
+      ok({ sightings: [...next, MAL] }),
+      at(first.t),
+    );
+    expect(r.droppedLoaders).toBe(50);
+    expect(r.opened.map((i) => i.fingerprint)).toEqual([MAL.fingerprint]);
+    const live = [...first.incidents.values(), ...r.changed].filter(
+      (i) => i.kind === "SCRIPT_LOADER" && i.state !== "resolved",
+    );
+    expect(new Set(live.map((i) => i.fingerprint)).size).toBe(50);
+    // The held-back loaders are not counted clean either (no lapsed rows made).
+    expect(r.changed.filter((i) => next.some((n) => n.fingerprint === i.fingerprint))).toEqual([]);
   });
 });

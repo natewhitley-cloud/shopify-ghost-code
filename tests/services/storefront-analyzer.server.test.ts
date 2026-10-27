@@ -272,6 +272,7 @@ describe("analyzeStorefrontHtml: signals", () => {
         host: "checkout-guard.example",
         reason: "creates_script",
         label: "Code in an onerror attribute in your store menu",
+        region: "menu",
       },
     ]);
   });

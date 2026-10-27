@@ -39,9 +39,8 @@ vi.mock("../../app/models/merchant-alert.server", async (orig) => ({
 vi.mock("../../app/models/storefront-guard.server", () => guardModel);
 vi.mock("../../app/services/shop-alert-email.server", () => contact);
 vi.mock("../../app/db.server", () => ({ default: {} }));
-vi.mock("../../app/lib/logger.server", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const logger = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock("../../app/lib/logger.server", () => ({ logger }));
 
 import { guardNoticeLead } from "../../app/lib/storefront-guard-copy";
 import type { GuardIncident } from "../../app/lib/storefront-guard-state";
@@ -52,6 +51,7 @@ import {
   buildGuardEmailText,
   GUARD_EMAILS_PER_DAY,
   guardEmailShopSkipReason,
+  MAX_EMAIL_INCIDENTS,
   guardLedgerKey,
   sendGuardIncidentEmail,
   type GuardEmailShop,
@@ -453,9 +453,16 @@ describe("sendGuardIncidentEmail: per-episode ledger (wave 3 B5)", () => {
     ledger.recordGuardIncidentsEmailed.mockRejectedValue(new Error("db"));
     guardModel.loadIncidentsToEmail.mockResolvedValue([A]);
     contact.refreshShopContact.mockResolvedValue({ email: null, storeName: null });
-    expect(await send(["inc-1"])).toEqual({ sent: true, reason: "sent", count: 1 });
+    // Wave 4 M2: the failure is visible (the outcome and a counted log line,
+    // never the recipient); the episode stamp still follows (no resend).
+    expect(await send(["inc-1"])).toEqual({ sent: true, reason: "sent_not_recorded", count: 1 });
     expect(ledger.recordGuardIncidentsEmailed).toHaveBeenCalledTimes(2);
     expect(guardModel.markIncidentsEmailed).toHaveBeenCalledWith([A]);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Guard email sent but episode ledger write failed",
+      expect.objectContaining({ event: "guard_email_episode_ledger_failed", episodes: 1 }),
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("owner@example.com");
   });
 
   it("the episode key names the incident and its episode start", () => {
@@ -503,6 +510,32 @@ describe("email copy", () => {
     const html = buildGuardEmailHtml(body);
     expect(html).toContain("Paw &lt;Naturals&gt;");
     expect(html).not.toContain("Paw <Naturals>");
+  });
+
+  it("lists at most MAX_EMAIL_INCIDENTS incidents, known-malicious first, then 'and N more' (wave 4 H1)", () => {
+    const loaders = Array.from({ length: 40 }, (_, i) =>
+      toIncidentView(
+        incident({
+          id: `l${i}`,
+          kind: "SCRIPT_LOADER",
+          fingerprint: `SCRIPT_LOADER:h${i}.evil.example`,
+          host: `h${i}.evil.example`,
+        }),
+      ),
+    );
+    const many = { ...body, incidents: [...loaders, toIncidentView(incident())] };
+    expect(MAX_EMAIL_INCIDENTS).toBe(10);
+    for (const out of [buildGuardEmailText(many), buildGuardEmailHtml(many)]) {
+      expect(out).toContain("cartassure.top");
+      expect(out.indexOf("cartassure.top")).toBeLessThan(out.indexOf("h0.evil.example"));
+      expect(out).toContain("h8.evil.example");
+      expect(out).not.toContain("h9.evil.example");
+      expect(out).toContain("And 31 more on your Home page in GhostCode.");
+    }
+    expect(buildGuardEmailText(body)).not.toContain("more on your Home page");
+    const ten = { ...body, incidents: loaders.slice(0, 10) };
+    expect(buildGuardEmailText(ten)).toContain("h9.evil.example");
+    expect(buildGuardEmailText(ten)).not.toContain("more on your Home page");
   });
 
   it("subject falls back to the domain", () => {

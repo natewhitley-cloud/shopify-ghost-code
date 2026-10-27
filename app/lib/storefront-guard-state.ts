@@ -76,6 +76,15 @@ export const PAUSED_RECHECK_MS = 6 * HOUR_MS;
 /** Bounds on stored host lists (a page with thousands of hosts stays small). */
 export const MAX_HOSTS_PER_CHECK = 200;
 export const MAX_BASELINE_HOSTS = 500;
+/**
+ * At most this many distinct SCRIPT_LOADER fingerprints are processed per
+ * check (wave 4 H1: a page of 40,000 distinct loader hosts made 40,000 rows
+ * per check, and the write timed out every hour, so a KNOWN_MALICIOUS on the
+ * same page was never recorded). KNOWN_MALICIOUS is never capped.
+ */
+export const MAX_LOADERS_PER_CHECK = 50;
+/** At most this many live (open or pending) SCRIPT_LOADER incidents per shop. */
+export const MAX_LIVE_SCRIPT_LOADERS = 50;
 
 export type IncidentKind = "KNOWN_MALICIOUS" | "SCRIPT_LOADER" | "NEW_SCRIPT_HOST";
 export type IncidentState = "pending" | "open" | "resolved";
@@ -150,6 +159,10 @@ export interface GuardSighting {
   host: string | null;
   page: GuardPage;
   sourceLabel: string;
+  /** A loader's guard region (capGuardSightings ranks checkout > menu > none). */
+  region?: "checkout" | "menu" | null;
+  /** A loader's reason (capGuardSightings spreads the kept set over reasons). */
+  reason?: string;
 }
 
 /** A loading host on one page, already filtered of suppressed hosts. */
@@ -165,6 +178,11 @@ export type GuardCheckInput =
       complete: boolean;
       sightings: readonly GuardSighting[];
       hosts: readonly GuardHostSighting[];
+      /**
+       * Fingerprints this check saw but did not process (capGuardSightings):
+       * neither a sighting nor a clean check for their incidents.
+       */
+      unread?: readonly string[];
     }
   | { outcome: "paused_password" }
   | { outcome: "paused_redirect"; redirectHost: string | null }
@@ -191,6 +209,8 @@ export interface GuardCheckResult {
    * consider (alphabetically last; gc-njwa #4). 0 when none were dropped.
    */
   droppedHosts: number;
+  /** New SCRIPT_LOADER incidents not created: the shop is at MAX_LIVE_SCRIPT_LOADERS. */
+  droppedLoaders: number;
 }
 
 /** Backoff delay after `n` unreachable checks in a row (0 before BACKOFF_AFTER). */
@@ -222,7 +242,13 @@ export function applyGuardCheck(
   };
 
   if (check.outcome !== "ok") {
-    return { state: applyNonOk(base, check, now), changed: [], opened: [], droppedHosts: 0 };
+    return {
+      state: applyNonOk(base, check, now),
+      changed: [],
+      opened: [],
+      droppedHosts: 0,
+      droppedLoaders: 0,
+    };
   }
 
   const state: GuardStateData = {
@@ -238,6 +264,8 @@ export function applyGuardCheck(
   const changed = new Map<string, GuardIncident>();
   const opened: GuardIncident[] = [];
   let droppedHosts = 0;
+  let droppedLoaders = 0;
+  const unread = new Set(check.unread ?? []);
   const touch = (i: GuardIncident) => {
     byFingerprint.set(i.fingerprint, i);
     changed.set(i.fingerprint, i);
@@ -317,8 +345,26 @@ export function applyGuardCheck(
   }
 
   // --- Apply sightings --------------------------------------------------------
+  // Live SCRIPT_LOADER rows after this check: open ones, and pending ones seen
+  // again (a pending row not seen lapses below). A new one past
+  // MAX_LIVE_SCRIPT_LOADERS is not created (wave 4 H1); KNOWN_MALICIOUS and
+  // existing loader episodes are never held back.
+  let liveLoaders = 0;
+  for (const i of byFingerprint.values()) {
+    if (i.kind !== "SCRIPT_LOADER") continue;
+    if (i.state === "open" || (i.state === "pending" && seen.has(i.fingerprint))) liveLoaders++;
+  }
   for (const [fp, s] of seen) {
-    const result = sight(byFingerprint.get(fp), s, now);
+    const existing = byFingerprint.get(fp);
+    if (s.kind === "SCRIPT_LOADER" && !isLive(existing, now)) {
+      if (liveLoaders >= MAX_LIVE_SCRIPT_LOADERS) {
+        droppedLoaders++;
+        unread.add(fp);
+        continue;
+      }
+      liveLoaders++;
+    }
+    const result = sight(existing, s, now);
     touch(result.incident);
     if (result.opened) opened.push(result.incident);
   }
@@ -342,7 +388,7 @@ export function applyGuardCheck(
   // absent, see PARTIAL_HOME_AUTHORITY) ----------------------------------------
   if (check.complete || homeAuthoritative) {
     for (const i of byFingerprint.values()) {
-      if (seen.has(i.fingerprint)) continue;
+      if (seen.has(i.fingerprint) || unread.has(i.fingerprint)) continue;
       if (!check.complete && i.page === "cart") continue;
       if (i.state === "pending") {
         touch(resolve(i, now, "lapsed"));
@@ -357,7 +403,104 @@ export function applyGuardCheck(
     }
   }
 
-  return { state, changed: [...changed.values()], opened, droppedHosts };
+  return { state, changed: [...changed.values()], opened, droppedHosts, droppedLoaders };
+}
+
+/** An incident a sighting continues (open, pending, or reopenable in the flap window). */
+function isLive(i: GuardIncident | undefined, now: Date): boolean {
+  if (!i) return false;
+  return i.state !== "resolved" || withinFlapWindow(i, now);
+}
+
+const REGION_RANK = { checkout: 0, menu: 1 } as const;
+
+/**
+ * Bound one check's SCRIPT_LOADER sightings to MAX_LOADERS_PER_CHECK distinct
+ * fingerprints (wave 4 H1), deterministically. Every KNOWN_MALICIOUS sighting
+ * is kept and put first. Loaders are kept in this order:
+ *   1. the shop's live loader incidents (open, then pending), so a confirmed
+ *      episode is never lost to the cap;
+ *   2. region: checkout button, then menu, then elsewhere;
+ *   3. spread over reasons (each reason's first fingerprint before any
+ *      reason's second);
+ *   4. fingerprint.
+ * Dropped fingerprints go to `unread` (their incidents are neither seen nor
+ * clean), and their hosts leave `hosts` (never a new-host candidate instead).
+ */
+export function capGuardSightings(
+  input: GuardCheckInput,
+  incidents: readonly GuardIncident[],
+): { input: GuardCheckInput; droppedLoaders: number } {
+  if (input.outcome !== "ok") return { input, droppedLoaders: 0 };
+  const malicious = input.sightings.filter((s) => s.kind === "KNOWN_MALICIOUS");
+  const loaderSightings = input.sightings.filter((s) => s.kind === "SCRIPT_LOADER");
+  type Rank = { fp: string; region: number; reason: string };
+  const ranks = new Map<string, Rank>();
+  for (const s of loaderSightings) {
+    const region = s.region ? REGION_RANK[s.region] : 2;
+    const prior = ranks.get(s.fingerprint);
+    if (!prior || region < prior.region) {
+      ranks.set(s.fingerprint, { fp: s.fingerprint, region, reason: s.reason ?? "" });
+    }
+  }
+  if (ranks.size <= MAX_LOADERS_PER_CHECK) {
+    return {
+      input: { ...input, sightings: [...malicious, ...loaderSightings] },
+      droppedLoaders: 0,
+    };
+  }
+  const liveRank = new Map<string, number>();
+  for (const i of incidents) {
+    if (i.kind !== "SCRIPT_LOADER") continue;
+    if (i.state === "open") liveRank.set(i.fingerprint, 0);
+    else if (i.state === "pending") liveRank.set(i.fingerprint, 1);
+  }
+  // Each fingerprint's position among its region's same-reason fingerprints.
+  const sorted = [...ranks.values()].sort((a, b) => cmp(a.fp, b.fp));
+  const spread = new Map<string, number>();
+  const perReason = new Map<string, number>();
+  for (const r of sorted) {
+    const key = `${r.region}|${r.reason}`;
+    const n = perReason.get(key) ?? 0;
+    spread.set(r.fp, n);
+    perReason.set(key, n + 1);
+  }
+  const ordered = sorted.sort(
+    (a, b) =>
+      (liveRank.get(a.fp) ?? 2) - (liveRank.get(b.fp) ?? 2) ||
+      a.region - b.region ||
+      spread.get(a.fp)! - spread.get(b.fp)! ||
+      cmp(a.fp, b.fp),
+  );
+  // Kept in priority order: applyGuardCheck fills the shop's live-loader
+  // slots (MAX_LIVE_SCRIPT_LOADERS) in this order too.
+  const position = new Map(ordered.map((r, n) => [r.fp, n]));
+  const kept = new Set(ordered.slice(0, MAX_LOADERS_PER_CHECK).map((r) => r.fp));
+  const dropped = ordered.slice(MAX_LOADERS_PER_CHECK).map((r) => r.fp);
+  const droppedHosts = new Set(
+    loaderSightings
+      .filter((s) => !kept.has(s.fingerprint) && s.host !== null)
+      .map((s) => s.host as string),
+  );
+  return {
+    input: {
+      ...input,
+      sightings: [
+        ...malicious,
+        ...loaderSightings
+          .filter((s) => kept.has(s.fingerprint))
+          .sort((a, b) => position.get(a.fingerprint)! - position.get(b.fingerprint)!),
+      ],
+      hosts: input.hosts.filter((h) => !droppedHosts.has(h.host)),
+      unread: [...(input.unread ?? []), ...dropped],
+    },
+    droppedLoaders: dropped.length,
+  };
+}
+
+/** Plain code-unit order (locale-independent, deterministic). */
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function applyNonOk(

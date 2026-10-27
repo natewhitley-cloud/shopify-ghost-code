@@ -4,6 +4,7 @@ import type { MerchantAlert, Prisma } from "@prisma/client";
 
 import { claimShopStamp } from "./shop.server";
 import db from "../db.server";
+import { chunks } from "../lib/chunk";
 
 /**
  * Data access for merchant summary emails (gc-syz.1, gc-ol95): the
@@ -56,12 +57,16 @@ export async function emailedGuardIncidentKeys(
   shopId: string,
   keys: readonly string[],
 ): Promise<Set<string>> {
-  if (keys.length === 0) return new Set();
-  const rows = await db.merchantAlert.findMany({
-    where: { shopId, kind: GUARD_INCIDENT_LEDGER_KIND, scanId: { in: [...keys] } },
-    select: { scanId: true },
-  });
-  return new Set(rows.map((r) => r.scanId));
+  const out = new Set<string>();
+  // Chunked (wave 4 H1): one IN list past the bind limit fails the query.
+  for (const part of chunks(keys)) {
+    const rows = await db.merchantAlert.findMany({
+      where: { shopId, kind: GUARD_INCIDENT_LEDGER_KIND, scanId: { in: part } },
+      select: { scanId: true },
+    });
+    for (const r of rows) out.add(r.scanId);
+  }
+  return out;
 }
 
 /** Record emailed episodes (one row each; an existing row is kept). */
@@ -70,18 +75,38 @@ export async function recordGuardIncidentsEmailed(
   keys: readonly string[],
   recipient: string,
 ): Promise<void> {
-  if (keys.length === 0) return;
-  await db.merchantAlert.createMany({
-    data: keys.map((key) => ({
-      shopId,
-      scanId: key,
-      findingSetHash: key,
-      newCount: 1,
-      recipient,
+  // Chunked (wave 4 M2): one createMany past the bind limit fails whole.
+  for (const part of chunks(keys)) {
+    await db.merchantAlert.createMany({
+      data: part.map((key) => ({
+        shopId,
+        scanId: key,
+        findingSetHash: key,
+        newCount: 1,
+        recipient,
+        kind: GUARD_INCIDENT_LEDGER_KIND,
+      })),
+      skipDuplicates: true,
+    });
+  }
+}
+
+/**
+ * Per-episode ledger rows are kept this long (wave 4 M2: they were never
+ * deleted). Far past the 30-day incident retention and the 24 h email
+ * window; an episode's own emailedOpenedAt stamp still stops a resend.
+ */
+export const GUARD_INCIDENT_LEDGER_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/** Delete every shop's per-episode ledger rows older than the retention. Returns the count. */
+export async function pruneGuardIncidentLedger(now: Date): Promise<number> {
+  const { count } = await db.merchantAlert.deleteMany({
+    where: {
       kind: GUARD_INCIDENT_LEDGER_KIND,
-    })),
-    skipDuplicates: true,
+      sentAt: { lt: new Date(now.getTime() - GUARD_INCIDENT_LEDGER_RETENTION_MS) },
+    },
   });
+  return count;
 }
 
 /** Generate a crypto-random, URL-safe unsubscribe token (>= 128 bits). */

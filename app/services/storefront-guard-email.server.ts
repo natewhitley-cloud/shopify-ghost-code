@@ -63,6 +63,12 @@ import { loadIncidentsToEmail, markIncidentsEmailed } from "../models/storefront
 import type { AdminApiContext } from "../types/shopify";
 
 export const GUARD_EMAILS_PER_DAY = 3;
+/**
+ * At most this many incidents are written out in one email (wave 4 H1); the
+ * rest are counted in one line pointing at Home, which lists them all.
+ * KNOWN_MALICIOUS incidents are listed first.
+ */
+export const MAX_EMAIL_INCIDENTS = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -95,11 +101,18 @@ function incidentLines(i: GuardIncidentView): string[] {
 }
 
 function bodyParts(b: GuardEmailBody) {
+  // Known-malicious first (stable: the given order otherwise).
+  const ordered = [
+    ...b.incidents.filter((i) => i.kind === "KNOWN_MALICIOUS"),
+    ...b.incidents.filter((i) => i.kind !== "KNOWN_MALICIOUS"),
+  ];
+  const more = ordered.length - MAX_EMAIL_INCIDENTS;
   return {
     intro:
       `GhostCode's checkout guard found something on the live storefront of ` +
       `${storeNameForEmail(b.storeName, b.shopDomain)} that needs a look today.`,
-    incidents: b.incidents.map(incidentLines),
+    incidents: ordered.slice(0, MAX_EMAIL_INCIDENTS).map(incidentLines),
+    more: more > 0 ? `And ${more} more on your Home page in GhostCode.` : null,
     steps: GUARD_CHECK_STEPS.map((step, n) => `${n + 1}. ${step}`),
   };
 }
@@ -109,6 +122,7 @@ export function buildGuardEmailText(b: GuardEmailBody): string {
   const p = bodyParts(b);
   const lines = [p.intro, ""];
   for (const block of p.incidents) lines.push(...block, "");
+  if (p.more) lines.push(p.more, "");
   lines.push("What to check:", ...p.steps, "");
   lines.push("See the details in GhostCode:", b.homeUrl, "");
   lines.push("Checklist for a compromised app:", GUARD_GUIDE_URL, "");
@@ -137,6 +151,7 @@ export function buildGuardEmailHtml(b: GuardEmailBody): string {
         block.slice(1).map(escapeHtml).join("<br>") +
         `</td></tr>`,
     ),
+    ...(p.more ? [para(p.more)] : []),
     `<tr><td style="padding:0 0 16px"><strong>What to check</strong><ol style="margin:4px 0 0;padding:0 0 0 20px">` +
       GUARD_CHECK_STEPS.map((s) => `<li style="margin:0 0 4px">${escapeHtml(s)}</li>`).join("") +
       `</ol></td></tr>`,
@@ -251,28 +266,33 @@ async function stampEmailedQuietly(
 
 /**
  * Record the emailed episodes in the per-episode ledger, retried once, then
- * logged and swallowed (the email went out; the episode stamp still follows).
+ * logged (with the episode count; never the recipient) and swallowed: the
+ * email went out, and the episode stamp that follows still stops a resend.
+ * False when the write failed (the send reports `sent_not_recorded`).
  */
 async function recordEpisodesQuietly(
   shopId: string,
   incidents: ReadonlyArray<{ id: string; openedAt: Date }>,
   recipient: string,
-): Promise<void> {
+): Promise<boolean> {
   const keys = incidents.map(guardIncidentLedgerKey);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await recordGuardIncidentsEmailed(shopId, keys, recipient);
-      return;
+      return true;
     } catch (error) {
       if (attempt === 1) {
         logger.error("Guard email sent but episode ledger write failed", {
           context: "storefront-guard-email",
+          event: "guard_email_episode_ledger_failed",
           shopId,
+          episodes: keys.length,
           ...safeErrorFields(error),
         });
       }
     }
   }
+  return false;
 }
 
 /**
@@ -388,7 +408,9 @@ export async function sendGuardIncidentEmail(args: {
         }
       }
     }
-    await recordEpisodesQuietly(shop.id, incidents, recipient);
+    if (!(await recordEpisodesQuietly(shop.id, incidents, recipient))) {
+      reason = "sent_not_recorded";
+    }
     await stampEmailedQuietly(shop.id, incidents);
     return { sent: true, reason, count: incidents.length };
   } catch (error) {
