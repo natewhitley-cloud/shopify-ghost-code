@@ -453,6 +453,24 @@ describe("findMaliciousInHomepage: on*= event handlers (gc-7gjj.4)", () => {
     ]);
   });
 
+  it("an element named like an Object.prototype member is an ordinary element (audit fix)", () => {
+    // Names are lower-cased and must start with a letter, so `constructor` is
+    // the reachable Object.prototype key (it used to throw and blank the read).
+    for (const name of ["constructor", "CONSTRUCTOR"]) {
+      const html = page(
+        "",
+        `<${name} a=b onclick="${loader("cartassure.top")}">hi</${name}><script src="https://biliing.top/x.js"></script>`,
+      );
+      expect(
+        findMaliciousInHomepage(html, []).map((h) => [h.domain, h.source]),
+        name,
+      ).toEqual([
+        ["biliing.top", "script"],
+        ["cartassure.top", "event_handler"],
+      ]);
+    }
+  });
+
   it("stays linear on 1 MB of handler-heavy or never-closed tags", () => {
     const cases = [
       page("", `<img src=x onload="this.media='all'" onerror="x()">`.repeat(20_000)),

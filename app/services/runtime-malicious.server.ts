@@ -275,7 +275,11 @@ export function findMaliciousInHomepage(
   while ((found = TAG_START_RE.exec(live)) !== null) {
     const at = found.index;
     const element = found[1].toLowerCase();
-    const loadAttributes = LOADING_ELEMENT_ATTRIBUTES[element];
+    // Own keys only: an element named `constructor` or `__proto__` must not
+    // resolve to an Object.prototype member (audit fix, gc-7gjj.4).
+    const loadAttributes = Object.hasOwn(LOADING_ELEMENT_ATTRIBUTES, element)
+      ? LOADING_ELEMENT_ATTRIBUTES[element]
+      : undefined;
     const opaque = OPAQUE_BODY_ELEMENTS.has(element);
     if (!loadAttributes && handlersOff) {
       if (!opaque) continue;
