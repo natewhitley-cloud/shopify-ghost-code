@@ -27,12 +27,12 @@
  *      malicious hosts (already their own incident). Links, connection
  *      hints, inline-JS strings and handler URLs never count as new hosts.
  *
- * Menu regions: the menu elements by tag name, plus any element with a real
- * `role="navigation"` attribute (gc-njwa #3; read by the attribute walk, so
- * the words inside another value never count), which ends at its own close
- * tag (same-name nesting counted). Known limits: not by class; a menu
- * element ends at the first matching close tag; an element that never closes
- * is no region (audit fix: it used to run to the end of the page).
+ * Menu and checkout regions come from one walk over the page's real tags
+ * (findGuardRegions): menu elements, any element with a real
+ * `role="navigation"` attribute, and checkout buttons or links, each up to
+ * its own close tag (same-name nesting counted). Known limits: not by class;
+ * an element that never closes is no region (audit fix: it used to run to
+ * the end of the page).
  */
 import { segmentAttributes, tagEnd } from "./menu-injection-detector.server";
 import {
@@ -43,7 +43,13 @@ import {
   type HomepageMaliciousHit,
   type HomepageSource,
 } from "./runtime-malicious.server";
-import { identifyAppForExternalUrl, isHtmlSpace, isShopifyDomain } from "./scan-engine.server";
+import {
+  asciiLowerCase,
+  blankInertComments,
+  identifyAppForExternalUrl,
+  isHtmlSpace,
+  isShopifyDomain,
+} from "./scan-engine.server";
 import {
   findScriptPayload,
   firstExternalHost,
@@ -111,16 +117,12 @@ const MAX_REGIONS = 200;
 
 type Region = { start: number; end: number; kind: "menu" | "checkout" };
 
-/** Index of the first `<name` start tag at or after `from` (any case). */
-function findTag(lower: string, name: string, from: number): number {
-  for (let i = lower.indexOf(`<${name}`, from); i !== -1; i = lower.indexOf(`<${name}`, i + 1)) {
-    if (/[\s>/]/.test(lower.charAt(i + name.length + 1))) return i;
-  }
-  return -1;
-}
-
-/** Elements whose content is text, never markup (a tag inside one opens nothing). */
-const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
+/**
+ * Elements whose content is never markup the page shows: text (script,
+ * style, ...), an iframe's fallback text, or an inert `<template>`. A tag
+ * written inside one opens nothing.
+ */
+const OPAQUE_ELEMENTS: ReadonlySet<string> = new Set([
   "script",
   "style",
   "textarea",
@@ -129,51 +131,116 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
   "noscript",
   "noembed",
   "noframes",
+  "template",
+  "iframe",
 ]);
+
+const CC_SLASH = 0x2f;
+const CC_GT = 0x3e;
+
+/**
+ * Index of the first `</name` close tag at or after `from` whose name really
+ * is `name`: the next character is whitespace, `/`, `>` or the end, so
+ * `</a` is not `</aside>` and `</nav` is not `</navx>` (wave 3 D4).
+ */
+function closeTagAt(lower: string, name: string, from: number): number {
+  const needle = `</${name}`;
+  for (let i = lower.indexOf(needle, from); i !== -1; i = lower.indexOf(needle, i + 1)) {
+    const at = i + needle.length;
+    if (at >= lower.length) return i;
+    const c = lower.charCodeAt(at);
+    if (isHtmlSpace(c) || c === CC_SLASH || c === CC_GT) return i;
+  }
+  return -1;
+}
 
 /** Whether a `role` value names the navigation role (a space-separated, any-case list). */
 function isNavigationRole(value: string | null | undefined): boolean {
   return (
     !!value &&
-    value
-      .toLowerCase()
+    asciiLowerCase(value)
       .split(/[\t\n\f\r ]+/)
       .includes("navigation")
   );
 }
 
+/** A link or button that IS the checkout: `name="checkout"`, an id naming checkout, a link to /checkout. */
+function isCheckoutControl(attributes: ReadonlyMap<string, string | null>): boolean {
+  const attr = (name: string) => asciiLowerCase((attributes.get(name) ?? "").trim());
+  return (
+    attr("name") === "checkout" ||
+    attr("id").includes("checkout") ||
+    /^\/checkout(?![a-z0-9_])/.test(attr("href"))
+  );
+}
+
+/** The guard region a start tag opens, or null (see findGuardRegions). */
+function regionKindOf(name: string, lowerTag: string, tag: string): Region["kind"] | null {
+  if ((MENU_ELEMENTS as readonly string[]).includes(name)) return "menu";
+  const checkoutCandidate = name === "a" || name === "button";
+  if (!checkoutCandidate && !lowerTag.includes("role")) return null;
+  const { attributes } = segmentAttributes(tag);
+  if (isNavigationRole(attributes.get("role"))) return "menu";
+  return checkoutCandidate && isCheckoutControl(attributes) ? "checkout" : null;
+}
+
 /**
- * Elements with a real `role="navigation"` attribute (gc-njwa #3), each up to
- * its own close tag. One forward walk over the page's tags: comments and
- * raw-text elements are skipped, attributes are read by segmentAttributes
- * (the menu detector's walk, so `data-x="role=navigation"` is no role), and a
- * per-name open count pairs each region with its close tag despite nested
- * elements of the same name. Linear: every step moves forward, and each
- * close tag looks only at the innermost open region of its name. At most
- * MAX_REGIONS regions; one never closed is no region.
+ * Menu and checkout-button regions of the page (offsets into `html`), each
+ * from its start tag to ITS close tag. A region is opened by:
+ *   - a menu element (`<nav>`, `<header-menu>`, `<menu-drawer>`, `<mega-menu>`);
+ *   - any element with a real `role="navigation"` attribute (gc-njwa #3);
+ *   - a checkout `<button>` or `<a>` (`name="checkout"`, an id naming
+ *     checkout, an href to /checkout).
+ *
+ * ONE forward walk over the page's real tags (wave 3 D4; it used to search
+ * the text for `<nav` etc., so a tag name written inside a script string, a
+ * comment, an attribute value or a template opened a region). The walk reads
+ * the comment-blanked page walkHomepage reads (blankInertComments, length
+ * preserved), skips the body of every OPAQUE_ELEMENTS element, reads
+ * attributes with segmentAttributes (so `data-x="role=navigation"` is no
+ * role, and a quoted `>` does not end a tag), and pairs each region with its
+ * close tag by a per-name open count, so nested elements of the same name do
+ * not end it early. Names are compared on an ASCII-only lower-case copy that
+ * keeps every offset (wave 3 D2: `İ` lower-cases to two code units, which
+ * shifted every later region).
+ *
+ * Linear: every step moves forward, and each close tag looks only at the
+ * innermost open region of its name. At most MAX_REGIONS regions of each
+ * kind are tracked; one never closed is no region (it would cover the rest of the
+ * page).
  */
-export function findRoleNavigationRegions(html: string, lower: string): Region[] {
+export function findGuardRegions(html: string): Region[] {
+  const live = blankInertComments(html, "homepage.html");
+  const lower = asciiLowerCase(live);
   const regions: Region[] = [];
-  const openByName = new Map<string, Array<{ start: number; depth: number }>>();
+  const openByName = new Map<
+    string,
+    Array<{ start: number; depth: number; kind: Region["kind"] }>
+  >();
   const depth = new Map<string, number>();
-  let tracked = 0;
+  const tracked: Record<Region["kind"], number> = { menu: 0, checkout: 0 };
   const n = lower.length;
   let i = lower.indexOf("<");
   while (i !== -1) {
     if (lower.startsWith("<!--", i)) {
+      // A comment the blanking did not model: it runs to `-->`.
       const close = lower.indexOf("-->", i + 4);
       if (close === -1) break;
       i = lower.indexOf("<", close + 3);
       continue;
     }
-    const closing = lower.charAt(i + 1) === "/";
+    const closing = lower.charCodeAt(i + 1) === CC_SLASH;
     const nameStart = closing ? i + 2 : i + 1;
-    if (!/[a-z]/.test(lower.charAt(nameStart))) {
+    const first = lower.charCodeAt(nameStart);
+    if (!(first >= 0x61 && first <= 0x7a)) {
       i = lower.indexOf("<", i + 1);
       continue;
     }
     let j = nameStart + 1;
-    while (j < n && lower[j] !== "/" && lower[j] !== ">" && !isHtmlSpace(lower.charCodeAt(j))) j++;
+    while (j < n && lower.charCodeAt(j) !== CC_SLASH && lower.charCodeAt(j) !== CC_GT) {
+      if (isHtmlSpace(lower.charCodeAt(j))) break;
+      j++;
+    }
     const name = lower.slice(nameStart, j);
     if (closing) {
       const gt = lower.indexOf(">", j);
@@ -184,70 +251,29 @@ export function findRoleNavigationRegions(html: string, lower: string): Region[]
       const top = open?.[open.length - 1];
       if (top && top.depth === level) {
         open!.pop();
-        regions.push({ start: top.start, end: i, kind: "menu" });
+        regions.push({ start: top.start, end: i, kind: top.kind });
       }
       i = lower.indexOf("<", gt + 1);
       continue;
     }
-    const { end, closed } = tagEnd(html, i);
+    const { end, closed } = tagEnd(live, i);
     if (!closed) break;
-    if (RAW_TEXT_ELEMENTS.has(name)) {
-      const close = lower.indexOf(`</${name}`, end);
+    if (OPAQUE_ELEMENTS.has(name)) {
+      const close = closeTagAt(lower, name, end);
       if (close === -1) break;
       i = close;
       continue;
     }
     const level = depth.get(name) ?? 0;
-    if (
-      tracked < MAX_REGIONS &&
-      isNavigationRole(segmentAttributes(html.slice(i, end)).attributes.get("role"))
-    ) {
-      tracked++;
+    const kind = regionKindOf(name, lower.slice(i, end), live.slice(i, end));
+    if (kind && tracked[kind] < MAX_REGIONS) {
+      tracked[kind]++;
       const open = openByName.get(name) ?? [];
-      open.push({ start: i, depth: level });
+      open.push({ start: i, depth: level, kind });
       openByName.set(name, open);
     }
     depth.set(name, level + 1);
     i = lower.indexOf("<", end);
-  }
-  return regions;
-}
-
-const CHECKOUT_TAG_RE =
-  /\sname\s*=\s*["']?checkout["'\s>]|\sid\s*=\s*["']?[^"'\s>]*checkout|\shref\s*=\s*["']?\/checkout\b/;
-
-/** Menu and checkout-button regions of the page (offsets into `html`). */
-export function findGuardRegions(html: string): Region[] {
-  const lower = html.toLowerCase();
-  const regions: Region[] = [];
-  for (const name of MENU_ELEMENTS) {
-    let from = 0;
-    for (let n = 0; n < MAX_REGIONS; n++) {
-      const start = findTag(lower, name, from);
-      if (start === -1) break;
-      const close = lower.indexOf(`</${name}`, start);
-      // Never closed: not a region (it would cover the rest of the page).
-      if (close === -1) break;
-      regions.push({ start, end: close, kind: "menu" });
-      from = close;
-    }
-  }
-  regions.push(...findRoleNavigationRegions(html, lower));
-  for (const name of ["button", "a"] as const) {
-    let from = 0;
-    for (let seen = 0; seen < MAX_REGIONS * 5; seen++) {
-      const start = findTag(lower, name, from);
-      if (start === -1) break;
-      from = start + name.length + 1;
-      const tagEnd = lower.indexOf(">", start);
-      if (tagEnd === -1) break;
-      if (tagEnd - start > 2048 || !CHECKOUT_TAG_RE.test(lower.slice(start, tagEnd + 1))) continue;
-      const close = lower.indexOf(`</${name}`, tagEnd);
-      // Never closed: not a region (it would cover the rest of the page).
-      if (close === -1) continue;
-      regions.push({ start, end: close, kind: "checkout" });
-      if (regions.length >= MAX_REGIONS * 2) break;
-    }
   }
   return regions;
 }

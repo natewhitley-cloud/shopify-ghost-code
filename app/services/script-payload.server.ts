@@ -59,8 +59,27 @@ const CODE_PATTERNS: ReadonlyArray<[ScriptPayloadReason, RegExp]> = [
   ["writes_markup", /\bdocument\s*\.\s*write(?:ln)?\s*\(/],
 ];
 
-/** A URL path ending in .js / .mjs (query, hash or quote may follow). */
-const SCRIPT_URL_RE = /\/\/[^\s'"`]+\.m?js(?=$|[?#'"`\s)])/i;
+/** Where one URL-ish run of text ends: whitespace or a quote. */
+const URL_RUN_SPLIT_RE = /[\s'"`]+/;
+/** `.js` / `.mjs` at the end of a run, or before a query, hash or `)`. */
+const SCRIPT_EXTENSION_RE = /\.m?js(?=$|[?#)])/gi;
+
+/**
+ * Whether `text` names a `.js`/`.mjs` URL: `//`, at least one character, then
+ * the extension, all inside one run of non-space, non-quote text. Index based
+ * (wave 3 D3): the old `/\/\/[^\s'"`]+\.m?js.../` re-scanned the run from
+ * every `//`, so a handler of 8,000 slashes cost 6 s per MB of page. Here
+ * each run is split once and searched once from its first `//`. Linear.
+ */
+function namesScriptFile(text: string): boolean {
+  for (const run of text.split(URL_RUN_SPLIT_RE)) {
+    const slashes = run.indexOf("//");
+    if (slashes === -1) continue;
+    SCRIPT_EXTENSION_RE.lastIndex = slashes + 3;
+    if (SCRIPT_EXTENSION_RE.test(run)) return true;
+  }
+  return false;
+}
 /** A network send or a navigation. */
 const NETWORK_CALL_RE =
   /\b(?:fetch|sendBeacon|XMLHttpRequest|open)\s*\(|\blocation\s*(?:\.\s*(?:href|assign|replace)\b|=)/;
@@ -87,7 +106,7 @@ export function findScriptPayload(
   // A URL alone (no code construction) counts only when it LOADS or SENDS:
   // a script file, a network call or a navigation. An image fallback
   // (`this.src='https://cdn.example/x.png'`) never does (audit fix).
-  if (opts.urlCounts && host && (SCRIPT_URL_RE.test(value) || NETWORK_CALL_RE.test(value))) {
+  if (opts.urlCounts && host && (namesScriptFile(value) || NETWORK_CALL_RE.test(value))) {
     return { reason: "external_url", host };
   }
   return null;

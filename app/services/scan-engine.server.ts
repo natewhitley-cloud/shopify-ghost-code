@@ -249,6 +249,16 @@ function lowerForAscii(code: number): number {
 }
 
 /**
+ * `text` with only A-Z lower-cased: unlike toLowerCase it keeps the length,
+ * so an offset into the result is the same offset into `text` (U+0130 `İ`
+ * lower-cases to two code units; wave 3 D2). Use it whenever offsets found in
+ * a lower-case copy are used on the original.
+ */
+export function asciiLowerCase(text: string): string {
+  return text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+}
+
+/**
  * `haystack.toLowerCase().indexOf(lowerNeedle, from)`, but the result is an
  * offset in `haystack` itself (gc-8jd). toLowerCase is not length-preserving:
  * U+0130 (İ) becomes "i" + U+0307 (the only such code point), so offsets taken
@@ -2407,9 +2417,12 @@ export function parseOpenTagAttributes(
     if (text.charCodeAt(i) === CC_GT) return { end: i + 1, attributes };
 
     const nameStart = i;
+    // A name ends at whitespace, `=`, `>` or `/` (HTML tokenizer), so
+    // `<img a/onerror=...>` reads `a` then `onerror` (audit fix). A `/`
+    // inside an unquoted VALUE stays part of the value (below).
     while (i < n) {
       const c = text.charCodeAt(i);
-      if (isAsciiSpace(c) || c === CC_EQ || c === CC_GT) break;
+      if (isAsciiSpace(c) || c === CC_EQ || c === CC_GT || c === CC_SLASH) break;
       i++;
     }
     const name = text.slice(nameStart, i).toLowerCase();

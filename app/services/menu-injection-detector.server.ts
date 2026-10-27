@@ -20,9 +20,10 @@
  *              "Link in bio" or `<linkedin>` is text (gc-7gjj.1 deferred LOW).
  *   script_url a `javascript:` / `vbscript:` / `data:text/html` URL: the item's
  *              URL (after removing whitespace and control characters, which
- *              browsers ignore inside a scheme), or an attribute value inside a
- *              tag in the title (character references decoded, as a browser
- *              decodes them).
+ *              browsers ignore inside a scheme), or a navigable attribute's
+ *              value (href, xlink:href, action, formaction, SVG to/from/values)
+ *              inside a tag in the title (character references decoded, as a
+ *              browser decodes them). An image src runs no script URL.
  *   domain     a host on the curated KNOWN_MALICIOUS_DOMAINS list in a URL in
  *              the title or the item's URL.
  *
@@ -102,11 +103,28 @@ const HANDLER_NAME_RE = /^on[a-z]+$/;
  * (separator, `on`, letters, `=`). Where that value really ends depends on the
  * theme markup after the label, so doubt reads it as attributes.
  */
-const HANDLER_IN_TEXT_RE = /[\s/"']on[a-z]{1,40}\s*=/i;
+const HANDLER_IN_TEXT_RE = /[\t\n\f\r /"']on[a-z]{1,40}[\t\n\f\r ]*=/i;
+// Whitespace in the tag regexes is HTML's (tab, LF, FF, CR, space), never
+// JS `\s`: a tag name runs on through `\v` or NBSP, so `<iframe\u00a0src>`
+// is an unknown element, not a frame (wave 3 D5).
 /** Elements that load or run a document, code or a resource, or re-point the page's URLs. */
-const FRAME_TAG_RE = /^<(?:iframe|frame|object|embed|applet|base|link)(?=[\s/>]|$)/i;
+const FRAME_TAG_RE = /^<(?:iframe|frame|object|embed|applet|base|link)(?=[\t\n\f\r />]|$)/i;
 /** A `<meta` tag. */
-const META_TAG_RE = /^<meta(?=[\s/>]|$)/i;
+const META_TAG_RE = /^<meta(?=[\t\n\f\r />]|$)/i;
+/**
+ * Attributes that navigate, submit or set a link target, where a script URL
+ * runs (wave 3 D5). An `<img src="javascript:...">` or `data:text/html` image
+ * runs nothing; frame elements and srcdoc are the frame rule's.
+ */
+const NAVIGABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
+  "href",
+  "xlink:href",
+  "action",
+  "formaction",
+  "to",
+  "from",
+  "values",
+]);
 /** Schemes that run code or render HTML when a link is followed. */
 const SCRIPT_SCHEME_RE = /^(?:javascript:|vbscript:|data:text\/html)/;
 /** What a browser drops from a URL before reading its scheme: U+0000 to space, and DEL. */
@@ -297,7 +315,8 @@ export function matchMenuItem(
 
   if (isScriptUrl(url)) return { rule: "script_url", field: "url", at: 0 };
   for (const seg of segments) {
-    for (const value of seg.attributes.values()) {
+    for (const [name, value] of seg.attributes) {
+      if (!NAVIGABLE_ATTRIBUTES.has(name)) continue;
       if (value !== null && isScriptUrl(decodeAttributeValue(value))) {
         return { rule: "script_url", field: "title", at: seg.at };
       }

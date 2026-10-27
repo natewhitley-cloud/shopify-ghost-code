@@ -264,6 +264,51 @@ describe("matchMenuItem: false positives (precision first)", () => {
   });
 });
 
+describe("matchMenuItem: HTML whitespace and navigable attributes (wave 3 D5)", () => {
+  it.each([
+    "<iframe\u000bsrc=//e.example/x>",
+    "<iframe\u00a0src>",
+    "<link\u000bhref=//e>",
+    "<meta\u00a0http-equiv=refresh>",
+  ])("a tag name run on through \\v or NBSP is not a frame or meta tag: %j", (title) => {
+    expect(matchMenuItem(item(title))).toBeNull();
+  });
+
+  it.each([
+    "<iframe\tsrc=//e>",
+    "<iframe\fsrc=//e>",
+    "<iframe\nsrc=//e>",
+    "<iframe\rsrc=//e>",
+    "<iframe/src=//e>",
+  ])("HTML whitespace or / after the name still makes a frame: %j", (title) => {
+    expect(matchMenuItem(item(title))?.rule).toBe("frame");
+  });
+
+  it("an unclosed value with on*= behind \\v or NBSP is not a handler", () => {
+    expect(matchMenuItem(item('<b title="x\u000bonerror=1>Shop'))).toBeNull();
+    expect(matchMenuItem(item('<b title="x\u00a0onerror=1>Shop'))).toBeNull();
+    expect(matchMenuItem(item('<b title="x\tonerror=1>Shop'))?.rule).toBe("handler");
+  });
+
+  it("a script URL counts only in a navigable attribute, not an image src", () => {
+    expect(matchMenuItem(item('<img src="data:text/html,<b>x</b>">'))).toBeNull();
+    expect(matchMenuItem(item('<img src="javascript:alert(1)">'))).toBeNull();
+    expect(matchMenuItem(item('<span title="javascript:x">Shop</span>'))).toBeNull();
+    for (const title of [
+      '<a href="data:text/html,<b>x</b>">Shop</a>',
+      '<form action="javascript:alert(1)"><button>x</button></form>',
+      "<input type=image formaction=javascript:alert(1)>",
+      '<math><mi xlink:href="javascript:alert(1)">x</mi></math>',
+      '<svg><set attributeName=href to="javascript:alert(1)"/></svg>',
+    ]) {
+      expect(matchMenuItem(item(title)), title).toMatchObject({
+        rule: "script_url",
+        field: "title",
+      });
+    }
+  });
+});
+
 describe("isScriptUrl", () => {
   it("reads the scheme the way a browser does (whitespace and control characters dropped)", () => {
     expect(isScriptUrl(" \n javascript:x")).toBe(true);

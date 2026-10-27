@@ -13,6 +13,7 @@ import {
   analyzeStorefrontHtml,
   ownStoreHosts,
 } from "../../app/services/storefront-analyzer.server";
+import { timedMinMs } from "../test-utils/timing";
 
 const page = (body: string, head = "") =>
   `<!doctype html><html><head><script>var Shopify = Shopify || {};Shopify.shop = "x.myshopify.com";</script>${head}</head><body>${body}</body></html>`;
@@ -501,4 +502,114 @@ describe("walkHomepage (shared with findMaliciousInHomepage)", () => {
       findMaliciousInHomepage(page(`<img src=x onerror="${loader("cartassure.top")}">`), []),
     ).toEqual([{ domain: "cartassure.top", host: "cartassure.top", source: "event_handler" }]);
   });
+});
+
+describe("findGuardRegions: offsets survive expanding characters (wave 3 D2)", () => {
+  const nav = `<nav><script src="https://newhost.example/a.js"></script></nav>`;
+  const loaders = (html: string) =>
+    analyzeStorefrontHtml(page(html)).loaders.map((l) => l.fingerprint);
+
+  it("a menu script after many İ (two code units lower-cased) is still in the menu", () => {
+    expect("İ".toLowerCase()).toHaveLength(2);
+    for (const filler of ["İ".repeat(200), "ẞ".repeat(200), "ﬀİﬃ".repeat(100)]) {
+      expect(loaders(`<p>${filler}</p>${nav}`), filler.slice(0, 3)).toEqual([
+        "SCRIPT_LOADER:newhost.example",
+      ]);
+      expect(
+        loaders(
+          `<p>${filler}</p><div role=navigation><script src="https://newhost.example/a.js"></script></div>`,
+        ),
+      ).toEqual(["SCRIPT_LOADER:newhost.example"]);
+    }
+  });
+
+  it("region offsets are offsets into the original page", () => {
+    const html = `<p>${"İ".repeat(50)}</p><NAV>x</NAV>`;
+    expect(findGuardRegions(html)).toEqual([
+      { start: html.indexOf("<NAV>"), end: html.indexOf("</NAV>"), kind: "menu" },
+    ]);
+  });
+
+  it("a script after the menu stays outside it, İ before or not", () => {
+    expect(loaders(`<p>${"İ".repeat(60)}</p><nav>x</nav><script>eval(x)</script>`)).toEqual([]);
+  });
+});
+
+describe("findGuardRegions: regions come from real tags only (wave 3 D4)", () => {
+  const ext = `<script src="https://newhost.example/a.js"></script>`;
+  const regions = (html: string) => findGuardRegions(html).map((r) => r.kind);
+
+  it("a menu or checkout tag name in a script, comment, attribute or template opens nothing", () => {
+    for (const fake of [
+      `<script>var t='<nav class="a">';</script>`,
+      `<!-- <nav> -->`,
+      `<div data-t="<nav>"></div>`,
+      `<template><nav></template>`,
+      `<script>var b='<button name="checkout">';</script>`,
+      `<div data-t='<a href="/checkout">'></div>`,
+      `<textarea><header-menu></textarea>`,
+    ]) {
+      const html = `${fake}<div><script>eval(x)</script>${ext}</div><nav>r</nav>`;
+      expect(analyzeStorefrontHtml(page(html)).loaders, fake).toEqual([]);
+      expect(regions(html), fake).toEqual(["menu"]);
+    }
+  });
+
+  it("every region kind comes from the tag walk (nav, custom menus, role, checkout)", () => {
+    const html =
+      `<header-menu>a</header-menu><menu-drawer>b</menu-drawer><mega-menu>c</mega-menu>` +
+      `<nav>d</nav><ul role="navigation">e</ul><button name="checkout">f</button>` +
+      `<a href="/checkout?x=1">g</a><a id="CartCheckout">h</a><a href="/checkouts/x">no</a>`;
+    expect(regions(html).sort()).toEqual([
+      "checkout",
+      "checkout",
+      "checkout",
+      "menu",
+      "menu",
+      "menu",
+      "menu",
+      "menu",
+    ]);
+  });
+
+  it("a close tag must be the element's own name (`</a` is not `</aside>`, `</nav` not `</navx>`)", () => {
+    const inCheckout = `<a href="/checkout"><aside>x</aside>${ext}</a>`;
+    expect(analyzeStorefrontHtml(page(inCheckout)).loaders.map((l) => l.reason)).toEqual([
+      "script_in_checkout",
+    ]);
+    const inNav = `<nav><navx>x</navx>${ext}</nav>`;
+    expect(analyzeStorefrontHtml(page(inNav)).loaders.map((l) => l.reason)).toEqual([
+      "script_in_menu",
+    ]);
+    // A raw-text body ends only at its own close tag too.
+    const raw = `<nav><script>var a='</scriptx>';</script>${ext}</nav>`;
+    expect(analyzeStorefrontHtml(page(raw)).loaders.map((l) => l.reason)).toEqual([
+      "script_in_menu",
+    ]);
+  });
+
+  it("nested menu elements of the same name end at the outer close tag", () => {
+    expect(
+      analyzeStorefrontHtml(page(`<nav><nav>x</nav>${ext}</nav>`)).loaders.map((l) => l.reason),
+    ).toEqual(["script_in_menu"]);
+  });
+});
+
+describe("findScriptPayload: script-file URL check is linear (wave 3 D3)", () => {
+  it("still reads .js/.mjs URLs (end, query, hash, paren) and nothing else", () => {
+    const hit = (v: string) => findScriptPayload(v, { urlCounts: true })?.reason ?? null;
+    expect(hit("x('https://e.example/a.js')")).toBe("external_url");
+    expect(hit("x('https://e.example/a.MJS?v=1')")).toBe("external_url");
+    expect(hit("x(https://e.example/a.js)")).toBe("external_url");
+    expect(hit("s='//e.example/a.js#x'")).toBe("external_url");
+    expect(hit("x('https://e.example/a.json')")).toBeNull();
+    expect(hit("x('https://e.example/a.png')")).toBeNull();
+    expect(hit("x('https://e.example/a' + '.js')")).toBeNull();
+  });
+
+  it("analyzes a 5 MB page of slash-heavy handlers in well under a second", () => {
+    const one = `<img onerror="https://a.example/${"/".repeat(8200)}">`;
+    const html = page(one.repeat(Math.floor(5_000_000 / one.length)));
+    expect(timedMinMs(() => analyzeStorefrontHtml(html))).toBeLessThan(500);
+  }, 30_000);
 });
