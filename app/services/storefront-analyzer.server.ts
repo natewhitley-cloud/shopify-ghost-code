@@ -42,6 +42,7 @@ import {
   walkHomepage,
   type HomepageMaliciousHit,
   type HomepageSource,
+  type WalkOptions,
 } from "./runtime-malicious.server";
 import {
   asciiLowerCase,
@@ -194,8 +195,8 @@ function regionKindOf(name: string, lowerTag: string, tag: string): Region["kind
  * kind are tracked; one never closed is no region (it would cover the rest of the
  * page).
  */
-export function findGuardRegions(html: string): Region[] {
-  const live = blankInertComments(html, "homepage.html");
+export function findGuardRegions(html: string, opts: WalkOptions = {}): Region[] {
+  const live = opts.blanked ? html : blankInertComments(html, "homepage.html");
   const lower = asciiLowerCase(live);
   const regions: Region[] = [];
   const openByName = new Map<
@@ -314,8 +315,11 @@ function loaderFingerprint(host: string | null, reason: LoaderHit["reason"]): st
  */
 export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): StorefrontAnalysis {
   const scriptTagUrls = parseScriptTagUrls(html) ?? [];
-  const maliciousHits = findMaliciousInHomepage(html, scriptTagUrls);
-  const regions = findGuardRegions(html);
+  // Comments blanked ONCE for every reader below (length kept, so offsets
+  // agree): the known-malicious walk, the regions and the analyzer's walk.
+  const live = blankInertComments(html, "homepage.html");
+  const maliciousHits = findMaliciousInHomepage(live, scriptTagUrls, { blanked: true });
+  const regions = findGuardRegions(live, { blanked: true });
   const shopHosts = ownStoreHosts(ctx.shopHosts ?? []);
 
   const loaders = new Map<string, LoaderHit>();
@@ -343,43 +347,48 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
     return identifyAppForExternalUrl(url) !== null || isBenignLibrary(url);
   };
 
-  walkHomepage(html, scriptTagUrls, {
-    host(rawHost, source, rawUrl) {
-      if (!NEW_HOST_SOURCES.has(source)) return;
-      const host = cleanHost(rawHost);
-      if (!host || hosts.has(host)) return;
-      if (matchMaliciousDomain(host) || isTrustedHost(host, rawUrl)) return;
-      hosts.set(host, { host, source, label: NEW_HOST_LABELS[source] ?? "Loaded by the page" });
+  walkHomepage(
+    live,
+    scriptTagUrls,
+    {
+      host(rawHost, source, rawUrl) {
+        if (!NEW_HOST_SOURCES.has(source)) return;
+        const host = cleanHost(rawHost);
+        if (!host || hosts.has(host)) return;
+        if (matchMaliciousDomain(host) || isTrustedHost(host, rawUrl)) return;
+        hosts.set(host, { host, source, label: NEW_HOST_LABELS[source] ?? "Loaded by the page" });
+      },
+      handler(element, name, value, at) {
+        if (element === "script") return;
+        const hit = findScriptPayload(value, { urlCounts: SELF_FIRING_HANDLERS.has(name) });
+        if (!hit) return;
+        const host = hit.host ? cleanHost(hit.host) : null;
+        const trusted = host !== null && isTrustedHost(host, null);
+        // A URL alone is evidence only on a host nobody vouches for.
+        if (hit.reason === "external_url" && (host === null || trusted)) return;
+        const region = regionAt(regions, at);
+        const where = region ? ` ${REGION_WORDS[region]}` : " in the page";
+        // Code construction stays a loader; a trusted host is not its identity.
+        addLoader(trusted ? null : host, hit.reason, `Code in an ${name} attribute${where}`);
+      },
+      script(at, info) {
+        if (!info.runs) return;
+        const region = regionAt(regions, at);
+        if (!region) return;
+        const external = info.src ? firstExternalHost(info.src) : null;
+        const srcHost =
+          external && !isTrustedHost(cleanHost(external) ?? external, info.src) ? external : null;
+        const payload = info.src ? null : findScriptPayload(info.body());
+        if (!srcHost && !payload) return;
+        addLoader(
+          srcHost ?? payload!.host,
+          region === "checkout" ? "script_in_checkout" : "script_in_menu",
+          `A script ${REGION_WORDS[region]}`,
+        );
+      },
     },
-    handler(element, name, value, at) {
-      if (element === "script") return;
-      const hit = findScriptPayload(value, { urlCounts: SELF_FIRING_HANDLERS.has(name) });
-      if (!hit) return;
-      const host = hit.host ? cleanHost(hit.host) : null;
-      const trusted = host !== null && isTrustedHost(host, null);
-      // A URL alone is evidence only on a host nobody vouches for.
-      if (hit.reason === "external_url" && (host === null || trusted)) return;
-      const region = regionAt(regions, at);
-      const where = region ? ` ${REGION_WORDS[region]}` : " in the page";
-      // Code construction stays a loader; a trusted host is not its identity.
-      addLoader(trusted ? null : host, hit.reason, `Code in an ${name} attribute${where}`);
-    },
-    script(at, info) {
-      if (!info.runs) return;
-      const region = regionAt(regions, at);
-      if (!region) return;
-      const external = info.src ? firstExternalHost(info.src) : null;
-      const srcHost =
-        external && !isTrustedHost(cleanHost(external) ?? external, info.src) ? external : null;
-      const payload = info.src ? null : findScriptPayload(info.body());
-      if (!srcHost && !payload) return;
-      addLoader(
-        srcHost ?? payload!.host,
-        region === "checkout" ? "script_in_checkout" : "script_in_menu",
-        `A script ${REGION_WORDS[region]}`,
-      );
-    },
-  });
+    { blanked: true },
+  );
 
   return {
     maliciousHits,

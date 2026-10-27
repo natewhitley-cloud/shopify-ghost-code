@@ -258,6 +258,15 @@ export interface HomepageVisitor {
   script?(at: number, info: { src: string | null; runs: boolean; body: () => string }): void;
 }
 
+/** Options for walkHomepage and findMaliciousInHomepage. */
+export interface WalkOptions {
+  /**
+   * `html` is already blankInertComments(page, "homepage.html") (the
+   * checkout guard's analyzer blanks the page once for all its readers).
+   */
+  blanked?: boolean;
+}
+
 /**
  * The ONE forward walk over the served homepage, shared by the known-malicious
  * check (findMaliciousInHomepage) and the checkout guard's analyzer
@@ -275,13 +284,14 @@ export function walkHomepage(
   html: string,
   scriptTagUrls: readonly string[],
   visitor: HomepageVisitor,
+  opts: WalkOptions = {},
 ): void {
   const add = (host: string | null, source: HomepageSource, rawUrl: string | null, at: number) => {
     if (host) visitor.host(host, source, rawUrl, at);
   };
   for (const url of scriptTagUrls) add(scriptUrlHost(url), "script_tag", url, -1);
 
-  const live = blankInertComments(html, "homepage.html");
+  const live = opts.blanked ? html : blankInertComments(html, "homepage.html");
   // Close tags are found on an ASCII-lower-cased copy (same offsets) and
   // only when the name really ends there (closeTagAt, wave 4): a script
   // string holding `</scriptx` must not end the script early.
@@ -409,19 +419,25 @@ export function walkHomepage(
 export function findMaliciousInHomepage(
   html: string,
   scriptTagUrls: readonly string[],
+  opts: WalkOptions = {},
 ): HomepageMaliciousHit[] {
   const best = new Map<string, HomepageMaliciousHit>();
-  walkHomepage(html, scriptTagUrls, {
-    host(host, source) {
-      if (host.length > MAX_HOST_LENGTH) return;
-      const entry = matchMaliciousDomain(host);
-      if (!entry) return;
-      const prev = best.get(entry.domain);
-      if (!prev || SOURCE_RANK[source] < SOURCE_RANK[prev.source]) {
-        best.set(entry.domain, { domain: entry.domain, host: normalizeHost(host), source });
-      }
+  walkHomepage(
+    html,
+    scriptTagUrls,
+    {
+      host(host, source) {
+        if (host.length > MAX_HOST_LENGTH) return;
+        const entry = matchMaliciousDomain(host);
+        if (!entry) return;
+        const prev = best.get(entry.domain);
+        if (!prev || SOURCE_RANK[source] < SOURCE_RANK[prev.source]) {
+          best.set(entry.domain, { domain: entry.domain, host: normalizeHost(host), source });
+        }
+      },
     },
-  });
+    opts,
+  );
   return [...best.values()].sort((a, b) => a.domain.localeCompare(b.domain));
 }
 
