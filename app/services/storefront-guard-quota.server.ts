@@ -17,10 +17,10 @@
  * clause; at most one row a day, so pruneOpsEvents needs none either (like
  * reconcile_summary).
  *
- * NEVER THROWS (recordOpsEvent and sendOpsAlert never throw).
+ * NEVER THROWS (tryRecordOpsEvent and sendOpsAlert never throw).
  */
 import { sendOpsAlert } from "./ops-alert.server";
-import { getLatestOpsEvent, OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import { getLatestOpsEvent, OPS_EVENT_TYPES, tryRecordOpsEvent } from "../models/ops-event.server";
 
 /** Default monthly step budget for the guard before the operator is paged. */
 export const GUARD_MONTHLY_STEP_ALERT_DEFAULT = 20_000;
@@ -37,9 +37,16 @@ export function guardMonthlyStepAlert(env: NodeJS.ProcessEnv = process.env): num
   return Number.isSafeInteger(n) && n > 0 ? n : GUARD_MONTHLY_STEP_ALERT_DEFAULT;
 }
 
-/** Steps one run cost: the run and the select step, one per chunk, one per notify step. */
-export function guardRunSteps(run: { chunks: number; notifySteps: number }): number {
-  return 2 + run.chunks + run.notifySteps;
+/**
+ * Steps one run cost: the run and the select step, one per chunk, one per
+ * notify step, and the quota-alert step when it runs (wave 3 B6).
+ */
+export function guardRunSteps(run: {
+  chunks: number;
+  notifySteps: number;
+  quotaStep?: boolean;
+}): number {
+  return 2 + run.chunks + run.notifySteps + (run.quotaStep ? 1 : 0);
 }
 
 /** A run's steps as a month of hourly runs. */
@@ -47,12 +54,14 @@ export function projectGuardMonthlySteps(runSteps: number): number {
   return runSteps * GUARD_RUNS_PER_MONTH;
 }
 
-export type GuardQuotaAlertOutcome = "alerted" | "already_alerted_today";
+export type GuardQuotaAlertOutcome = "alerted" | "already_alerted_today" | "dedupe_write_failed";
 
 /**
  * Page the operator that the guard's projected monthly steps passed the
  * threshold, unless an alert went out in the last 24 h. The row is written
- * before the send, so a retried step never pages twice.
+ * before the send, so a retried step never pages twice, and when that write
+ * fails nothing is sent (fail closed, wave 3 B6: with no row, every hourly
+ * run would page again).
  */
 export async function alertGuardQuotaOnce(input: {
   projected: number;
@@ -71,11 +80,12 @@ export async function alertGuardQuotaOnce(input: {
     runSteps: input.runSteps,
     due: input.due,
   };
-  await recordOpsEvent({
+  const recorded = await tryRecordOpsEvent({
     eventType: OPS_EVENT_TYPES.GUARD_QUOTA_ALERT,
     key: GUARD_QUOTA_ALERT_KEY,
     metadata,
   });
+  if (!recorded) return "dedupe_write_failed";
   await sendOpsAlert(
     "Checkout guard: Inngest step budget",
     [

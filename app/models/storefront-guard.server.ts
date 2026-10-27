@@ -10,7 +10,7 @@
  * GDPR: hostnames, fixed labels, timestamps and counters only. Both tables
  * cascade from Shop and deleteShopData deletes them explicitly.
  */
-import type { Prisma, StorefrontGuardState, StorefrontIncident } from "@prisma/client";
+import { Prisma, type StorefrontGuardState, type StorefrontIncident } from "@prisma/client";
 
 import db from "../db.server";
 import {
@@ -39,14 +39,19 @@ export type LoadedGuard = {
   state: GuardStateData;
   domains: GuardDomainsCache;
   incidents: GuardIncident[];
+  /** The NEW_SCRIPT_HOST read hit MAX_GUARD_INCIDENTS (some rows were not read). */
+  newHostsCapped: boolean;
 };
 
 const KINDS: ReadonlySet<string> = new Set(["KNOWN_MALICIOUS", "SCRIPT_LOADER", "NEW_SCRIPT_HOST"]);
 
 /**
- * At most this many incident rows are read per shop (audit fix: the reads
- * were unbounded): open and pending first, then the most recently seen.
- * Resolved rows past the cap are pruned (pruneGuardIncidents).
+ * At most this many NEW_SCRIPT_HOST rows are read per shop (audit fix: the
+ * reads were unbounded): open and pending first, then the most recently
+ * seen. Resolved rows past the cap are pruned (pruneGuardIncidents). The
+ * emailable kinds are never capped (wave 3 B1): a cap must never hide an open
+ * KNOWN_MALICIOUS or SCRIPT_LOADER episode, whose re-sighting would then
+ * look new and reset its openedAt (a second email).
  */
 export const MAX_GUARD_INCIDENTS = 200;
 /** Resolved rows older than this are deleted (well past the 7-day flap window). */
@@ -123,24 +128,46 @@ export function toGuardIncident(row: StorefrontIncident): GuardIncident | null {
  * rows the state machine can act on: every open or pending row, and resolved
  * rows inside the flap window (a row resolved before that can only start a
  * new episode, which the state machine builds the same way without it).
- * Bounded by MAX_GUARD_INCIDENTS (open and pending first; the state values
- * sort open < pending < resolved).
+ *
+ * Every row of an emailable kind (EMAIL_INCIDENT_KINDS) is read; only
+ * NEW_SCRIPT_HOST rows are capped at MAX_GUARD_INCIDENTS (open and pending
+ * first; the state values sort open < pending < resolved). A capped row a
+ * check sees again is read by fingerprint (loadGuardIncidentsByFingerprint).
+ *
+ * ONE snapshot (wave 3 B4): the state row and the incident rows are read in
+ * one REPEATABLE READ transaction, so an acknowledge that commits between
+ * two separate reads can never pair the new state with the old (open)
+ * incident and be undone by this check's write.
  */
 export async function loadGuard(shopId: string, now: Date = new Date()): Promise<LoadedGuard> {
-  const [row, incidentRows] = await Promise.all([
-    db.storefrontGuardState.findUnique({ where: { shopId } }),
-    db.storefrontIncident.findMany({
-      where: {
-        shopId,
-        OR: [
-          { state: { not: "resolved" } },
-          { resolvedAt: { gte: new Date(now.getTime() - FLAP_WINDOW_MS) } },
-        ],
-      },
-      orderBy: [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }],
-      take: MAX_GUARD_INCIDENTS,
-    }),
-  ]);
+  const live = {
+    shopId,
+    OR: [
+      { state: { not: "resolved" } },
+      { resolvedAt: { gte: new Date(now.getTime() - FLAP_WINDOW_MS) } },
+    ],
+  };
+  const order = [
+    { state: "asc" as const },
+    { lastSeenAt: "desc" as const },
+    { id: "asc" as const },
+  ];
+  const [row, emailableRows, newHostRows] = await db.$transaction(
+    [
+      db.storefrontGuardState.findUnique({ where: { shopId } }),
+      db.storefrontIncident.findMany({
+        where: { ...live, kind: { in: [...EMAIL_INCIDENT_KINDS] } },
+        orderBy: order,
+      }),
+      db.storefrontIncident.findMany({
+        where: { ...live, kind: "NEW_SCRIPT_HOST" },
+        orderBy: order,
+        take: MAX_GUARD_INCIDENTS,
+      }),
+    ],
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+  );
+  const incidentRows = [...emailableRows, ...newHostRows];
   return {
     version: row?.version ?? null,
     state: toGuardStateData(row),
@@ -150,7 +177,24 @@ export async function loadGuard(shopId: string, now: Date = new Date()): Promise
       domainsRefreshedAt: row?.domainsRefreshedAt ?? null,
     },
     incidents: incidentRows.map(toGuardIncident).filter((i): i is GuardIncident => i !== null),
+    newHostsCapped: newHostRows.length >= MAX_GUARD_INCIDENTS,
   };
+}
+
+/**
+ * The shop's incident rows with these fingerprints, any state (wave 3 B1):
+ * the rows a check sighted that loadGuard's cap left out, so a re-sighting
+ * advances the stored episode instead of starting a new one over it.
+ */
+export async function loadGuardIncidentsByFingerprint(
+  shopId: string,
+  fingerprints: readonly string[],
+): Promise<GuardIncident[]> {
+  if (fingerprints.length === 0) return [];
+  const rows = await db.storefrontIncident.findMany({
+    where: { shopId, fingerprint: { in: [...fingerprints] } },
+  });
+  return rows.map(toGuardIncident).filter((i): i is GuardIncident => i !== null);
 }
 
 function stateData(state: GuardStateData) {
@@ -170,6 +214,18 @@ function stateData(state: GuardStateData) {
 
 function incidentData(i: GuardIncident) {
   return {
+    ...incidentUpdateData(i),
+    emailedOpenedAt: i.emailedOpenedAt,
+  };
+}
+
+/**
+ * The update half of an incident upsert. emailedOpenedAt is written only when
+ * set (wave 3 B1): a check never clears the stamp of an episode an email
+ * already reported.
+ */
+function incidentUpdateData(i: GuardIncident) {
+  return {
     kind: i.kind,
     host: i.host,
     page: i.page,
@@ -183,9 +239,16 @@ function incidentData(i: GuardIncident) {
     resolvedAt: i.resolvedAt,
     resolution: i.resolution,
     acknowledgedAt: i.acknowledgedAt,
-    emailedOpenedAt: i.emailedOpenedAt,
+    ...(i.emailedOpenedAt ? { emailedOpenedAt: i.emailedOpenedAt } : {}),
   };
 }
+
+/**
+ * The check's transaction budget (wave 3 B3): Prisma's 5 s default can expire
+ * mid-write on a large diff (hundreds of incident upserts), rolling back the
+ * whole check. Writes stay sequential (one connection per transaction).
+ */
+export const GUARD_SAVE_TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 } as const;
 
 class StaleGuardWrite extends Error {}
 
@@ -227,12 +290,12 @@ export async function saveGuardCheck(input: {
         const row = await tx.storefrontIncident.upsert({
           where: { shopId_fingerprint: { shopId, fingerprint: incident.fingerprint } },
           create: { shopId, fingerprint: incident.fingerprint, ...incidentData(incident) },
-          update: incidentData(incident),
+          update: incidentUpdateData(incident),
         });
         out.set(incident.fingerprint, { ...incident, id: row.id });
       }
       return out;
-    });
+    }, GUARD_SAVE_TX_OPTIONS);
     return { status: "saved", incidents: saved };
   } catch (error) {
     if (error instanceof StaleGuardWrite || isUniqueViolation(error)) return { status: "stale" };
@@ -284,7 +347,9 @@ export async function loadGuardForHome(
 /**
  * Delete the shop's resolved incident rows resolved more than
  * GUARD_INCIDENT_RETENTION_MS ago, and, when `overCap` (the last load hit
- * MAX_GUARD_INCIDENTS), resolved rows past the newest MAX_GUARD_INCIDENTS.
+ * MAX_GUARD_INCIDENTS), resolved rows past the newest MAX_GUARD_INCIDENTS
+ * that resolved before the flap window (wave 3 B2: a row resolved inside it
+ * is what lets a re-sighting reopen the SAME episode, with no second email).
  * Open and pending rows are never deleted. Returns how many rows went.
  */
 export async function pruneGuardIncidents(
@@ -301,7 +366,11 @@ export async function pruneGuardIncidents(
   });
   if (!overCap) return count;
   const extra = await db.storefrontIncident.findMany({
-    where: { shopId, state: "resolved" },
+    where: {
+      shopId,
+      state: "resolved",
+      resolvedAt: { lt: new Date(now.getTime() - FLAP_WINDOW_MS) },
+    },
     orderBy: [{ resolvedAt: "desc" }, { id: "asc" }],
     skip: MAX_GUARD_INCIDENTS,
     take: 1000,

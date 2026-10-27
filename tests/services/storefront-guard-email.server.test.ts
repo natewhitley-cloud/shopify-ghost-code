@@ -16,6 +16,8 @@ const ledger = vi.hoisted(() => ({
   recordMerchantAlert: vi.fn(),
   hasGuardAlert: vi.fn(),
   resetGuardEmailNotice: vi.fn(),
+  emailedGuardIncidentKeys: vi.fn(),
+  recordGuardIncidentsEmailed: vi.fn(),
 }));
 const guardModel = vi.hoisted(() => ({
   loadIncidentsToEmail: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 import { guardNoticeLead } from "../../app/lib/storefront-guard-copy";
 import type { GuardIncident } from "../../app/lib/storefront-guard-state";
+import { guardIncidentLedgerKey } from "../../app/models/merchant-alert.server";
 import {
   buildGuardEmailHtml,
   buildGuardEmailSubject,
@@ -113,6 +116,8 @@ beforeEach(() => {
   ledger.ensureUnsubscribeToken.mockResolvedValue("tok");
   ledger.recordMerchantAlert.mockResolvedValue({});
   ledger.hasGuardAlert.mockResolvedValue(false);
+  ledger.emailedGuardIncidentKeys.mockResolvedValue(new Set());
+  ledger.recordGuardIncidentsEmailed.mockResolvedValue(undefined);
   guardModel.loadIncidentsToEmail.mockResolvedValue([incident()]);
   contact.refreshShopContact.mockResolvedValue({ email: null, storeName: null });
   contact.refreshShopAlertEmail.mockResolvedValue(null);
@@ -391,6 +396,70 @@ describe("sendGuardIncidentEmail", () => {
   it("never throws", async () => {
     guardModel.loadIncidentsToEmail.mockRejectedValue(new Error("db down"));
     expect(await send()).toEqual({ sent: false, reason: "exception" });
+  });
+});
+
+describe("sendGuardIncidentEmail: per-episode ledger (wave 3 B5)", () => {
+  const A = incident();
+  const B = incident({
+    id: "inc-2",
+    kind: "SCRIPT_LOADER",
+    fingerprint: "SCRIPT_LOADER:pay.example",
+    host: "pay.example",
+  });
+  const send = (ids: string[]) =>
+    sendGuardIncidentEmail({ shop: SHOP, incidentIds: ids, admin: null, now: NOW });
+
+  it("an episode emailed in an earlier batch is never resent when the batch changes", async () => {
+    // A was emailed alone; its episode stamp failed, so it is offered again with B.
+    guardModel.loadIncidentsToEmail.mockResolvedValue([A, B]);
+    ledger.emailedGuardIncidentKeys.mockResolvedValue(new Set([guardIncidentLedgerKey(A)]));
+    expect(await send(["inc-1", "inc-2"])).toEqual({ sent: true, reason: "sent", count: 1 });
+    const mail = alerts.sendMerchantAlert.mock.calls[0][0];
+    expect(mail.text).toContain("pay.example");
+    expect(mail.text).not.toContain("cartassure.top");
+    expect(guardModel.markIncidentsEmailed).toHaveBeenCalledWith([A]);
+    expect(guardModel.markIncidentsEmailed).toHaveBeenLastCalledWith([B]);
+    expect(ledger.recordGuardIncidentsEmailed).toHaveBeenCalledWith(
+      "shop-1",
+      [guardIncidentLedgerKey(B)],
+      "owner@example.com",
+    );
+  });
+
+  it("every episode already emailed: stamps them, sends nothing", async () => {
+    guardModel.loadIncidentsToEmail.mockResolvedValue([A, B]);
+    ledger.emailedGuardIncidentKeys.mockResolvedValue(
+      new Set([guardIncidentLedgerKey(A), guardIncidentLedgerKey(B)]),
+    );
+    expect(await send(["inc-1", "inc-2"])).toEqual({ sent: false, reason: "already_sent" });
+    expect(alerts.sendMerchantAlert).not.toHaveBeenCalled();
+    expect(guardModel.markIncidentsEmailed).toHaveBeenCalledWith([A, B]);
+  });
+
+  it("records each emailed episode after a send; a failing ledger write never fails the send", async () => {
+    expect(await send(["inc-1"])).toMatchObject({ sent: true });
+    expect(ledger.recordGuardIncidentsEmailed).toHaveBeenCalledWith(
+      "shop-1",
+      [guardIncidentLedgerKey(A)],
+      "owner@example.com",
+    );
+    vi.clearAllMocks();
+    alerts.getMerchantAlertConfigStatus.mockReturnValue({ configured: true });
+    alerts.sendMerchantAlert.mockResolvedValue({ sent: true, reason: "sent" });
+    ledger.countGuardAlertsSince.mockResolvedValue(0);
+    ledger.ensureUnsubscribeToken.mockResolvedValue("tok");
+    ledger.emailedGuardIncidentKeys.mockResolvedValue(new Set());
+    ledger.recordGuardIncidentsEmailed.mockRejectedValue(new Error("db"));
+    guardModel.loadIncidentsToEmail.mockResolvedValue([A]);
+    contact.refreshShopContact.mockResolvedValue({ email: null, storeName: null });
+    expect(await send(["inc-1"])).toEqual({ sent: true, reason: "sent", count: 1 });
+    expect(ledger.recordGuardIncidentsEmailed).toHaveBeenCalledTimes(2);
+    expect(guardModel.markIncidentsEmailed).toHaveBeenCalledWith([A]);
+  });
+
+  it("the episode key names the incident and its episode start", () => {
+    expect(guardIncidentLedgerKey(A)).toBe(`guard-incident:inc-1:${OPENED.toISOString()}`);
   });
 });
 

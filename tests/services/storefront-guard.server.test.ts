@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const model = vi.hoisted(() => ({
   loadGuard: vi.fn(),
+  loadGuardIncidentsByFingerprint: vi.fn(),
   saveGuardCheck: vi.fn(),
   latestScanThemeHosts: vi.fn(),
   pruneGuardIncidents: vi.fn(),
@@ -27,6 +28,7 @@ import { EMPTY_GUARD_STATE, type GuardIncident } from "../../app/lib/storefront-
 import type { StorefrontFetch } from "../../app/services/storefront-fetcher.server";
 import {
   checkGuardShop,
+  compareGuardCandidates,
   DAILY_CATCH_UP_MS,
   DAILY_MIN_GAP_MS,
   guardEmailConsentAt,
@@ -81,6 +83,7 @@ function loaded(over: Record<string, unknown> = {}) {
       domainsRefreshedAt: ago(HOURLY_MIN_GAP_MS),
     },
     incidents: [] as GuardIncident[],
+    newHostsCapped: false,
     ...over,
   };
 }
@@ -90,6 +93,7 @@ beforeEach(() => {
   fetchImpl = vi.fn();
   model.latestScanThemeHosts.mockResolvedValue(new Set());
   model.pruneGuardIncidents.mockResolvedValue(0);
+  model.loadGuardIncidentsByFingerprint.mockResolvedValue([]);
   model.saveGuardCheck.mockImplementation(async (input: { changed: GuardIncident[] }) => ({
     status: "saved",
     incidents: new Map(
@@ -347,9 +351,51 @@ describe("checkGuardShop", () => {
       emailedOpenedAt: null,
       id: `r${i}`,
     })) as GuardIncident[];
-    model.loadGuard.mockResolvedValue(loaded({ incidents: full }));
+    model.loadGuard.mockResolvedValue(loaded({ incidents: full, newHostsCapped: true }));
     await checkGuardShop(SHOP, NOW, deps());
     expect(model.pruneGuardIncidents).toHaveBeenLastCalledWith("shop-1", NOW, true);
+  });
+
+  // Wave 3 B1: an open, emailed episode the load's cap hid, sighted again.
+  it("a re-sighted row the load did not return keeps its episode: no reopen, no second email", async () => {
+    const openedAt = ago(3 * HOUR);
+    const hidden = {
+      id: "inc-hidden",
+      kind: "KNOWN_MALICIOUS",
+      fingerprint: "KNOWN_MALICIOUS:cartassure.top",
+      host: "cartassure.top",
+      page: "home",
+      sourceLabel: "Named in JavaScript attached to an element in the page",
+      state: "open",
+      openedAt,
+      firstSeenAt: openedAt,
+      lastSeenAt: ago(HOUR),
+      seenCount: 3,
+      cleanStreak: 0,
+      resolvedAt: null,
+      resolution: null,
+      acknowledgedAt: null,
+      emailedOpenedAt: openedAt,
+    } as GuardIncident;
+    model.loadGuard.mockResolvedValue(loaded());
+    model.loadGuardIncidentsByFingerprint.mockResolvedValue([hidden]);
+    storefront(STOREFRONT(LOADER_17TRACK));
+    const out = await checkGuardShop(SHOP, NOW, deps());
+    expect(model.loadGuardIncidentsByFingerprint).toHaveBeenCalledWith(
+      "shop-1",
+      expect.arrayContaining(["KNOWN_MALICIOUS:cartassure.top"]),
+    );
+    expect(out).toMatchObject({ status: "checked", opened: [], toEmail: [] });
+    const written = model.saveGuardCheck.mock.calls[0][0].changed[0];
+    expect(written).toMatchObject({ id: "inc-hidden", openedAt, emailedOpenedAt: openedAt });
+    expect(written.seenCount).toBe(4);
+  });
+
+  it("asks only for sighted fingerprints the load did not already return", async () => {
+    model.loadGuard.mockResolvedValue(loaded());
+    storefront(STOREFRONT(""));
+    await checkGuardShop(SHOP, NOW, deps());
+    expect(model.loadGuardIncidentsByFingerprint).toHaveBeenCalledWith("shop-1", []);
   });
 
   it("a failed prune never fails the check", async () => {
@@ -539,5 +585,31 @@ describe("guardEmailConsentAt (gc-1q1s.10)", () => {
     expect(guardEmailConsentAt({ ...base, guardEmailNoticeShownAt: null })).toBeNull();
     expect(guardEmailConsentAt({ ...base, guardEmailOffAt: ago(HOUR) })).toBeNull();
     expect(guardEmailConsentAt({ ...base, alertsEnabled: false })).toBeNull();
+  });
+});
+
+describe("compareGuardCandidates (wave 3 B7)", () => {
+  const shop = (id: string, plan: string, lastCheckedAt: Date | null) => ({
+    id,
+    plan,
+    storefrontGuardState: lastCheckedAt ? { lastCheckedAt } : null,
+  });
+  it("hourly plans first, then never checked, then the longest waiting", () => {
+    const list = [
+      shop("free-old", "free", ago(3 * DAY)),
+      shop("std-recent", "Standard", ago(HOUR)),
+      shop("free-never", "free", null),
+      shop("pro-old", "Professional", ago(2 * HOUR)),
+      shop("std-never", "Standard", null),
+      shop("free-never-2", "free", null),
+    ];
+    expect([...list].sort(compareGuardCandidates).map((s) => s.id)).toEqual([
+      "std-never",
+      "pro-old",
+      "std-recent",
+      "free-never",
+      "free-never-2",
+      "free-old",
+    ]);
   });
 });

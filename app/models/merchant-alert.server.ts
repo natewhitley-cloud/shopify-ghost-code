@@ -38,6 +38,52 @@ export type RecordMerchantAlertInput = {
 /** MerchantAlert.kind of a checkout guard incident email (gc-1q1s.7). */
 export const GUARD_ALERT_KIND = "checkout_guard";
 
+/**
+ * MerchantAlert.kind of one incident EPISODE a checkout guard email reported
+ * (wave 3 B5). The batch row (GUARD_ALERT_KIND) is what the throttle counts;
+ * these rows say which episodes were emailed, so an episode is never emailed
+ * again when the next batch is a different set. Never counted, never a summary.
+ */
+export const GUARD_INCIDENT_LEDGER_KIND = "checkout_guard_incident";
+
+/** The ledger key (MerchantAlert.scanId) of one emailed incident episode. */
+export function guardIncidentLedgerKey(incident: { id: string; openedAt: Date }): string {
+  return `guard-incident:${incident.id}:${incident.openedAt.toISOString()}`;
+}
+
+/** The keys among `keys` already in the ledger as emailed episodes. */
+export async function emailedGuardIncidentKeys(
+  shopId: string,
+  keys: readonly string[],
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await db.merchantAlert.findMany({
+    where: { shopId, kind: GUARD_INCIDENT_LEDGER_KIND, scanId: { in: [...keys] } },
+    select: { scanId: true },
+  });
+  return new Set(rows.map((r) => r.scanId));
+}
+
+/** Record emailed episodes (one row each; an existing row is kept). */
+export async function recordGuardIncidentsEmailed(
+  shopId: string,
+  keys: readonly string[],
+  recipient: string,
+): Promise<void> {
+  if (keys.length === 0) return;
+  await db.merchantAlert.createMany({
+    data: keys.map((key) => ({
+      shopId,
+      scanId: key,
+      findingSetHash: key,
+      newCount: 1,
+      recipient,
+      kind: GUARD_INCIDENT_LEDGER_KIND,
+    })),
+    skipDuplicates: true,
+  });
+}
+
 /** Generate a crypto-random, URL-safe unsubscribe token (>= 128 bits). */
 export function generateUnsubscribeToken(): string {
   return randomBytes(UNSUBSCRIBE_TOKEN_BYTES).toString("base64url");
@@ -50,7 +96,7 @@ export function generateUnsubscribeToken(): string {
  */
 export function getLatestMerchantAlert(shopId: string): Promise<MerchantAlert | null> {
   return db.merchantAlert.findFirst({
-    where: { shopId, kind: { not: GUARD_ALERT_KIND } },
+    where: { shopId, kind: { notIn: [GUARD_ALERT_KIND, GUARD_INCIDENT_LEDGER_KIND] } },
     orderBy: { sentAt: "desc" },
   });
 }

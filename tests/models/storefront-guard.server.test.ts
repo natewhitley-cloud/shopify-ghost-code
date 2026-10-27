@@ -24,6 +24,7 @@ import {
   loadIncidentsToEmail,
   loadGuard,
   loadGuardForHome,
+  loadGuardIncidentsByFingerprint,
   markIncidentsEmailed,
   GUARD_INCIDENT_RETENTION_MS,
   MAX_GUARD_INCIDENTS,
@@ -67,7 +68,10 @@ function row(over: Partial<StorefrontIncident> = {}): StorefrontIncident {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockDb.$transaction.mockImplementation(async (fn: (t: typeof tx) => unknown) => fn(tx));
+  // Array form (loadGuard's one-snapshot read) or interactive form (saves).
+  mockDb.$transaction.mockImplementation(async (arg: unknown) =>
+    Array.isArray(arg) ? Promise.all(arg) : (arg as (t: typeof tx) => unknown)(tx),
+  );
   tx.storefrontIncident.upsert.mockImplementation(
     async (args: { create: { fingerprint: string } }) => ({
       id: `id-${args.create.fingerprint}`,
@@ -185,23 +189,72 @@ describe("reads", () => {
     expect(loaded.incidents).toEqual([]);
   });
 
-  // Audit fix (M7): the reads are bounded.
-  it("loadGuard reads open, pending and flap-window resolved rows, open first, capped", async () => {
+  // Audit fix (M7): the reads are bounded. Wave 3 B1: only NEW_SCRIPT_HOST
+  // rows are capped; every emailable row is read.
+  it("loadGuard reads open, pending and flap-window resolved rows, open first; caps new hosts only", async () => {
     mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
     mockDb.storefrontIncident.findMany.mockResolvedValue([]);
     await loadGuard("shop-1", NOW);
+    const live = {
+      shopId: "shop-1",
+      OR: [
+        { state: { not: "resolved" } },
+        { resolvedAt: { gte: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) } },
+      ],
+    };
+    const orderBy = [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }];
     expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith({
-      where: {
-        shopId: "shop-1",
-        OR: [
-          { state: { not: "resolved" } },
-          { resolvedAt: { gte: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) } },
-        ],
-      },
-      orderBy: [{ state: "asc" }, { lastSeenAt: "desc" }, { id: "asc" }],
+      where: { ...live, kind: { in: ["KNOWN_MALICIOUS", "SCRIPT_LOADER"] } },
+      orderBy,
+    });
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith({
+      where: { ...live, kind: "NEW_SCRIPT_HOST" },
+      orderBy,
       take: MAX_GUARD_INCIDENTS,
     });
     expect(MAX_GUARD_INCIDENTS).toBe(200);
+  });
+
+  it("loadGuard never hides an emailable row behind a full page of new hosts (wave 3 B1)", async () => {
+    const hosts = Array.from({ length: MAX_GUARD_INCIDENTS }, (_, n) =>
+      row({
+        id: `h${n}`,
+        kind: "NEW_SCRIPT_HOST",
+        fingerprint: `NEW_SCRIPT_HOST:h${n}.io`,
+        host: `h${n}.io`,
+      }),
+    );
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
+    mockDb.storefrontIncident.findMany.mockImplementation(
+      async (args: { where: { kind: unknown } }) =>
+        args.where.kind === "NEW_SCRIPT_HOST" ? hosts : [row()],
+    );
+    const out = await loadGuard("shop-1", NOW);
+    expect(out.incidents.map((i) => i.id)).toContain("inc-1");
+    expect(out.incidents).toHaveLength(MAX_GUARD_INCIDENTS + 1);
+    expect(out.newHostsCapped).toBe(true);
+  });
+
+  it("loadGuard reads state and incidents in ONE repeatable-read snapshot (wave 3 B4)", async () => {
+    mockDb.storefrontGuardState.findUnique.mockResolvedValue(null);
+    mockDb.storefrontIncident.findMany.mockResolvedValue([]);
+    await loadGuard("shop-1", NOW);
+    expect(mockDb.$transaction).toHaveBeenCalledTimes(1);
+    const [queries, opts] = mockDb.$transaction.mock.calls[0];
+    expect(Array.isArray(queries)).toBe(true);
+    expect(queries).toHaveLength(3);
+    expect(opts).toEqual({ isolationLevel: "RepeatableRead" });
+  });
+
+  it("loadGuardIncidentsByFingerprint reads any state by fingerprint; none asked, no query", async () => {
+    mockDb.storefrontIncident.findMany.mockResolvedValue([row({ state: "resolved" })]);
+    expect(await loadGuardIncidentsByFingerprint("shop-1", [])).toEqual([]);
+    expect(mockDb.storefrontIncident.findMany).not.toHaveBeenCalled();
+    const out = await loadGuardIncidentsByFingerprint("shop-1", ["KNOWN_MALICIOUS:cartassure.top"]);
+    expect(out.map((i) => i.state)).toEqual(["resolved"]);
+    expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-1", fingerprint: { in: ["KNOWN_MALICIOUS:cartassure.top"] } },
+    });
   });
 
   it("loadGuardForHome caps its read and skips the state read when asked", async () => {
@@ -342,7 +395,11 @@ describe("pruneGuardIncidents (audit fix, M7)", () => {
     expect(await pruneGuardIncidents("shop-1", NOW, true)).toBe(2);
     expect(mockDb.storefrontIncident.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { shopId: "shop-1", state: "resolved" },
+        where: {
+          shopId: "shop-1",
+          state: "resolved",
+          resolvedAt: { lt: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000) },
+        },
         skip: MAX_GUARD_INCIDENTS,
       }),
     );
@@ -356,5 +413,54 @@ describe("pruneGuardIncidents (audit fix, M7)", () => {
     mockDb.storefrontIncident.findMany.mockResolvedValue([]);
     expect(await pruneGuardIncidents("shop-1", NOW, true)).toBe(0);
     expect(mockDb.storefrontIncident.deleteMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pruneGuardIncidents: the flap window survives the cap (wave 3 B2)", () => {
+  it("the over-cap branch never selects a row resolved inside the 7-day flap window", async () => {
+    mockDb.storefrontIncident.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.storefrontIncident.findMany.mockResolvedValue([]);
+    await pruneGuardIncidents("shop-1", NOW, true);
+    const where = mockDb.storefrontIncident.findMany.mock.calls[0][0].where;
+    const yesterday = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
+    // A row resolved yesterday does not satisfy the filter.
+    expect(yesterday < where.resolvedAt.lt).toBe(false);
+    expect(where.resolvedAt.lt).toEqual(new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000));
+  });
+});
+
+describe("saveGuardCheck: large diffs (wave 3 B3)", () => {
+  it("runs with an explicit 15 s transaction budget and writes every changed row", async () => {
+    tx.storefrontGuardState.updateMany.mockResolvedValue({ count: 1 });
+    const changed = Array.from({ length: 600 }, (_, n) => ({
+      ...INCIDENT,
+      kind: "NEW_SCRIPT_HOST" as const,
+      fingerprint: `NEW_SCRIPT_HOST:h${n}.io`,
+      host: `h${n}.io`,
+    }));
+    const out = await saveGuardCheck({
+      shopId: "shop-1",
+      expectedVersion: 3,
+      state: EMPTY_GUARD_STATE,
+      domains: DOMAINS,
+      changed,
+    });
+    expect(out.status).toBe("saved");
+    expect(tx.storefrontIncident.upsert).toHaveBeenCalledTimes(600);
+    expect(mockDb.$transaction.mock.calls[0][1]).toEqual({ maxWait: 5_000, timeout: 15_000 });
+  });
+
+  it("an update never clears an emailed episode's stamp (a hidden row re-sighted, wave 3 B1)", async () => {
+    tx.storefrontGuardState.updateMany.mockResolvedValue({ count: 1 });
+    await saveGuardCheck({
+      shopId: "shop-1",
+      expectedVersion: 3,
+      state: EMPTY_GUARD_STATE,
+      domains: DOMAINS,
+      changed: [{ ...INCIDENT, emailedOpenedAt: null }],
+    });
+    const call = tx.storefrontIncident.upsert.mock.calls[0][0];
+    expect(call.update).not.toHaveProperty("emailedOpenedAt");
+    expect(call.create).toHaveProperty("emailedOpenedAt", null);
   });
 });

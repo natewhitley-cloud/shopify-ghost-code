@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const ops = vi.hoisted(() => ({
   getLatestOpsEvent: vi.fn(),
-  recordOpsEvent: vi.fn(),
+  tryRecordOpsEvent: vi.fn(),
   OPS_EVENT_TYPES: { GUARD_QUOTA_ALERT: "guard_quota_alert" },
 }));
 const alert = vi.hoisted(() => ({ sendOpsAlert: vi.fn() }));
@@ -28,6 +28,7 @@ const input = { projected: 21_600, threshold: 20_000, runSteps: 30, due: 400, no
 beforeEach(() => {
   vi.clearAllMocks();
   ops.getLatestOpsEvent.mockResolvedValue(null);
+  ops.tryRecordOpsEvent.mockResolvedValue(true);
   alert.sendOpsAlert.mockResolvedValue({ sent: true, reason: "sent" });
 });
 
@@ -58,7 +59,7 @@ describe("guardRunSteps / projectGuardMonthlySteps", () => {
 describe("alertGuardQuotaOnce", () => {
   it("records a counts-only row on a constant key, then pages", async () => {
     expect(await alertGuardQuotaOnce(input)).toBe("alerted");
-    expect(ops.recordOpsEvent).toHaveBeenCalledWith({
+    expect(ops.tryRecordOpsEvent).toHaveBeenCalledWith({
       eventType: "guard_quota_alert",
       key: GUARD_QUOTA_ALERT_KEY,
       metadata: { projected: 21_600, threshold: 20_000, runSteps: 30, due: 400 },
@@ -67,7 +68,7 @@ describe("alertGuardQuotaOnce", () => {
     expect(alert.sendOpsAlert).toHaveBeenCalledTimes(1);
     expect(alert.sendOpsAlert.mock.calls[0][1]).toContain("21600");
     // Row before send: a retried step never pages twice.
-    expect(ops.recordOpsEvent.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(ops.tryRecordOpsEvent.mock.invocationCallOrder[0]).toBeLessThan(
       alert.sendOpsAlert.mock.invocationCallOrder[0],
     );
   });
@@ -77,7 +78,7 @@ describe("alertGuardQuotaOnce", () => {
       createdAt: new Date(NOW.getTime() - 23 * 60 * 60 * 1000),
     });
     expect(await alertGuardQuotaOnce(input)).toBe("already_alerted_today");
-    expect(ops.recordOpsEvent).not.toHaveBeenCalled();
+    expect(ops.tryRecordOpsEvent).not.toHaveBeenCalled();
     expect(alert.sendOpsAlert).not.toHaveBeenCalled();
 
     ops.getLatestOpsEvent.mockResolvedValue({
@@ -85,5 +86,18 @@ describe("alertGuardQuotaOnce", () => {
     });
     expect(await alertGuardQuotaOnce(input)).toBe("alerted");
     expect(ops.getLatestOpsEvent).toHaveBeenCalledWith("guard_quota_alert", "storefront-guard");
+  });
+});
+
+describe("quota alert dedupe fails closed (wave 3 B6)", () => {
+  it("no page when the dedupe row could not be written (else every run would page)", async () => {
+    ops.tryRecordOpsEvent.mockResolvedValue(false);
+    expect(await alertGuardQuotaOnce(input)).toBe("dedupe_write_failed");
+    expect(alert.sendOpsAlert).not.toHaveBeenCalled();
+  });
+
+  it("guardRunSteps counts the quota-alert step when it runs", () => {
+    expect(guardRunSteps({ chunks: 3, notifySteps: 0, quotaStep: true })).toBe(6);
+    expect(guardRunSteps({ chunks: 3, notifySteps: 0, quotaStep: false })).toBe(5);
   });
 });

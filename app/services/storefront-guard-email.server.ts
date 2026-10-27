@@ -6,7 +6,7 @@
  * WHAT: KNOWN_MALICIOUS and confirmed SCRIPT_LOADER incidents only
  * (EMAIL_INCIDENT_KINDS); NEW_SCRIPT_HOST stays in-app.
  * HOW OFTEN: one email per incident episode (StorefrontIncident
- * .emailedOpenedAt), incidents that opened in the same cron run batched into
+ * .emailedOpenedAt, backed by a per-episode ledger row), incidents that opened in the same cron run batched into
  * one email, at most GUARD_EMAILS_PER_DAY per shop per 24 h. Never a routine
  * email.
  *
@@ -50,9 +50,12 @@ import {
 } from "../lib/storefront-guard-copy";
 import {
   countGuardAlertsSince,
+  emailedGuardIncidentKeys,
   ensureUnsubscribeToken,
   GUARD_ALERT_KIND,
+  guardIncidentLedgerKey,
   hasGuardAlert,
+  recordGuardIncidentsEmailed,
   recordMerchantAlert,
   resetGuardEmailNotice,
 } from "../models/merchant-alert.server";
@@ -247,6 +250,32 @@ async function stampEmailedQuietly(
 }
 
 /**
+ * Record the emailed episodes in the per-episode ledger, retried once, then
+ * logged and swallowed (the email went out; the episode stamp still follows).
+ */
+async function recordEpisodesQuietly(
+  shopId: string,
+  incidents: ReadonlyArray<{ id: string; openedAt: Date }>,
+  recipient: string,
+): Promise<void> {
+  const keys = incidents.map(guardIncidentLedgerKey);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await recordGuardIncidentsEmailed(shopId, keys, recipient);
+      return;
+    } catch (error) {
+      if (attempt === 1) {
+        logger.error("Guard email sent but episode ledger write failed", {
+          context: "storefront-guard-email",
+          shopId,
+          ...safeErrorFields(error),
+        });
+      }
+    }
+  }
+}
+
+/**
  * Email one shop about the incidents a cron run opened. Order: flags and
  * transport, shop gates, which incidents still need an email, throttle,
  * recipient (only the address the notice named), app URL, unsubscribe token,
@@ -272,8 +301,16 @@ export async function sendGuardIncidentEmail(args: {
     const shopSkip = guardEmailShopSkipReason(shop);
     if (shopSkip) return skip(shopSkip);
 
-    const incidents = await loadIncidentsToEmail(shop.id, args.incidentIds);
-    if (incidents.length === 0) return skip("nothing_to_send");
+    const candidates = await loadIncidentsToEmail(shop.id, args.incidentIds);
+    if (candidates.length === 0) return skip("nothing_to_send");
+    // Per-episode ledger (wave 3 B5): an episode an earlier email already
+    // reported (its stamp failed after the send) is stamped, never resent,
+    // even when this batch is a different set of incidents.
+    const emailed = await emailedGuardIncidentKeys(shop.id, candidates.map(guardIncidentLedgerKey));
+    const done = candidates.filter((i) => emailed.has(guardIncidentLedgerKey(i)));
+    if (done.length > 0) await stampEmailedQuietly(shop.id, done);
+    const incidents = candidates.filter((i) => !emailed.has(guardIncidentLedgerKey(i)));
+    if (incidents.length === 0) return skip("already_sent");
     const recent = await countGuardAlertsSince(shop.id, new Date(now.getTime() - DAY_MS));
     if (recent >= GUARD_EMAILS_PER_DAY) return skip("throttled");
 
@@ -351,6 +388,7 @@ export async function sendGuardIncidentEmail(args: {
         }
       }
     }
+    await recordEpisodesQuietly(shop.id, incidents, recipient);
     await stampEmailedQuietly(shop.id, incidents);
     return { sent: true, reason, count: incidents.length };
   } catch (error) {

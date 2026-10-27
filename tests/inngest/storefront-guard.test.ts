@@ -28,7 +28,12 @@ vi.mock("../../inngest/client", () => ({
     })),
   },
 }));
-vi.mock("../../app/services/storefront-guard.server", () => svc);
+vi.mock("../../app/services/storefront-guard.server", async (orig) => ({
+  ...svc,
+  compareGuardCandidates: (
+    await orig<typeof import("../../app/services/storefront-guard.server")>()
+  ).compareGuardCandidates,
+}));
 vi.mock("../../app/models/storefront-guard.server", () => model);
 vi.mock("../../app/services/storefront-guard-email.server", () => email);
 vi.mock("../../app/shopify.server", () => ({
@@ -94,9 +99,10 @@ describe("storefront-guard cron: Inngest quota tripwire (gc-1q1s.9)", () => {
     expect(mockAlertGuardQuotaOnce).not.toHaveBeenCalled();
   });
 
-  it("over the threshold: one alert step with the projection", async () => {
+  it("over the threshold: one alert step with the projection, the alert step counted", async () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
-    // 3 chunks: (2 + 3) x 720 = 3,600 > 3,000.
+    // 3 chunks: (2 + 3) x 720 = 3,600 > 3,000; with the alert step (wave 3
+    // B6) the run is 6 steps, 4,320 a month.
     process.env.STOREFRONT_GUARD_MONTHLY_STEP_ALERT = "3000";
     model.listGuardCandidateShops.mockResolvedValue(shops(GUARD_CHUNK_SIZE * 2 + 1));
     mockAlertGuardQuotaOnce.mockResolvedValue("alerted");
@@ -105,9 +111,9 @@ describe("storefront-guard cron: Inngest quota tripwire (gc-1q1s.9)", () => {
     expect(step.run.mock.calls.map((c) => c[0]).at(-1)).toBe("quota-alert");
     expect(mockAlertGuardQuotaOnce).toHaveBeenCalledWith(
       expect.objectContaining({
-        projected: 3600,
+        projected: 4320,
         threshold: 3000,
-        runSteps: 5,
+        runSteps: 6,
         due: GUARD_CHUNK_SIZE * 2 + 1,
       }),
     );
@@ -116,7 +122,8 @@ describe("storefront-guard cron: Inngest quota tripwire (gc-1q1s.9)", () => {
   it("counts notify steps in the projection", async () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
     process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
-    // 1 chunk + 1 notify: (2 + 1 + 1) x 720 = 2,880 > 2,500; without notify 2,160.
+    // 1 chunk + 1 notify: (2 + 1 + 1) x 720 = 2,880 > 2,500; without notify
+    // 2,160. The alert step makes it 5 steps, 3,600 a month.
     process.env.STOREFRONT_GUARD_MONTHLY_STEP_ALERT = "2500";
     model.listGuardCandidateShops.mockResolvedValue(shops(1));
     model.getGuardEmailShop.mockResolvedValue({ id: "s0", domain: "s0.myshopify.com" });
@@ -130,7 +137,7 @@ describe("storefront-guard cron: Inngest quota tripwire (gc-1q1s.9)", () => {
     });
     await run();
     expect(mockAlertGuardQuotaOnce).toHaveBeenCalledWith(
-      expect.objectContaining({ runSteps: 4, projected: 2880 }),
+      expect.objectContaining({ runSteps: 5, projected: 3600 }),
     );
   });
 });
@@ -341,5 +348,31 @@ describe("storefront-guard cron", () => {
       await run();
       expect(email.sendGuardIncidentEmail.mock.calls[0][0].admin).toBeNull();
     });
+  });
+});
+
+describe("storefront-guard cron: paid shops first (wave 3 B7)", () => {
+  it("a backlog of Free shops never pushes a paid hourly check out of the run", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    const free = Array.from({ length: MAX_GUARD_SHOPS_PER_RUN }, (_, i) => ({
+      id: `f${i}`,
+      domain: `f${i}.myshopify.com`,
+      plan: "free",
+      storefrontGuardState: null,
+    }));
+    const paid = {
+      id: "paid",
+      domain: "paid.myshopify.com",
+      plan: "Standard",
+      storefrontGuardState: {
+        lastCheckedAt: new Date(Date.now() - 60 * 60 * 1000),
+        backoffUntil: null,
+      },
+    };
+    model.listGuardCandidateShops.mockResolvedValue([...free, paid]);
+    await run();
+    const checked = svc.checkGuardShop.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(checked).toHaveLength(MAX_GUARD_SHOPS_PER_RUN);
+    expect(checked[0]).toBe("paid");
   });
 });

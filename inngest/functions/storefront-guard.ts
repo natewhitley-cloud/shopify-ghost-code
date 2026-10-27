@@ -60,17 +60,17 @@ export const storefrontGuard = inngest.createFunction(
 
     const { shops, firedAt } = await step.run("select-due-shops", async () => {
       const { listGuardCandidateShops } = await import("../../app/models/storefront-guard.server");
-      const { guardEmailConsentAt, isGuardDue } =
+      const { compareGuardCandidates, guardEmailConsentAt, isGuardDue } =
         await import("../../app/services/storefront-guard.server");
       const now = new Date();
       const candidates = await listGuardCandidateShops();
-      // Never-checked first, then the longest-waiting, capped so one run
-      // stays well inside the hour (the first live run makes every shop due).
-      const lastChecked = (s: (typeof candidates)[number]) =>
-        s.storefrontGuardState?.lastCheckedAt?.getTime() ?? -Infinity;
+      // Hourly (paid) shops first, then never-checked, then the
+      // longest-waiting, capped so one run stays well inside the hour (the
+      // first live run makes every shop due; a Free backlog never starves a
+      // paid hourly check).
       const due: DueShop[] = candidates
         .filter((s) => isGuardDue(s, now))
-        .sort((a, b) => lastChecked(a) - lastChecked(b))
+        .sort(compareGuardCandidates)
         .slice(0, MAX_GUARD_SHOPS_PER_RUN)
         .map((s) => ({
           id: s.id,
@@ -158,13 +158,16 @@ export const storefrontGuard = inngest.createFunction(
     // once a day). Pure arithmetic first, so the alert step (one more step)
     // runs only when the projection is over.
     const quota = await import("../../app/services/storefront-guard-quota.server");
-    const runSteps = quota.guardRunSteps({
+    const baseRun = {
       chunks: Math.ceil(shops.length / GUARD_CHUNK_SIZE),
       notifySteps: Object.keys(emailed).length,
-    });
-    const projectedMonthlySteps = quota.projectGuardMonthlySteps(runSteps);
+    };
     const stepAlert = quota.guardMonthlyStepAlert();
-    if (projectedMonthlySteps > stepAlert) {
+    // The alert step is a step too (wave 3 B6): counted when it runs.
+    const alertDue = quota.projectGuardMonthlySteps(quota.guardRunSteps(baseRun)) > stepAlert;
+    const runSteps = quota.guardRunSteps({ ...baseRun, quotaStep: alertDue });
+    const projectedMonthlySteps = quota.projectGuardMonthlySteps(runSteps);
+    if (alertDue) {
       await step.run("quota-alert", () =>
         quota.alertGuardQuotaOnce({
           projected: projectedMonthlySteps,

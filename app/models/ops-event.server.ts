@@ -143,7 +143,9 @@ export interface RecordOpsEventInput {
 }
 
 /**
- * Append a single OpsEvent row. Best-effort — NEVER throws.
+ * Append a single OpsEvent row. Best-effort — NEVER throws. A caller that
+ * dedupes on the row (the guard quota alert) uses tryRecordOpsEvent, which
+ * says whether it was written, so it can fail closed.
  *
  * On any persistence error the event is dropped and a warn line is logged; the
  * caller resolves normally. This is intentional: OpsEvents are observability,
@@ -151,6 +153,11 @@ export interface RecordOpsEventInput {
  * observe.
  */
 export async function recordOpsEvent(input: RecordOpsEventInput): Promise<void> {
+  await tryRecordOpsEvent(input);
+}
+
+/** recordOpsEvent that says whether the row was written (never throws). */
+export async function tryRecordOpsEvent(input: RecordOpsEventInput): Promise<boolean> {
   try {
     await db.opsEvent.create({
       data: {
@@ -161,12 +168,14 @@ export async function recordOpsEvent(input: RecordOpsEventInput): Promise<void> 
         metadata: input.metadata,
       },
     });
+    return true;
   } catch (error) {
     logger.warn("ops-event-record-failed", {
       eventType: input.eventType,
       key: input.key,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 

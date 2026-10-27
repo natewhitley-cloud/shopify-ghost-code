@@ -6,7 +6,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDb = vi.hoisted(() => ({
   shop: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-  merchantAlert: { findFirst: vi.fn(), create: vi.fn(), count: vi.fn() },
+  merchantAlert: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    createMany: vi.fn(),
+    count: vi.fn(),
+  },
 }));
 
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
@@ -20,6 +26,9 @@ import {
   claimSummaryNoticeShown,
   claimSummaryOptInFirstShown,
   declineSummaryOptIn,
+  emailedGuardIncidentKeys,
+  guardIncidentLedgerKey,
+  recordGuardIncidentsEmailed,
   disableAlertsByToken,
   dismissSummaryNotice,
   ensureUnsubscribeToken,
@@ -51,6 +60,40 @@ describe("generateUnsubscribeToken", () => {
   });
 });
 
+describe("per-episode guard ledger (wave 3 B5)", () => {
+  const key = guardIncidentLedgerKey({ id: "i1", openedAt: new Date("2026-10-27T00:00:00Z") });
+
+  it("reads which episode keys are already in the ledger (none asked: no query)", async () => {
+    expect(await emailedGuardIncidentKeys("s1", [])).toEqual(new Set());
+    expect(mockDb.merchantAlert.findMany).not.toHaveBeenCalled();
+    mockDb.merchantAlert.findMany.mockResolvedValue([{ scanId: key }]);
+    expect(await emailedGuardIncidentKeys("s1", [key, "other"])).toEqual(new Set([key]));
+    expect(mockDb.merchantAlert.findMany).toHaveBeenCalledWith({
+      where: { shopId: "s1", kind: "checkout_guard_incident", scanId: { in: [key, "other"] } },
+      select: { scanId: true },
+    });
+  });
+
+  it("records one row per episode, keeping rows already there", async () => {
+    await recordGuardIncidentsEmailed("s1", [key], "o@example.com");
+    expect(mockDb.merchantAlert.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          shopId: "s1",
+          scanId: key,
+          findingSetHash: key,
+          newCount: 1,
+          recipient: "o@example.com",
+          kind: "checkout_guard_incident",
+        },
+      ],
+      skipDuplicates: true,
+    });
+    await recordGuardIncidentsEmailed("s1", [], "o@example.com");
+    expect(mockDb.merchantAlert.createMany).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("ledger helpers", () => {
   it("getLatestMerchantAlert reads the newest row for the shop, never a checkout guard email (gc-1q1s.7)", async () => {
     const row = { id: "a1" };
@@ -58,7 +101,7 @@ describe("ledger helpers", () => {
     await expect(getLatestMerchantAlert("s1")).resolves.toBe(row);
     // A guard incident email must never throttle or re-baseline the summary.
     expect(mockDb.merchantAlert.findFirst).toHaveBeenCalledWith({
-      where: { shopId: "s1", kind: { not: "checkout_guard" } },
+      where: { shopId: "s1", kind: { notIn: ["checkout_guard", "checkout_guard_incident"] } },
       orderBy: { sentAt: "desc" },
     });
   });

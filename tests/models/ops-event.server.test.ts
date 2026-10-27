@@ -61,6 +61,7 @@ import {
   recordClientError,
   recordCronHeartbeat,
   recordOpsEvent,
+  tryRecordOpsEvent,
   recordPageVisit,
   recordWebhookFailure,
   type CronExpectation,
@@ -118,6 +119,13 @@ describe("recordOpsEvent", () => {
       "ops-event-record-failed",
       expect.objectContaining({ eventType: "function_failure", key: "x", error: "db down" }),
     );
+  });
+
+  it("tryRecordOpsEvent says whether the row was written (wave 3 B6)", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({});
+    await expect(tryRecordOpsEvent({ eventType: "guard_quota_alert" })).resolves.toBe(true);
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+    await expect(tryRecordOpsEvent({ eventType: "guard_quota_alert" })).resolves.toBe(false);
   });
 
   it("coerces a non-Error thrown value to a string in the warn context", async () => {

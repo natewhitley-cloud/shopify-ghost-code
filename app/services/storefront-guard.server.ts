@@ -35,6 +35,7 @@ import {
   applyGuardCheck,
   EMAIL_INCIDENT_KINDS,
   MAX_HOSTS_PER_CHECK,
+  newHostFingerprint,
   type GuardCheckInput,
   type GuardHostSighting,
   type GuardIncident,
@@ -45,7 +46,7 @@ import {
   guardDomainsFrom,
   latestScanThemeHosts,
   loadGuard,
-  MAX_GUARD_INCIDENTS,
+  loadGuardIncidentsByFingerprint,
   pruneGuardIncidents,
   saveGuardCheck,
   type GuardDomainsCache,
@@ -85,6 +86,34 @@ export function isGuardDue(shop: GuardDueInput, now: Date): boolean {
   }
   if (age >= DAILY_CATCH_UP_MS) return true;
   return guardHourSlot(shop.id) === now.getUTCHours() && age >= DAILY_MIN_GAP_MS;
+}
+
+/** A candidate as the cron orders it (plan and last check). */
+export type GuardCandidateOrderInput = {
+  plan: string;
+  storefrontGuardState: { lastCheckedAt: Date | null } | null;
+};
+
+/**
+ * The cron's run order (wave 3 B7): hourly (paid) shops first, then the
+ * longest-waiting (never checked first). A run checks at most
+ * MAX_GUARD_SHOPS_PER_RUN shops, so a backlog of Free shops (all due at once
+ * on the first live run, or after an outage) must never push a paid shop's
+ * hourly check out of the run.
+ */
+export function compareGuardCandidates(
+  a: GuardCandidateOrderInput,
+  b: GuardCandidateOrderInput,
+): number {
+  const tier = (s: GuardCandidateOrderInput) =>
+    getPlanFeatures(s.plan).storefrontGuardCadence === "hourly" ? 0 : 1;
+  const last = (s: GuardCandidateOrderInput) =>
+    s.storefrontGuardState?.lastCheckedAt?.getTime() ?? -Infinity;
+  const byTier = tier(a) - tier(b);
+  if (byTier !== 0) return byTier;
+  const la = last(a);
+  const lb = last(b);
+  return la < lb ? -1 : la > lb ? 1 : 0;
 }
 
 /**
@@ -170,6 +199,17 @@ export function toGuardCheckInput(
   return { outcome: "ok", complete: outcome.complete, sightings, hosts };
 }
 
+/** Every incident fingerprint an ok check could sight (signals and new hosts). */
+export function sightedFingerprints(input: GuardCheckInput): string[] {
+  if (input.outcome !== "ok") return [];
+  return [
+    ...new Set([
+      ...input.sightings.map((s) => s.fingerprint),
+      ...input.hosts.map((h) => newHostFingerprint(h.host)),
+    ]),
+  ];
+}
+
 export type GuardShopDeps = {
   /** Admin context for the daily host refresh (unauthenticated.admin in prod). */
   getAdmin: (shopDomain: string) => Promise<AdminApiContext>;
@@ -243,7 +283,16 @@ export async function checkGuardShop(
       input = toGuardCheckInput(outcome);
     }
 
-    const result = applyGuardCheck(loaded.state, loaded.incidents, input, now);
+    // Rows this check sighted that loadGuard's NEW_SCRIPT_HOST cap left out
+    // (wave 3 B1): without them a re-sighted open episode would be re-created
+    // over its stored row, resetting openedAt (and a second email).
+    const loadedFps = new Set(loaded.incidents.map((i) => i.fingerprint));
+    const missing = sightedFingerprints(input).filter((fp) => !loadedFps.has(fp));
+    const incidents = [
+      ...loaded.incidents,
+      ...(await loadGuardIncidentsByFingerprint(shop.id, missing)),
+    ];
+    const result = applyGuardCheck(loaded.state, incidents, input, now);
     if (result.droppedHosts > 0) {
       // gc-njwa #4: counts only, never the hosts themselves.
       logger.warn("checkout guard host cap hit; alphabetically last hosts not checked", {
@@ -270,7 +319,7 @@ export async function checkGuardShop(
       });
       return { status: "stale", outcome };
     }
-    await pruneQuietly(shop.id, now, loaded.incidents.length >= MAX_GUARD_INCIDENTS);
+    await pruneQuietly(shop.id, now, loaded.newHostsCapped);
     type Saved = GuardIncident & { id: string; openedAt: Date };
     const asOpened = (i: Saved): OpenedIncident => ({
       shopId: shop.id,
@@ -283,7 +332,7 @@ export async function checkGuardShop(
       .filter((i): i is Saved => !!i?.id && !!i.openedAt)
       .map(asOpened);
     // Every incident as it now stands (the loaded rows, overlaid by this write).
-    const current = new Map(loaded.incidents.map((i) => [i.fingerprint, i]));
+    const current = new Map(incidents.map((i) => [i.fingerprint, i]));
     for (const [fp, i] of saved.incidents) current.set(fp, i);
     const consentMs = shop.emailConsentAt ? new Date(shop.emailConsentAt).getTime() : NaN;
     const toEmail =
