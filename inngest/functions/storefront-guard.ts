@@ -16,8 +16,9 @@
  * means no retry can overwrite a newer write.
  *
  * Plan cadence and backoff live in isGuardDue (storefront-guard.server).
- * Telemetry: one structured log line per run with counts by outcome; no
- * OpsEvent rows (spike A7).
+ * Telemetry: one structured log line per run with counts by outcome and the
+ * run's step count; no per-shop OpsEvent rows (spike A7). The quota
+ * tripwire (gc-1q1s.9) writes at most one constant-keyed row a day.
  *
  * Schedule: hourly at :17 (STOREFRONT_GUARD_CRON), clear of :37
  * (monitor-deep-health) and ClearSignal's :02/:07.
@@ -39,7 +40,8 @@ export const GUARD_POOL = 5;
  */
 export const MAX_GUARD_SHOPS_PER_RUN = 600;
 
-type DueShop = { id: string; domain: string; plan: string };
+/** A due shop as the select step returns it (JSON: the consent time is ISO). */
+type DueShop = { id: string; domain: string; plan: string; emailConsentAt: string | null };
 
 export const storefrontGuard = inngest.createFunction(
   {
@@ -58,7 +60,8 @@ export const storefrontGuard = inngest.createFunction(
 
     const { shops, firedAt } = await step.run("select-due-shops", async () => {
       const { listGuardCandidateShops } = await import("../../app/models/storefront-guard.server");
-      const { isGuardDue } = await import("../../app/services/storefront-guard.server");
+      const { guardEmailConsentAt, isGuardDue } =
+        await import("../../app/services/storefront-guard.server");
       const now = new Date();
       const candidates = await listGuardCandidateShops();
       // Never-checked first, then the longest-waiting, capped so one run
@@ -69,7 +72,12 @@ export const storefrontGuard = inngest.createFunction(
         .filter((s) => isGuardDue(s, now))
         .sort((a, b) => lastChecked(a) - lastChecked(b))
         .slice(0, MAX_GUARD_SHOPS_PER_RUN)
-        .map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
+        .map((s) => ({
+          id: s.id,
+          domain: s.domain,
+          plan: s.plan,
+          emailConsentAt: guardEmailConsentAt(s)?.toISOString() ?? null,
+        }));
       return { shops: due, firedAt: now.toISOString() };
     });
 
@@ -111,9 +119,11 @@ export const storefrontGuard = inngest.createFunction(
     const opened = results.flatMap((r) => (r.status === "checked" ? r.opened : []));
 
     // Incident email (gc-1q1s.7): one step per shop with an open, not yet
-    // emailed KNOWN_MALICIOUS / SCRIPT_LOADER episode from the last 24 h on a
-    // plan with guard email (checkGuardShop's toEmail), so a failed or
-    // throttled send is retried next run. Incidents batched into one email.
+    // emailed KNOWN_MALICIOUS / SCRIPT_LOADER episode on a plan with guard
+    // email, for a shop that consented (pre-filtered before any step,
+    // gc-1q1s.10), within 24 h of the later of its opening and the consent
+    // (checkGuardShop's toEmail), so a failed or throttled send is retried
+    // next run. Incidents batched into one email.
     // Only when the email flag is on; sendGuardIncidentEmail re-checks every
     // gate (consent, turn-off, unsubscribe, transport, throttle).
     const { isStorefrontGuardEmailLive } =
@@ -143,6 +153,28 @@ export const storefrontGuard = inngest.createFunction(
         emailed[shopId] = outcome.reason;
       }
     }
+    // Inngest quota tripwire (gc-1q1s.9): project this run's steps over a
+    // month of hourly runs; past the threshold, page the operator (at most
+    // once a day). Pure arithmetic first, so the alert step (one more step)
+    // runs only when the projection is over.
+    const quota = await import("../../app/services/storefront-guard-quota.server");
+    const runSteps = quota.guardRunSteps({
+      chunks: Math.ceil(shops.length / GUARD_CHUNK_SIZE),
+      notifySteps: Object.keys(emailed).length,
+    });
+    const projectedMonthlySteps = quota.projectGuardMonthlySteps(runSteps);
+    const stepAlert = quota.guardMonthlyStepAlert();
+    if (projectedMonthlySteps > stepAlert) {
+      await step.run("quota-alert", () =>
+        quota.alertGuardQuotaOnce({
+          projected: projectedMonthlySteps,
+          threshold: stepAlert,
+          runSteps,
+          due: shops.length,
+          now: new Date(),
+        }),
+      );
+    }
     logger.info(`[${STOREFRONT_GUARD_ID}] run complete`, {
       event: "storefront_guard_run",
       firedAt,
@@ -150,6 +182,8 @@ export const storefrontGuard = inngest.createFunction(
       byOutcome,
       opened: opened.length,
       emailed,
+      runSteps,
+      projectedMonthlySteps,
     });
     return { due: shops.length, byOutcome, opened: opened.length, emailed };
   }),

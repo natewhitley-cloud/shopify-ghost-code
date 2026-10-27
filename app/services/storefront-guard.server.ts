@@ -34,6 +34,7 @@ import { safeErrorFields } from "../lib/safe-error";
 import {
   applyGuardCheck,
   EMAIL_INCIDENT_KINDS,
+  MAX_HOSTS_PER_CHECK,
   type GuardCheckInput,
   type GuardHostSighting,
   type GuardIncident,
@@ -86,8 +87,29 @@ export function isGuardDue(shop: GuardDueInput, now: Date): boolean {
   return guardHourSlot(shop.id) === now.getUTCHours() && age >= DAILY_MIN_GAP_MS;
 }
 
-/** How long an unemailed incident episode keeps being offered to the email step. */
+/**
+ * How long an unemailed incident episode keeps being offered to the email
+ * step, from the LATER of the episode's opening and the shop's consent
+ * (gc-1q1s.10, owner-pending assumption): an incident still open when the
+ * merchant consents is offered for 24 h from the consent.
+ */
 export const EMAIL_RETRY_WINDOW_MS = 24 * HOUR_MS;
+
+/**
+ * When the shop consented to guard email, or null when no guard email may be
+ * sent: the notice never shown (or reset after an owner-email change), the
+ * merchant turned it off, or mail is unsubscribed (gc-1q1s.10, gc-njwa #6).
+ * The cron pre-filters on it, so an unconsented shop never costs a notify
+ * step. The email step re-checks every gate itself.
+ */
+export function guardEmailConsentAt(shop: {
+  alertsEnabled: boolean;
+  guardEmailNoticeShownAt: Date | null;
+  guardEmailOffAt: Date | null;
+}): Date | null {
+  if (!shop.alertsEnabled || shop.guardEmailOffAt) return null;
+  return shop.guardEmailNoticeShownAt;
+}
 
 /** One newly opened incident episode, as the cron passes it on (JSON-safe). */
 export type OpenedIncident = {
@@ -104,8 +126,9 @@ export type GuardShopResult =
       outcome: string;
       opened: OpenedIncident[];
       /**
-       * Open KNOWN_MALICIOUS / SCRIPT_LOADER episodes opened within
-       * EMAIL_RETRY_WINDOW_MS and not yet emailed, on a plan with guard email.
+       * Open KNOWN_MALICIOUS / SCRIPT_LOADER episodes not yet emailed, on a
+       * plan with guard email, for a consented shop, within
+       * EMAIL_RETRY_WINDOW_MS of the later of their opening and the consent.
        * Re-offered every run, so a failed or throttled send is retried (audit
        * fix); the email's own gates (consent, transport) still decide.
        */
@@ -187,7 +210,13 @@ async function resolveDomains(
  * with it, and a shop already stamped at or after it is skipped.
  */
 export async function checkGuardShop(
-  shop: { id: string; domain: string; plan: string },
+  shop: {
+    id: string;
+    domain: string;
+    plan: string;
+    /** guardEmailConsentAt, as the select step passed it (ISO in a step's output). */
+    emailConsentAt?: Date | string | null;
+  },
   now: Date,
   deps: GuardShopDeps,
   runAt: Date = now,
@@ -215,6 +244,16 @@ export async function checkGuardShop(
     }
 
     const result = applyGuardCheck(loaded.state, loaded.incidents, input, now);
+    if (result.droppedHosts > 0) {
+      // gc-njwa #4: counts only, never the hosts themselves.
+      logger.warn("checkout guard host cap hit; alphabetically last hosts not checked", {
+        function: "storefront-guard",
+        event: "storefront_guard_hosts_capped",
+        shopId: shop.id,
+        droppedHosts: result.droppedHosts,
+        maxHosts: MAX_HOSTS_PER_CHECK,
+      });
+    }
     const saved = await saveGuardCheck({
       shopId: shop.id,
       expectedVersion: loaded.version,
@@ -246,19 +285,21 @@ export async function checkGuardShop(
     // Every incident as it now stands (the loaded rows, overlaid by this write).
     const current = new Map(loaded.incidents.map((i) => [i.fingerprint, i]));
     for (const [fp, i] of saved.incidents) current.set(fp, i);
-    const toEmail = getPlanFeatures(shop.plan).storefrontGuardEmail
-      ? [...current.values()]
-          .filter(
-            (i): i is Saved =>
-              !!i.id &&
-              i.state === "open" &&
-              i.openedAt !== null &&
-              EMAIL_INCIDENT_KINDS.has(i.kind) &&
-              i.emailedOpenedAt?.getTime() !== i.openedAt.getTime() &&
-              now.getTime() - i.openedAt.getTime() < EMAIL_RETRY_WINDOW_MS,
-          )
-          .map(asOpened)
-      : [];
+    const consentMs = shop.emailConsentAt ? new Date(shop.emailConsentAt).getTime() : NaN;
+    const toEmail =
+      getPlanFeatures(shop.plan).storefrontGuardEmail && Number.isFinite(consentMs)
+        ? [...current.values()]
+            .filter(
+              (i): i is Saved =>
+                !!i.id &&
+                i.state === "open" &&
+                i.openedAt !== null &&
+                EMAIL_INCIDENT_KINDS.has(i.kind) &&
+                i.emailedOpenedAt?.getTime() !== i.openedAt.getTime() &&
+                now.getTime() - Math.max(i.openedAt.getTime(), consentMs) < EMAIL_RETRY_WINDOW_MS,
+            )
+            .map(asOpened)
+        : [];
     return { status: "checked", outcome, opened, toEmail };
   } catch (err) {
     logger.error("checkout guard check failed", {

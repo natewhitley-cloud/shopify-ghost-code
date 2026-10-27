@@ -408,6 +408,77 @@ describe("findGuardRegions: an element that never closes (audit fix)", () => {
   });
 });
 
+describe("findGuardRegions: [role=navigation] elements (gc-njwa #3)", () => {
+  const ext = `<script src="https://menu-cdn.example/m.js"></script>`;
+  const menuLoaders = (body: string) =>
+    analyzeStorefrontHtml(page(body)).loaders.map((l) => [l.reason, l.host]);
+
+  it("a div with role=navigation is a menu region (any case, quoted or not, in a role list)", () => {
+    for (const open of [
+      '<div role="navigation">',
+      "<div role=navigation>",
+      "<DIV ROLE='Navigation'>",
+      '<div class="x" role=" navigation menubar ">',
+    ]) {
+      expect(menuLoaders(`${open}<a href="/">Home</a>${ext}</div>`), open).toEqual([
+        ["script_in_menu", "menu-cdn.example"],
+      ]);
+    }
+  });
+
+  it("the region ends at ITS close tag, counting nested elements of the same name", () => {
+    expect(menuLoaders(`<div role="navigation"><div><div>a</div></div>${ext}</div>`)).toEqual([
+      ["script_in_menu", "menu-cdn.example"],
+    ]);
+    // After the region closes: not in the menu.
+    expect(menuLoaders(`<div role="navigation"><div>a</div></div>${ext}`)).toEqual([]);
+    const regions = findGuardRegions(
+      page(`<ul role="navigation"><li><ul><li>x</li></ul></li></ul><p>after</p>`),
+    );
+    expect(regions).toHaveLength(1);
+  });
+
+  it("only a real role attribute counts (not text inside another value or a script)", () => {
+    for (const body of [
+      `<div data-x="role=navigation">${ext}</div>`,
+      `<div title='a role="navigation"'>${ext}</div>`,
+      `<div aria-roledescription="navigation">${ext}</div>`,
+      `<div role="presentation">${ext}</div>`,
+      `<script>var t='<div role="navigation">';</script><div>${ext}</div>`,
+      `<!-- <div role="navigation"> --><div>${ext}</div>`,
+    ]) {
+      expect(menuLoaders(body), body).toEqual([]);
+    }
+  });
+
+  it("an element that never closes is no region (like nav, audit fix)", () => {
+    const html = page(`<div role="navigation"><p>x</p>${ext}`);
+    expect(findGuardRegions(html)).toEqual([]);
+    expect(analyzeStorefrontHtml(html).loaders).toEqual([]);
+  });
+
+  it("a script loaded from a theme-trusted host inside the region stays quiet", () => {
+    expect(
+      menuLoaders(
+        `<div role="navigation"><script src="//x.myshopify.com/cdn/shop/t/1/assets/menu.js"></script></div>`,
+      ),
+    ).toEqual([]);
+  });
+
+  it("caps the regions and stays linear on a page full of them (1 MB)", () => {
+    const html = page(`<div role="navigation"><div>x</div></div>`.repeat(25_000));
+    const started = Date.now();
+    const regions = findGuardRegions(html);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(regions.length).toBeLessThanOrEqual(200);
+    // Deep nesting of the same name, never closed.
+    const deep = page(`<div role="navigation">${"<div>".repeat(100_000)}`);
+    const t2 = Date.now();
+    expect(findGuardRegions(deep)).toEqual([]);
+    expect(Date.now() - t2).toBeLessThan(3000);
+  });
+});
+
 describe("walkHomepage (shared with findMaliciousInHomepage)", () => {
   it("reports every loading host with its source and raw URL, in page order", () => {
     const seen: Array<[string, string, string | null]> = [];

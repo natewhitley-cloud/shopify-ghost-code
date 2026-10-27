@@ -335,6 +335,25 @@ describe("NEW_SCRIPT_HOST baseline and debounce", () => {
     expect(r.state.baselineHosts["new.io"]).toBeDefined();
   });
 
+  it("reports how many host candidates the per-check cap dropped (gc-njwa #4)", () => {
+    const hosts = Array.from({ length: MAX_HOSTS_PER_CHECK + 7 }, (_, n) => ({
+      host: `h${String(n).padStart(4, "0")}.example`,
+      page: "home" as const,
+      sourceLabel: "Loaded by a script tag in the page",
+    }));
+    const check: GuardCheckInput = { outcome: "ok", complete: true, sightings: [], hosts };
+    expect(applyGuardCheck(EMPTY_GUARD_STATE, [], check, new Date(0)).droppedHosts).toBe(7);
+    const few: GuardCheckInput = {
+      outcome: "ok",
+      complete: true,
+      sightings: [],
+      hosts: hosts.slice(0, 3),
+    };
+    expect(applyGuardCheck(EMPTY_GUARD_STATE, [], few, new Date(0)).droppedHosts).toBe(0);
+    const down: GuardCheckInput = { outcome: "unreachable", reason: "timeout", challenged: false };
+    expect(applyGuardCheck(EMPTY_GUARD_STATE, [], down, new Date(0)).droppedHosts).toBe(0);
+  });
+
   it("caps the hosts kept per check and the baseline size", () => {
     const many = Array.from({ length: MAX_BASELINE_HOSTS + 50 }, (_, n) => `h${n}.example`);
     const r = run([ok({ hosts: many })]);

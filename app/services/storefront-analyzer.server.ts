@@ -27,11 +27,14 @@
  *      malicious hosts (already their own incident). Links, connection
  *      hints, inline-JS strings and handler URLs never count as new hosts.
  *
- * Known limits: menu regions are found by tag name, not by role or class
- * (`<div role="navigation">` is not a region); a region ends at the first
- * matching close tag, and an element that never closes is no region (audit
- * fix: it used to run to the end of the page).
+ * Menu regions: the menu elements by tag name, plus any element with a real
+ * `role="navigation"` attribute (gc-njwa #3; read by the attribute walk, so
+ * the words inside another value never count), which ends at its own close
+ * tag (same-name nesting counted). Known limits: not by class; a menu
+ * element ends at the first matching close tag; an element that never closes
+ * is no region (audit fix: it used to run to the end of the page).
  */
+import { segmentAttributes, tagEnd } from "./menu-injection-detector.server";
 import {
   findMaliciousInHomepage,
   MAX_HOST_LENGTH,
@@ -40,7 +43,7 @@ import {
   type HomepageMaliciousHit,
   type HomepageSource,
 } from "./runtime-malicious.server";
-import { identifyAppForExternalUrl, isShopifyDomain } from "./scan-engine.server";
+import { identifyAppForExternalUrl, isHtmlSpace, isShopifyDomain } from "./scan-engine.server";
 import {
   findScriptPayload,
   firstExternalHost,
@@ -116,6 +119,100 @@ function findTag(lower: string, name: string, from: number): number {
   return -1;
 }
 
+/** Elements whose content is text, never markup (a tag inside one opens nothing). */
+const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+  "noscript",
+  "noembed",
+  "noframes",
+]);
+
+/** Whether a `role` value names the navigation role (a space-separated, any-case list). */
+function isNavigationRole(value: string | null | undefined): boolean {
+  return (
+    !!value &&
+    value
+      .toLowerCase()
+      .split(/[\t\n\f\r ]+/)
+      .includes("navigation")
+  );
+}
+
+/**
+ * Elements with a real `role="navigation"` attribute (gc-njwa #3), each up to
+ * its own close tag. One forward walk over the page's tags: comments and
+ * raw-text elements are skipped, attributes are read by segmentAttributes
+ * (the menu detector's walk, so `data-x="role=navigation"` is no role), and a
+ * per-name open count pairs each region with its close tag despite nested
+ * elements of the same name. Linear: every step moves forward, and each
+ * close tag looks only at the innermost open region of its name. At most
+ * MAX_REGIONS regions; one never closed is no region.
+ */
+export function findRoleNavigationRegions(html: string, lower: string): Region[] {
+  const regions: Region[] = [];
+  const openByName = new Map<string, Array<{ start: number; depth: number }>>();
+  const depth = new Map<string, number>();
+  let tracked = 0;
+  const n = lower.length;
+  let i = lower.indexOf("<");
+  while (i !== -1) {
+    if (lower.startsWith("<!--", i)) {
+      const close = lower.indexOf("-->", i + 4);
+      if (close === -1) break;
+      i = lower.indexOf("<", close + 3);
+      continue;
+    }
+    const closing = lower.charAt(i + 1) === "/";
+    const nameStart = closing ? i + 2 : i + 1;
+    if (!/[a-z]/.test(lower.charAt(nameStart))) {
+      i = lower.indexOf("<", i + 1);
+      continue;
+    }
+    let j = nameStart + 1;
+    while (j < n && lower[j] !== "/" && lower[j] !== ">" && !isHtmlSpace(lower.charCodeAt(j))) j++;
+    const name = lower.slice(nameStart, j);
+    if (closing) {
+      const gt = lower.indexOf(">", j);
+      if (gt === -1) break;
+      const level = Math.max(0, (depth.get(name) ?? 0) - 1);
+      depth.set(name, level);
+      const open = openByName.get(name);
+      const top = open?.[open.length - 1];
+      if (top && top.depth === level) {
+        open!.pop();
+        regions.push({ start: top.start, end: i, kind: "menu" });
+      }
+      i = lower.indexOf("<", gt + 1);
+      continue;
+    }
+    const { end, closed } = tagEnd(html, i);
+    if (!closed) break;
+    if (RAW_TEXT_ELEMENTS.has(name)) {
+      const close = lower.indexOf(`</${name}`, end);
+      if (close === -1) break;
+      i = close;
+      continue;
+    }
+    const level = depth.get(name) ?? 0;
+    if (
+      tracked < MAX_REGIONS &&
+      isNavigationRole(segmentAttributes(html.slice(i, end)).attributes.get("role"))
+    ) {
+      tracked++;
+      const open = openByName.get(name) ?? [];
+      open.push({ start: i, depth: level });
+      openByName.set(name, open);
+    }
+    depth.set(name, level + 1);
+    i = lower.indexOf("<", end);
+  }
+  return regions;
+}
+
 const CHECKOUT_TAG_RE =
   /\sname\s*=\s*["']?checkout["'\s>]|\sid\s*=\s*["']?[^"'\s>]*checkout|\shref\s*=\s*["']?\/checkout\b/;
 
@@ -135,6 +232,7 @@ export function findGuardRegions(html: string): Region[] {
       from = close;
     }
   }
+  regions.push(...findRoleNavigationRegions(html, lower));
   for (const name of ["button", "a"] as const) {
     let from = 0;
     for (let seen = 0; seen < MAX_REGIONS * 5; seen++) {

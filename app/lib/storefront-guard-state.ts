@@ -186,6 +186,11 @@ export interface GuardCheckResult {
   changed: GuardIncident[];
   /** Incidents whose episode opened on this check (state open, openedAt = now). */
   opened: GuardIncident[];
+  /**
+   * New-host candidates past MAX_HOSTS_PER_CHECK that this check did not
+   * consider (alphabetically last; gc-njwa #4). 0 when none were dropped.
+   */
+  droppedHosts: number;
 }
 
 /** Backoff delay after `n` unreachable checks in a row (0 before BACKOFF_AFTER). */
@@ -217,7 +222,7 @@ export function applyGuardCheck(
   };
 
   if (check.outcome !== "ok") {
-    return { state: applyNonOk(base, check, now), changed: [], opened: [] };
+    return { state: applyNonOk(base, check, now), changed: [], opened: [], droppedHosts: 0 };
   }
 
   const state: GuardStateData = {
@@ -232,6 +237,7 @@ export function applyGuardCheck(
   const byFingerprint = new Map(incidents.map((i) => [i.fingerprint, { ...i }]));
   const changed = new Map<string, GuardIncident>();
   const opened: GuardIncident[] = [];
+  let droppedHosts = 0;
   const touch = (i: GuardIncident) => {
     byFingerprint.set(i.fingerprint, i);
     changed.set(i.fingerprint, i);
@@ -270,6 +276,7 @@ export function applyGuardCheck(
       });
     }
     const hosts = [...hostPages.keys()].sort().slice(0, MAX_HOSTS_PER_CHECK);
+    droppedHosts = hostPages.size - hosts.length;
     const learning = state.readableChecks < LEARNING_CHECKS;
     const nowIso = now.toISOString();
     const fresh: string[] = [];
@@ -350,7 +357,7 @@ export function applyGuardCheck(
     }
   }
 
-  return { state, changed: [...changed.values()], opened };
+  return { state, changed: [...changed.values()], opened, droppedHosts };
 }
 
 function applyNonOk(

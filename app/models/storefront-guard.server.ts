@@ -345,7 +345,10 @@ export async function latestScanThemeHosts(shopId: string): Promise<Set<string>>
   return new Set(rows.map((r) => r.domain.toLowerCase()));
 }
 
-/** Installed shops with the guard fields the due check needs. */
+/**
+ * Installed shops with the guard fields the due check needs, and the email
+ * consent fields the cron pre-filters notify steps on (gc-1q1s.10).
+ */
 export function listGuardCandidateShops() {
   return db.shop.findMany({
     where: { uninstalledAt: null },
@@ -353,6 +356,9 @@ export function listGuardCandidateShops() {
       id: true,
       domain: true,
       plan: true,
+      alertsEnabled: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
       storefrontGuardState: { select: { lastCheckedAt: true, backoffUntil: true } },
     },
     orderBy: { id: "asc" },

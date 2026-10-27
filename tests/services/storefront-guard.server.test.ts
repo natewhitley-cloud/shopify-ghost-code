@@ -29,6 +29,7 @@ import {
   checkGuardShop,
   DAILY_CATCH_UP_MS,
   DAILY_MIN_GAP_MS,
+  guardEmailConsentAt,
   guardHourSlot,
   HOURLY_MIN_GAP_MS,
   isGuardDue,
@@ -40,7 +41,13 @@ const NOW = new Date("2026-10-27T05:17:00Z");
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const SHOP = { id: "shop-1", domain: "shop-1.myshopify.com", plan: "Standard" };
+/** A Standard shop that consented to guard email 30 days ago (gc-1q1s.10). */
+const SHOP = {
+  id: "shop-1",
+  domain: "shop-1.myshopify.com",
+  plan: "Standard",
+  emailConsentAt: new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+};
 
 const STOREFRONT = (body: string) =>
   `<html><head><script>Shopify.shop = "shop-1.myshopify.com";</script></head><body>${body}</body></html>`;
@@ -361,6 +368,52 @@ describe("checkGuardShop", () => {
   });
 });
 
+describe("checkGuardShop: host cap log (gc-njwa #4)", () => {
+  it("logs a count (never the hosts) when MAX_HOSTS_PER_CHECK drops candidates", async () => {
+    const { logger } = await import("../../app/lib/logger.server");
+    const { MAX_HOSTS_PER_CHECK } = await import("../../app/lib/storefront-guard-state");
+    model.loadGuard.mockResolvedValue(loaded());
+    const scripts = Array.from(
+      { length: MAX_HOSTS_PER_CHECK + 5 },
+      (_, n) =>
+        `<script src="https://h${String(n).padStart(4, "0")}.vendor-cap.example/a.js"></script>`,
+    ).join("");
+    fetchImpl.mockImplementation(async () => new Response(STOREFRONT(scripts)));
+    await checkGuardShop(SHOP, NOW, deps());
+    const capped = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(
+        ([, ctx]) => (ctx as { event?: string }).event === "storefront_guard_hosts_capped",
+      );
+    expect(capped).toHaveLength(1);
+    expect(capped[0][1]).toEqual({
+      function: "storefront-guard",
+      event: "storefront_guard_hosts_capped",
+      shopId: "shop-1",
+      droppedHosts: 5,
+      maxHosts: MAX_HOSTS_PER_CHECK,
+    });
+    expect(JSON.stringify(capped)).not.toContain("vendor-cap.example");
+  });
+
+  it("logs nothing under the cap", async () => {
+    const { logger } = await import("../../app/lib/logger.server");
+    model.loadGuard.mockResolvedValue(loaded());
+    fetchImpl.mockImplementation(
+      async () =>
+        new Response(STOREFRONT(`<script src="https://one.vendor.example/a.js"></script>`)),
+    );
+    await checkGuardShop(SHOP, NOW, deps());
+    expect(
+      vi
+        .mocked(logger.warn)
+        .mock.calls.some(
+          ([, ctx]) => (ctx as { event?: string }).event === "storefront_guard_hosts_capped",
+        ),
+    ).toBe(false);
+  });
+});
+
 describe("mapPool", () => {
   it("keeps input order and never exceeds the limit", async () => {
     let inFlight = 0;
@@ -429,5 +482,62 @@ describe("checkGuardShop: what the email step is offered (audit fix)", () => {
     model.loadGuard.mockResolvedValue(loaded({ incidents: [openMal()] }));
     const free = await checkGuardShop({ ...SHOP, plan: "free" }, NOW, deps());
     expect(free.status === "checked" && free.toEmail).toEqual([]);
+  });
+
+  // gc-1q1s.10 / gc-njwa #6: no consent (never shown, turned off, unsubscribed)
+  // means no notify step at all, so nothing is offered.
+  it("offers nothing to a paid shop without consent", async () => {
+    model.loadGuard.mockResolvedValue(loaded({ incidents: [openMal()] }));
+    quietStorefront();
+    for (const emailConsentAt of [null, undefined]) {
+      const out = await checkGuardShop({ ...SHOP, emailConsentAt }, NOW, deps());
+      expect(out.status === "checked" && out.toEmail).toEqual([]);
+    }
+  });
+
+  // Owner-pending assumption: an incident still open when consent is given is
+  // offered for 24 h from the LATER of its opening and the consent.
+  it("an incident open before consent is offered for 24 h from the consent", async () => {
+    const openedLongAgo = openMal({ openedAt: ago(5 * DAY), firstSeenAt: ago(5 * DAY) });
+    model.loadGuard.mockResolvedValue(loaded({ incidents: [openedLongAgo] }));
+    quietStorefront();
+    const justConsented = { ...SHOP, emailConsentAt: ago(2 * HOUR).toISOString() };
+    const out = await checkGuardShop(justConsented, NOW, deps());
+    expect(out.status === "checked" && out.toEmail.map((i) => i.incidentId)).toEqual(["inc-m"]);
+
+    const consentedYesterday = { ...SHOP, emailConsentAt: ago(25 * HOUR).toISOString() };
+    const late = await checkGuardShop(consentedYesterday, NOW, deps());
+    expect(late.status === "checked" && late.toEmail).toEqual([]);
+  });
+
+  it("never offers a resolved incident, whenever consent came", async () => {
+    model.loadGuard.mockResolvedValue(
+      loaded({
+        incidents: [openMal({ state: "resolved", resolvedAt: ago(HOUR), resolution: "clean" })],
+      }),
+    );
+    quietStorefront();
+    const out = await checkGuardShop(
+      { ...SHOP, emailConsentAt: ago(HOUR).toISOString() },
+      NOW,
+      deps(),
+    );
+    expect(out.status === "checked" && out.toEmail).toEqual([]);
+  });
+});
+
+describe("guardEmailConsentAt (gc-1q1s.10)", () => {
+  const base = {
+    alertsEnabled: true,
+    guardEmailNoticeShownAt: ago(DAY),
+    guardEmailOffAt: null as Date | null,
+  };
+  it("is the consent stamp while email may be sent", () => {
+    expect(guardEmailConsentAt(base)).toEqual(ago(DAY));
+  });
+  it("is null when never shown, turned off or unsubscribed", () => {
+    expect(guardEmailConsentAt({ ...base, guardEmailNoticeShownAt: null })).toBeNull();
+    expect(guardEmailConsentAt({ ...base, guardEmailOffAt: ago(HOUR) })).toBeNull();
+    expect(guardEmailConsentAt({ ...base, alertsEnabled: false })).toBeNull();
   });
 });

@@ -124,7 +124,7 @@ export function isScriptUrl(value: string): boolean {
  * fix), or the end of the title when it never closes. A quote opens a value
  * only after `=`, as in HTML. Linear: every step moves forward.
  */
-function tagEnd(title: string, start: number): { end: number; closed: boolean } {
+export function tagEnd(title: string, start: number): { end: number; closed: boolean } {
   const n = title.length;
   let i = start + 1;
   while (i < n) {

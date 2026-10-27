@@ -84,6 +84,15 @@ export const OPS_EVENT_TYPES = {
   // the API key) and never Google's error text. Low volume (one per Pro shop
   // per week plus at most one manual run a day), so no prune coverage.
   SPEED_REPORT: "speed_report",
+  // Checkout guard Inngest quota tripwire (gc-1q1s.9): at most one row a day,
+  // written when a guard run's projected monthly steps pass the threshold
+  // (app/services/storefront-guard-quota.server.ts), and read back to page
+  // the operator at most once a day. Keyed on the CONSTANT
+  // "storefront-guard", never a shop domain; metadata is counts only
+  // ({ projected, threshold, runSteps, due }). So, like reconcile_summary, it
+  // needs no per-shop redact coverage in deleteShopData (which purges by
+  // domain) and no prune coverage in pruneOpsEvents (one row a day at most).
+  GUARD_QUOTA_ALERT: "guard_quota_alert",
 } as const;
 
 /** All nudge-funnel event types, for the prune and the digest's grouped read. */

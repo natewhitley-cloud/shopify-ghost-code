@@ -6,6 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const svc = vi.hoisted(() => ({
   isGuardDue: vi.fn(() => true),
+  guardEmailConsentAt: vi.fn<(s: { guardEmailNoticeShownAt: Date | null }) => Date | null>(
+    () => null,
+  ),
   checkGuardShop: vi.fn(),
   mapPool: vi.fn(),
 }));
@@ -33,6 +36,11 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 vi.mock("../../app/models/ops-event.server", () => ({
   recordCronHeartbeat: mockRecordCronHeartbeat,
+}));
+const mockAlertGuardQuotaOnce = vi.hoisted(() => vi.fn());
+vi.mock("../../app/services/storefront-guard-quota.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/services/storefront-guard-quota.server")>()),
+  alertGuardQuotaOnce: mockAlertGuardQuotaOnce,
 }));
 
 import {
@@ -72,6 +80,59 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
   delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
+  delete process.env.STOREFRONT_GUARD_MONTHLY_STEP_ALERT;
+});
+
+describe("storefront-guard cron: Inngest quota tripwire (gc-1q1s.9)", () => {
+  it("under the threshold: no alert step", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    model.listGuardCandidateShops.mockResolvedValue(shops(GUARD_CHUNK_SIZE * 2));
+    const step = createMockInngestStep();
+    await run(step);
+    // 2 + 2 chunks = 4 steps a run, 2,880 a month: far under 20k.
+    expect(step.run.mock.calls.map((c) => c[0])).not.toContain("quota-alert");
+    expect(mockAlertGuardQuotaOnce).not.toHaveBeenCalled();
+  });
+
+  it("over the threshold: one alert step with the projection", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    // 3 chunks: (2 + 3) x 720 = 3,600 > 3,000.
+    process.env.STOREFRONT_GUARD_MONTHLY_STEP_ALERT = "3000";
+    model.listGuardCandidateShops.mockResolvedValue(shops(GUARD_CHUNK_SIZE * 2 + 1));
+    mockAlertGuardQuotaOnce.mockResolvedValue("alerted");
+    const step = createMockInngestStep();
+    await run(step);
+    expect(step.run.mock.calls.map((c) => c[0]).at(-1)).toBe("quota-alert");
+    expect(mockAlertGuardQuotaOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projected: 3600,
+        threshold: 3000,
+        runSteps: 5,
+        due: GUARD_CHUNK_SIZE * 2 + 1,
+      }),
+    );
+  });
+
+  it("counts notify steps in the projection", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
+    // 1 chunk + 1 notify: (2 + 1 + 1) x 720 = 2,880 > 2,500; without notify 2,160.
+    process.env.STOREFRONT_GUARD_MONTHLY_STEP_ALERT = "2500";
+    model.listGuardCandidateShops.mockResolvedValue(shops(1));
+    model.getGuardEmailShop.mockResolvedValue({ id: "s0", domain: "s0.myshopify.com" });
+    email.sendGuardIncidentEmail.mockResolvedValue({ sent: true, reason: "sent" });
+    const item = { shopId: "s0", incidentId: "a", kind: "KNOWN_MALICIOUS", openedAt: "x" };
+    svc.checkGuardShop.mockResolvedValue({
+      status: "checked",
+      outcome: "ok",
+      opened: [item],
+      toEmail: [item],
+    });
+    await run();
+    expect(mockAlertGuardQuotaOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ runSteps: 4, projected: 2880 }),
+    );
+  });
 });
 
 describe("storefront-guard cron", () => {
@@ -152,15 +213,26 @@ describe("storefront-guard cron", () => {
     expect(checked.has(`s${MAX_GUARD_SHOPS_PER_RUN + 4}`)).toBe(false);
   });
 
-  it("passes only id, domain and plan forward from selection", async () => {
+  it("passes only id, domain, plan and the email consent time forward from selection", async () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
-    model.listGuardCandidateShops.mockResolvedValue(shops(1));
+    const consentAt = new Date("2026-10-20T10:00:00Z");
+    svc.guardEmailConsentAt.mockImplementation(
+      (s: { guardEmailNoticeShownAt: Date | null }) => s.guardEmailNoticeShownAt,
+    );
+    model.listGuardCandidateShops.mockResolvedValue([
+      { ...shops(1)[0], guardEmailNoticeShownAt: consentAt },
+      { ...shops(2)[1], guardEmailNoticeShownAt: null },
+    ]);
     await run();
-    expect(svc.checkGuardShop.mock.calls[0][0]).toEqual({
-      id: "s0",
-      domain: "s0.myshopify.com",
-      plan: "Standard",
-    });
+    expect(svc.checkGuardShop.mock.calls.map((c) => c[0])).toEqual([
+      {
+        id: "s0",
+        domain: "s0.myshopify.com",
+        plan: "Standard",
+        emailConsentAt: consentAt.toISOString(),
+      },
+      { id: "s1", domain: "s1.myshopify.com", plan: "Standard", emailConsentAt: null },
+    ]);
   });
 
   // Audit fix (M5): every chunk stamps the RUN's fire time, so a long run's
