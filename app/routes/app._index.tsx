@@ -87,6 +87,7 @@ import { maliciousHealthRow } from "../lib/theme-health";
 import type { HealthRow } from "../lib/theme-health";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
+import { useClaimRenderedNotice } from "../lib/use-claim-rendered-notice";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
@@ -121,8 +122,14 @@ import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
 import { hiddenStoredFindingTypes } from "../services/soft-launch-flags.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
-import { claimGuardEmailNoticeForHome } from "../services/storefront-guard-notice.server";
-import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
+import {
+  claimGuardEmailNoticeRendered,
+  guardEmailNoticeForHome,
+} from "../services/storefront-guard-notice.server";
+import {
+  claimSummaryNoticeRendered,
+  summaryNoticeForHome,
+} from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
 import {
   acceptSummaryOptIn,
@@ -845,19 +852,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  // "Summary emails are on" (gc-ol95): shown ONCE to a shop that owes it (moved
-  // Free -> paid, or opted in while sending was dark); the load that wins the
-  // claim renders it, and that claim is the merchant's notice. Pre-checked on
-  // the loaded row, so every other load (and every 3s poll) issues no query.
-  const summaryNotice = await claimSummaryNoticeForHome(shop, admin);
+  // "Summary emails are on" (gc-ol95): offered to a shop that owes it (moved
+  // Free -> paid, or opted in while sending was dark) until it is stamped.
+  // The loader writes nothing: the client posts "summary-notice-shown" once
+  // the notice is on screen (gc-1q1s.11). Pre-checked on the loaded row, so
+  // every other load (and every 3s poll) issues no query.
+  const summaryNotice = await summaryNoticeForHome(shop, admin);
 
   // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
   // line while the guard is live. Two small indexed reads; never throws.
   const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
   // "Checkout guard alerts will be emailed to ..." (gc-1q1s.7): the one-time
-  // consent notice, Standard/Professional only, claimed by the load that
-  // renders it (pre-checked on the loaded row: no query on most loads).
-  const guardEmailNotice = await claimGuardEmailNoticeForHome(shop, admin);
+  // consent notice, Standard/Professional only. Offered, not stamped: the
+  // client posts "guard-email-notice-shown" after it renders (gc-1q1s.11).
+  // Pre-checked on the loaded row: no query on most loads.
+  const guardEmailNotice = await guardEmailNoticeForHome(shop, admin);
 
   return {
     shop,
@@ -949,6 +958,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  // Consent notices rendered (gc-1q1s.11): posted by the client from an effect
+  // once the notice is on screen. Session shop only; each claim re-checks the
+  // gates and is one atomic conditional write, so repeats are no-ops.
+  if (intent === "guard-email-notice-shown") {
+    const shown = formData.get("email");
+    const email = typeof shown === "string" && shown !== "" ? shown : null;
+    return { noticeClaimed: await claimGuardEmailNoticeRendered(shop, email, admin) };
+  }
+  if (intent === "summary-notice-shown") {
+    return { noticeClaimed: await claimSummaryNoticeRendered(shop) };
+  }
+
   // Checkout guard email notice "Turn off" (gc-1q1s.7): no guard email after this.
   if (intent === "guard-email-off") {
     await turnOffGuardEmail(shop.id);
@@ -958,6 +979,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
   // Session shop only; idempotent.
   if (intent === "dismiss-summary-notice") {
+    // Dismiss proves it was shown: claim first (a no-op once the render's
+    // claim landed), so a Dismiss that outruns that post still records it.
+    await claimSummaryNoticeRendered(shop);
     await dismissSummaryNotice(shop.id);
     return { dismissed: true };
   }
@@ -1405,8 +1429,9 @@ export default function Dashboard() {
   );
   const handleGuardAcknowledge = guardMerge.acknowledge;
 
-  // Checkout guard email notice (gc-1q1s.7): returned only on the load that
-  // claimed it, so latch it for this page view until answered.
+  // Checkout guard email notice (gc-1q1s.7): offered until stamped, then no
+  // longer returned, so latch it for this page view until answered. Its
+  // consent is stamped only once it is on screen (gc-1q1s.11).
   const guardNoticeFetcher = useFetcher<typeof action>();
   const [latchedGuardNotice, setLatchedGuardNotice] = useState(guardEmailNotice);
   const [guardNoticeAnswer, setGuardNoticeAnswer] = useState<"off" | "ok" | null>(null);
@@ -1414,14 +1439,18 @@ export default function Dashboard() {
     if (guardEmailNotice) setLatchedGuardNotice(guardEmailNotice);
   }, [guardEmailNotice]);
   const visibleGuardNotice = guardNoticeAnswer ? null : latchedGuardNotice;
+  useClaimRenderedNotice(latchedGuardNotice, {
+    intent: "guard-email-notice-shown",
+    email: latchedGuardNotice?.email ?? "",
+  });
   const handleGuardEmailOff = () => {
     setGuardNoticeAnswer("off");
     guardNoticeFetcher.submit({ intent: "guard-email-off" }, { method: "POST" });
   };
 
-  // Summary-email notice (gc-ol95): the loader returns it only on the load that
-  // claimed it, so latch it for this page view (the 3s scan poll revalidates
-  // the loader) until the merchant dismisses it.
+  // Summary-email notice (gc-ol95): offered until stamped, so latch it for
+  // this page view (the 3s scan poll revalidates the loader) until the
+  // merchant dismisses it. Stamped once on screen (gc-1q1s.11).
   const summaryNoticeFetcher = useFetcher<typeof action>();
   const [latchedSummaryNotice, setLatchedSummaryNotice] = useState<SummaryNotice | null>(
     summaryNotice,
@@ -1431,6 +1460,7 @@ export default function Dashboard() {
     if (summaryNotice) setLatchedSummaryNotice(summaryNotice);
   }, [summaryNotice]);
   const visibleSummaryNotice = summaryNoticeDismissed ? null : latchedSummaryNotice;
+  useClaimRenderedNotice(latchedSummaryNotice, { intent: "summary-notice-shown" });
   const handleDismissSummaryNotice = () => {
     setSummaryNoticeDismissed(true);
     summaryNoticeFetcher.submit({ intent: "dismiss-summary-notice" }, { method: "POST" });

@@ -55,8 +55,9 @@ import {
 } from "../../app/services/storefront-guard-email.server";
 import { toIncidentView } from "../../app/services/storefront-guard-home.server";
 import {
-  claimGuardEmailNoticeForHome,
+  claimGuardEmailNoticeRendered,
   guardConsentHash,
+  guardEmailNoticeForHome,
 } from "../../app/services/storefront-guard-notice.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 
@@ -122,27 +123,47 @@ afterEach(() => {
   delete process.env.SHOPIFY_APP_URL;
 });
 
-describe("claimGuardEmailNoticeForHome", () => {
+describe("guard email notice: offered by the loader, claimed after render (gc-1q1s.11)", () => {
   const noticeShop = { ...SHOP, guardEmailNoticeShownAt: null };
 
-  it("claims once and names the owner email (Standard and Professional)", async () => {
+  it("the loader offers it naming the owner email and writes nothing (Standard and Professional)", async () => {
     for (const plan of ["Standard", "Professional"]) {
-      expect(await claimGuardEmailNoticeForHome({ ...noticeShop, plan }, null)).toEqual({
+      expect(await guardEmailNoticeForHome({ ...noticeShop, plan }, null)).toEqual({
         email: "owner@example.com",
       });
     }
-    // The claim stamps the hash of the address the notice names (audit fix).
-    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(
+    expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("the rendered claim stamps the hash of the address shown (audit fix)", async () => {
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(true);
+    expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
       SHOP.domain,
       guardConsentHash("owner@example.com"),
     );
   });
 
+  it("the address shown is compared trimmed and in any case", async () => {
+    expect(await claimGuardEmailNoticeRendered(noticeShop, " Owner@Example.COM ", null)).toBe(true);
+  });
+
+  it("a claim for an address other than the one the notice names now stamps nothing", async () => {
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "old@example.com", null)).toBe(false);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, null, null)).toBe(false);
+    expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
   it("the generic notice (no address known) stamps no hash", async () => {
-    expect(await claimGuardEmailNoticeForHome({ ...noticeShop, alertEmail: null }, null)).toEqual({
-      email: null,
-    });
+    const generic = { ...noticeShop, alertEmail: null };
+    expect(await guardEmailNoticeForHome(generic, null)).toEqual({ email: null });
+    expect(await claimGuardEmailNoticeRendered(generic, null, null)).toBe(true);
     expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(SHOP.domain, null);
+  });
+
+  it("a double post: the atomic claim stamps once, the repeat reports false", async () => {
+    ledger.claimGuardEmailNoticeShown.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(true);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(false);
   });
 
   it("guardConsentHash ignores case and surrounding spaces, and is not the address", () => {
@@ -156,37 +177,39 @@ describe("claimGuardEmailNoticeForHome", () => {
     ["already shown", { guardEmailNoticeShownAt: NOW }],
     ["turned off", { guardEmailOffAt: NOW }],
     ["unsubscribed", { alertsEnabled: false }],
-  ])("is never shown (and never claimed) when %s", async (_label, over) => {
-    expect(await claimGuardEmailNoticeForHome({ ...noticeShop, ...over }, null)).toBeNull();
+  ])("is never offered (and never claimed) when %s", async (_label, over) => {
+    expect(await guardEmailNoticeForHome({ ...noticeShop, ...over }, null)).toBeNull();
+    expect(
+      await claimGuardEmailNoticeRendered({ ...noticeShop, ...over }, "owner@example.com", null),
+    ).toBe(false);
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
-  it("is not shown while the email flag or the transport is off", async () => {
+  it("is not offered or claimed while the email flag or the transport is off", async () => {
+    const both = async () => [
+      await guardEmailNoticeForHome(noticeShop, null),
+      await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null),
+    ];
     delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
-    expect(await claimGuardEmailNoticeForHome(noticeShop, null)).toBeNull();
+    expect(await both()).toEqual([null, false]);
     process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
     delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
-    expect(await claimGuardEmailNoticeForHome(noticeShop, null)).toBeNull();
+    expect(await both()).toEqual([null, false]);
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
     alerts.getMerchantAlertConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
-    expect(await claimGuardEmailNoticeForHome(noticeShop, null)).toBeNull();
+    expect(await both()).toEqual([null, false]);
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
-  it("a lost or failed claim shows nothing", async () => {
-    ledger.claimGuardEmailNoticeShown.mockResolvedValueOnce(false);
-    expect(await claimGuardEmailNoticeForHome(noticeShop, null)).toBeNull();
+  it("a failed claim reports false and never throws", async () => {
     ledger.claimGuardEmailNoticeShown.mockRejectedValueOnce(new Error("db"));
-    expect(await claimGuardEmailNoticeForHome(noticeShop, null)).toBeNull();
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(false);
   });
 
   it("reads the owner email when none is cached; generic copy when unknown", async () => {
     contact.refreshShopAlertEmail.mockResolvedValue("fresh@example.com");
     expect(
-      await claimGuardEmailNoticeForHome(
-        { ...noticeShop, alertEmail: null },
-        {} as AdminApiContext,
-      ),
+      await guardEmailNoticeForHome({ ...noticeShop, alertEmail: null }, {} as AdminApiContext),
     ).toEqual({ email: "fresh@example.com" });
     expect(guardNoticeLead(null)).toContain("your store's owner email address");
     expect(guardNoticeLead("a@b.co")).toMatch(

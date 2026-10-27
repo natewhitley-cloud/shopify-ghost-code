@@ -96,7 +96,8 @@ vi.mock("../../inngest/client", () => ({
 }));
 
 // gc-ol95 collaborators, mocked at their boundaries; the REAL
-// claimSummaryNoticeForHome service runs between them and the loader.
+// summaryNoticeForHome / claimSummaryNoticeRendered services run between them
+// and the loader / action.
 vi.mock("../../app/models/merchant-alert.server", () => ({
   claimSummaryNoticeShown: vi.fn(),
   dismissSummaryNotice: vi.fn(),
@@ -231,9 +232,10 @@ beforeEach(() => {
 });
 
 describe("Home: summary-email notice (gc-ol95)", () => {
-  it("pending -> claimed once on this load -> rendered with the owner email (Professional: weekly)", async () => {
+  it("pending -> offered and rendered with the owner email (Professional: weekly); the loader stamps nothing", async () => {
     const data = await load();
-    expect(claimSummaryNoticeShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+    // gc-1q1s.11: consent is stamped only after render, by the client's post.
+    expect(claimSummaryNoticeShown).not.toHaveBeenCalled();
     expect(data.summaryNotice).toEqual({ email: "owner@example.com", cadence: "weekly" });
 
     const html = renderDashboard(data);
@@ -259,17 +261,11 @@ describe("Home: summary-email notice (gc-ol95)", () => {
     expect(renderDashboard(data)).not.toContain(HEADING);
   });
 
-  it("a concurrent load that loses the claim renders nothing", async () => {
-    mock(claimSummaryNoticeShown).mockResolvedValue(false);
-    const data = await load();
-    expect(data.summaryNotice).toBeNull();
-    expect(renderDashboard(data)).not.toContain(HEADING);
-  });
-
-  it("a failed claim renders nothing and never breaks Home", async () => {
-    mock(claimSummaryNoticeShown).mockRejectedValue(new Error("db down"));
-    const data = await load();
-    expect(data.summaryNotice).toBeNull();
+  it("a second load before the claim lands still offers it (no write on any load)", async () => {
+    await load();
+    const again = await load();
+    expect(again.summaryNotice).not.toBeNull();
+    expect(claimSummaryNoticeShown).not.toHaveBeenCalled();
   });
 
   it("never for a shop already paid before this shipped (nothing pending)", async () => {
@@ -299,11 +295,51 @@ describe("Home: summary-email notice (gc-ol95)", () => {
     expect(data.summaryNotice?.email).toBe("fresh@example.com");
 
     mock(refreshShopAlertEmail).mockResolvedValue(null);
-    mock(claimSummaryNoticeShown).mockResolvedValue(true);
     data = await load({ alertEmail: null });
     expect(renderDashboard(data)).toContain(
       "We&#x27;ll email your store owner email a summary after each weekly scan",
     );
+  });
+});
+
+describe("Home action: summary-notice-shown (gc-1q1s.11)", () => {
+  const shown = () =>
+    action({
+      request: new Request("https://example.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ intent: "summary-notice-shown" }),
+      }),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+  it("claims summaryNoticeShownAt for the SESSION shop and starts no scan", async () => {
+    await expect(shown()).resolves.toEqual({ noticeClaimed: true });
+    expect(getShopMetadata).toHaveBeenCalledWith(DOMAIN);
+    expect(claimSummaryNoticeShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+    expect(dispatchScan).not.toHaveBeenCalled();
+    expect(canStartScan).not.toHaveBeenCalled();
+  });
+
+  it("a double post is safe: the atomic claim stamps once", async () => {
+    mock(claimSummaryNoticeShown).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(shown()).resolves.toEqual({ noticeClaimed: true });
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
+  });
+
+  it("never claims for a shop that does not owe it (already shown, not pending, dark)", async () => {
+    mock(getShopMetadata).mockResolvedValueOnce({ ...SHOP, summaryNoticeShownAt: new Date() });
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
+    mock(getShopMetadata).mockResolvedValueOnce({ ...SHOP, summaryNoticePendingAt: null });
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
+    mock(getMerchantAlertConfigStatus).mockReturnValue({ configured: false, reason: "disabled" });
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
+    expect(claimSummaryNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("a failed claim reports false and never throws", async () => {
+    mock(claimSummaryNoticeShown).mockRejectedValue(new Error("db down"));
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
   });
 });
 
@@ -322,6 +358,11 @@ describe("Home action: dismiss-summary-notice (gc-ol95)", () => {
     await expect(dismiss()).resolves.toEqual({ dismissed: true });
     expect(getShopMetadata).toHaveBeenCalledWith(DOMAIN);
     expect(dismissSummaryNotice).toHaveBeenCalledExactlyOnceWith(SHOP.id);
+    // Dismiss proves it was shown: claimed first, in case it outran the post.
+    expect(claimSummaryNoticeShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+    expect(mock(claimSummaryNoticeShown).mock.invocationCallOrder[0]).toBeLessThan(
+      mock(dismissSummaryNotice).mock.invocationCallOrder[0],
+    );
     expect(dispatchScan).not.toHaveBeenCalled();
     expect(canStartScan).not.toHaveBeenCalled();
   });

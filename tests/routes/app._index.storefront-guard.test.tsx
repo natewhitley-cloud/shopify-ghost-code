@@ -432,15 +432,11 @@ describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
     process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
   };
 
-  it("a paid shop sees the notice once, naming the owner email, with Turn off", async () => {
+  it("a paid shop sees the notice, naming the owner email, with Turn off; the loader stamps nothing", async () => {
     live();
-    mock(claimGuardEmailNoticeShown).mockResolvedValue(true);
     const data = await load();
-    // The claim records which address the notice names (hashed, audit fix).
-    expect(claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
-      DOMAIN,
-      guardConsentHash("owner@example.com"),
-    );
+    // gc-1q1s.11: consent is stamped only after render (the client's post).
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
     const html = renderDashboard(data);
     expect(html).toMatch(/<s-banner[^>]*tone="info"[^>]*heading="Checkout guard alerts are on"/);
     expect(html).toContain("Checkout guard alerts will be emailed to owner@example.com.");
@@ -465,6 +461,56 @@ describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
     live();
     expect((await load({ guardEmailNoticeShownAt: T })).guardEmailNotice).toBeNull();
     expect((await load({ guardEmailOffAt: T })).guardEmailNotice).toBeNull();
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  const post = (body: Record<string, string>) =>
+    action({
+      request: new Request("https://example.com/app", {
+        method: "POST",
+        body: new URLSearchParams(body),
+      }),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+  it("guard-email-notice-shown claims for the SESSION shop with the hash of the address shown", async () => {
+    live();
+    mock(claimGuardEmailNoticeShown).mockResolvedValue(true);
+    await expect(
+      post({ intent: "guard-email-notice-shown", email: "owner@example.com" }),
+    ).resolves.toEqual({ noticeClaimed: true });
+    expect(getShopMetadata).toHaveBeenCalledWith(DOMAIN);
+    expect(claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
+      DOMAIN,
+      guardConsentHash("owner@example.com"),
+    );
+    expect(dispatchScan).not.toHaveBeenCalled();
+  });
+
+  it("a double post is safe: the atomic claim stamps once", async () => {
+    live();
+    mock(claimGuardEmailNoticeShown).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const body = { intent: "guard-email-notice-shown", email: "owner@example.com" };
+    await expect(post(body)).resolves.toEqual({ noticeClaimed: true });
+    await expect(post(body)).resolves.toEqual({ noticeClaimed: false });
+  });
+
+  it("an address other than the one the notice names now is never claimed", async () => {
+    live();
+    await expect(
+      post({ intent: "guard-email-notice-shown", email: "attacker@example.com" }),
+    ).resolves.toEqual({ noticeClaimed: false });
+    await expect(post({ intent: "guard-email-notice-shown" })).resolves.toEqual({
+      noticeClaimed: false,
+    });
+    expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it("dark: the claim is refused", async () => {
+    await expect(
+      post({ intent: "guard-email-notice-shown", email: "owner@example.com" }),
+    ).resolves.toEqual({ noticeClaimed: false });
     expect(claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 

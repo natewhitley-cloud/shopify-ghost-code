@@ -1,14 +1,20 @@
 /**
  * Home's one-time checkout guard email notice (gc-1q1s.7): "Checkout guard
- * alerts will be emailed to <owner email>" with Turn off. The load that wins
- * the guardEmailNoticeShownAt claim renders it, and that stamp is the
- * merchant's consent (Partner Agreement s.2.1.2), like the summary notice.
- * Shown only when guard email can actually be sent to this shop: Standard or
- * Professional, both guard flags on, mail transport configured, not
- * unsubscribed, not turned off. Kept apart from the sender so Home does not
- * import the email builders.
+ * alerts will be emailed to <owner email>" with Turn off. Shown only when
+ * guard email can actually be sent to this shop: Standard or Professional,
+ * both guard flags on, mail transport configured, not unsubscribed, not
+ * turned off. Kept apart from the sender so Home does not import the email
+ * builders.
  *
- * NEVER THROWS: a failed claim shows nothing this load.
+ * Render, then stamp (gc-1q1s.11): the loader only OFFERS the notice
+ * (guardEmailNoticeForHome, no write). Once it is on screen, Home's client
+ * posts "guard-email-notice-shown" from an effect after mount, and the action
+ * claims guardEmailNoticeShownAt (claimGuardEmailNoticeRendered): one atomic
+ * conditional write, so a double post or two tabs stamp once. That stamp is
+ * the merchant's consent (Partner Agreement s.2.1.2), like the summary
+ * notice. A lost response or an unmount before paint stamps nothing.
+ *
+ * NEVER THROWS: a failed read or claim shows or stamps nothing.
  */
 import { createHash } from "node:crypto";
 
@@ -39,32 +45,73 @@ export function guardConsentHash(email: string): string {
   return createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 32);
 }
 
+type NoticeEligibility = Pick<
+  GuardEmailNoticeShop,
+  "plan" | "alertsEnabled" | "guardEmailNoticeShownAt" | "guardEmailOffAt"
+>;
+
+/** Whether the notice may be shown (and claimed) now. No query. */
+function noticeOwed(shop: NoticeEligibility): boolean {
+  if (shop.guardEmailNoticeShownAt || shop.guardEmailOffAt) return false;
+  if (!shop.alertsEnabled || !getPlanFeatures(shop.plan).storefrontGuardEmail) return false;
+  return isStorefrontGuardEmailLive() && getMerchantAlertConfigStatus().configured;
+}
+
+/** The address the notice names: the cached owner email, else a fresh read (null: generic wording). */
+async function noticeEmail(
+  shop: Pick<GuardEmailNoticeShop, "domain" | "alertEmail">,
+  admin: AdminApiContext | null,
+): Promise<string | null> {
+  return shop.alertEmail ?? (admin ? await refreshShopAlertEmail(shop.domain, admin) : null);
+}
+
 /**
- * Home's one-time notice: rendered by the load that wins the claim, only when
- * guard email can actually be sent to this shop. Never throws.
+ * Home's loader: the notice to render, or null. Writes no consent (the
+ * client claims it after render). Never throws.
  */
-export async function claimGuardEmailNoticeForHome(
+export async function guardEmailNoticeForHome(
   shop: GuardEmailNoticeShop,
   admin: AdminApiContext | null,
 ): Promise<{ email: string | null } | null> {
   // The common case (shown, off, Free, dark) issues no query.
-  if (shop.guardEmailNoticeShownAt || shop.guardEmailOffAt) return null;
-  if (!shop.alertsEnabled || !getPlanFeatures(shop.plan).storefrontGuardEmail) return null;
-  if (!isStorefrontGuardEmailLive() || !getMerchantAlertConfigStatus().configured) return null;
+  if (!noticeOwed(shop)) return null;
   try {
-    // The address is read first so the claim records exactly what is shown.
-    const email =
-      shop.alertEmail ?? (admin ? await refreshShopAlertEmail(shop.domain, admin) : null);
-    const claimed = await claimGuardEmailNoticeShown(
-      shop.domain,
-      email ? guardConsentHash(email) : null,
-    );
-    return claimed ? { email } : null;
+    return { email: await noticeEmail(shop, admin) };
+  } catch (err) {
+    logger.warn("guard-email-notice-read-failed", { shop: shop.domain, ...safeErrorFields(err) });
+    return null;
+  }
+}
+
+/** Two notice addresses are the same (trimmed, any case; null only matches null). */
+function sameAddress(a: string | null, b: string | null): boolean {
+  return (a?.trim().toLowerCase() || null) === (b?.trim().toLowerCase() || null);
+}
+
+/**
+ * Home's action, posted by the client once the notice is on screen: stamp
+ * guardEmailNoticeShownAt (the consent) with the hash of the address shown.
+ * Re-checks every gate on the session shop's row, and claims only when
+ * `shownEmail` (what the page displayed; null for the generic wording) is the
+ * address the notice names now, so consent never covers an address the
+ * merchant did not see (the next load shows the current one). Atomic: of any
+ * number of posts exactly one returns true. Never throws.
+ */
+export async function claimGuardEmailNoticeRendered(
+  shop: GuardEmailNoticeShop,
+  shownEmail: string | null,
+  admin: AdminApiContext | null,
+): Promise<boolean> {
+  if (!noticeOwed(shop)) return false;
+  try {
+    const email = await noticeEmail(shop, admin);
+    if (!sameAddress(email, shownEmail)) return false;
+    return await claimGuardEmailNoticeShown(shop.domain, email ? guardConsentHash(email) : null);
   } catch (err) {
     logger.warn("guard-email-notice-claim-failed", {
       shop: shop.domain,
       ...safeErrorFields(err),
     });
-    return null;
+    return false;
   }
 }
