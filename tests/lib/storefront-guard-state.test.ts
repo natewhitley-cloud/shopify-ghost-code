@@ -581,7 +581,8 @@ describe("SCRIPT_LOADER caps (wave 4 H1)", () => {
     const kept = fps(out);
     expect(kept.slice(0, 2)).toEqual([MAL.fingerprint, MAL.fingerprint]);
     expect(new Set(kept.filter((f) => f.startsWith("SCRIPT_LOADER:"))).size).toBe(50);
-    expect(out.outcome === "ok" && out.unread).toHaveLength(40_000 - 50);
+    const unread = out.outcome === "ok" ? (out.unread ?? []) : [];
+    expect(unread.filter((f) => f.startsWith("SCRIPT_LOADER:"))).toHaveLength(40_000 - 50);
   });
 
   it("is deterministic: the same page keeps the same loaders in any order", () => {
@@ -670,6 +671,84 @@ describe("SCRIPT_LOADER caps (wave 4 H1)", () => {
     expect(out.outcome === "ok" && out.hosts.map((h) => h.host)).toEqual(
       sightings.slice(0, 50).map((s) => s.host),
     );
+  });
+
+  const openRow = (fingerprint: string, h: string, over: Partial<GuardIncident> = {}) =>
+    ({
+      kind: fingerprint.startsWith("NEW_SCRIPT_HOST:") ? "NEW_SCRIPT_HOST" : "SCRIPT_LOADER",
+      fingerprint,
+      host: h,
+      page: "home",
+      sourceLabel: "x",
+      state: "open",
+      openedAt: T0,
+      firstSeenAt: T0,
+      lastSeenAt: T0,
+      seenCount: 2,
+      cleanStreak: 0,
+      resolvedAt: null,
+      resolution: null,
+      acknowledgedAt: null,
+      emailedOpenedAt: null,
+      ...over,
+    }) satisfies GuardIncident as GuardIncident;
+
+  it("a dropped loader's host keeps its open NEW_SCRIPT_HOST incident open (not clean)", () => {
+    const sightings = flood(60);
+    const droppedHost = loaderAt(59).host!;
+    const fp = newHostFingerprint(droppedHost);
+    let state = learned();
+    const incidents = new Map([[fp, openRow(fp, droppedHost)]]);
+    for (let n = 0; n < 3; n++) {
+      const raw: GuardCheckInput = {
+        outcome: "ok",
+        complete: true,
+        sightings,
+        hosts: sightings.map((s) => host(s.host!)),
+      };
+      const capped = capGuardSightings(raw, [...incidents.values()]).input;
+      const r = applyGuardCheck(state, [...incidents.values()], capped, at((n + 1) * HOUR));
+      state = r.state;
+      for (const i of r.changed) incidents.set(i.fingerprint, i);
+    }
+    expect(incidents.get(fp)!.state).toBe("open");
+    expect(incidents.get(fp)!.cleanStreak).toBe(0);
+  });
+
+  it("a dropped loader's host that a kept sighting covers is not unread as a new host", () => {
+    // A second fingerprint on loaderAt(0)'s host sorts last and is dropped;
+    // loaderAt(0) itself is kept, so that host is read (as uncapped).
+    const extra = { ...loaderAt(0), fingerprint: "SCRIPT_LOADER:zzz" };
+    const out = capGuardSightings(ok({ sightings: [...flood(60), extra] }), []).input;
+    const unread = out.outcome === "ok" ? (out.unread ?? []) : [];
+    expect(unread).toContain(extra.fingerprint);
+    expect(unread.filter((f) => f.startsWith("NEW_SCRIPT_HOST:"))).toEqual(
+      flood(60)
+        .slice(50)
+        .map((s) => newHostFingerprint(s.host!)),
+    );
+  });
+
+  it("open loaders that resolve on this check free their live slots for a new loader", () => {
+    // 50 open loaders one clean check from resolving; a new checkout loader appears.
+    const rows = flood(50).map((s) => openRow(s.fingerprint, s.host!, { cleanStreak: 1 }));
+    const fresh = loaderAt(90_000, { region: "checkout" });
+    const r = applyGuardCheck(learned(), rows, ok({ sightings: [fresh] }), at(HOUR));
+    expect(r.droppedLoaders).toBe(0);
+    expect(r.changed.find((i) => i.fingerprint === fresh.fingerprint)?.state).toBe("pending");
+    const live = r.changed.filter((i) => i.kind === "SCRIPT_LOADER" && i.state !== "resolved");
+    expect(live.map((i) => i.fingerprint)).toEqual([fresh.fingerprint]);
+  });
+
+  it("open loaders that stay open (streak not complete, or a partial check) still hold their slots", () => {
+    const fresh = loaderAt(90_000, { region: "checkout" });
+    const notYet = flood(50).map((s) => openRow(s.fingerprint, s.host!, { cleanStreak: 0 }));
+    expect(
+      applyGuardCheck(learned(), notYet, ok({ sightings: [fresh] }), at(HOUR)).droppedLoaders,
+    ).toBe(1);
+    const due = flood(50).map((s) => openRow(s.fingerprint, s.host!, { cleanStreak: 1 }));
+    const partial = ok({ sightings: [fresh], complete: false });
+    expect(applyGuardCheck(learned(), due, partial, at(HOUR)).droppedLoaders).toBe(1);
   });
 
   it("never more than MAX_LIVE_SCRIPT_LOADERS live loader incidents per shop; KNOWN_MALICIOUS still opens", () => {

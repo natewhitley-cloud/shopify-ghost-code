@@ -345,14 +345,26 @@ export function applyGuardCheck(
   }
 
   // --- Apply sightings --------------------------------------------------------
-  // Live SCRIPT_LOADER rows after this check: open ones, and pending ones seen
-  // again (a pending row not seen lapses below). A new one past
-  // MAX_LIVE_SCRIPT_LOADERS is not created (wave 4 H1); KNOWN_MALICIOUS and
-  // existing loader episodes are never held back.
+  // Live SCRIPT_LOADER rows after this check: open ones that do not resolve
+  // below, and pending ones seen again (a pending row not seen lapses below).
+  // A new one past MAX_LIVE_SCRIPT_LOADERS is not created (wave 4 H1);
+  // KNOWN_MALICIOUS and existing loader episodes are never held back.
+  const cleanCheck = check.complete || homeAuthoritative;
   let liveLoaders = 0;
   for (const i of byFingerprint.values()) {
     if (i.kind !== "SCRIPT_LOADER") continue;
-    if (i.state === "open" || (i.state === "pending" && seen.has(i.fingerprint))) liveLoaders++;
+    const isSeen = seen.has(i.fingerprint);
+    if (i.state === "pending" && isSeen) liveLoaders++;
+    if (i.state !== "open") continue;
+    // Mirrors the clean-streak pass: an unseen, unread open row whose streak
+    // completes on this check resolves, so its slot is free.
+    const resolvesNow =
+      cleanCheck &&
+      !isSeen &&
+      !unread.has(i.fingerprint) &&
+      (check.complete || i.page !== "cart") &&
+      i.cleanStreak + 1 >= RESOLVE_CLEAN_CHECKS;
+    if (!resolvesNow) liveLoaders++;
   }
   for (const [fp, s] of seen) {
     const existing = byFingerprint.get(fp);
@@ -425,7 +437,9 @@ const REGION_RANK = { checkout: 0, menu: 1 } as const;
  *      reason's second);
  *   4. fingerprint.
  * Dropped fingerprints go to `unread` (their incidents are neither seen nor
- * clean), and their hosts leave `hosts` (never a new-host candidate instead).
+ * clean), and their hosts leave `hosts` (never a new-host candidate instead)
+ * and, unless a kept sighting covers them, their NEW_SCRIPT_HOST fingerprints
+ * go to `unread` too (an open new-host incident there is not read as clean).
  */
 export function capGuardSightings(
   input: GuardCheckInput,
@@ -482,6 +496,18 @@ export function capGuardSightings(
       .filter((s) => !kept.has(s.fingerprint) && s.host !== null)
       .map((s) => s.host as string),
   );
+  // A dropped host no kept sighting covers is unread as a new host too: its
+  // open NEW_SCRIPT_HOST incident is neither seen nor clean (it would
+  // otherwise count this check clean and falsely resolve).
+  const keptHosts = new Set(
+    [...malicious, ...loaderSightings.filter((s) => kept.has(s.fingerprint))]
+      .map((s) => s.host)
+      .filter((h): h is string => h !== null),
+  );
+  const unreadHosts = [...droppedHosts]
+    .filter((h) => !keptHosts.has(h))
+    .sort()
+    .map(newHostFingerprint);
   return {
     input: {
       ...input,
@@ -492,7 +518,7 @@ export function capGuardSightings(
           .sort((a, b) => position.get(a.fingerprint)! - position.get(b.fingerprint)!),
       ],
       hosts: input.hosts.filter((h) => !droppedHosts.has(h.host)),
-      unread: [...(input.unread ?? []), ...dropped],
+      unread: [...(input.unread ?? []), ...dropped, ...unreadHosts],
     },
     droppedLoaders: dropped.length,
   };
