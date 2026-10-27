@@ -1,6 +1,21 @@
-## Session Handoff: 2026-10-27, gc-7gjj (menu injection) + gc-1q1s (checkout guard Tier 1) integrated
+## Session Handoff: 2026-10-27, menu injection + checkout guard LIVE
 
-### RESUME HERE
+### RESUME HERE (updated 2026-10-27 ~16:00Z; nothing in flight)
+- **Prod = main 6584fb4** (Deploy run 40522563623, re-run after flag changes; smoke SHA-pinned green). Rollback code: redeploy b666948 / 92d0700 (all migrations additive).
+- **LIVE flags (Railway prod):** MENU_INJECTION_LIVE_ENABLED=true (~13:45Z), STOREFRONT_GUARD_LIVE_ENABLED=true + STOREFRONT_GUARD_EMAIL_ENABLED=true (~14:41Z), RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED=true (since 10-20). MENU_LABEL_SIGNAL_ENABLED still unset (gc-7gjj.2 dark data; set it to start the 2-week count for gc-7gjj.3).
+  Guard rollback = unset the two STOREFRONT_GUARD_* flags, then `gh run rerun <latest Deploy run>` (a Railway var change redeploys WITHOUT .deploy-sha, so smoke SHA reads null until the GH Deploy is re-run).
+- **Sidekick:** ghostcode-13 released (instructions guardrails for menu findings + liveStoreAlerts). Rollback: `shopify app release --version=ghostcode-12 --allow-updates`.
+- **Legal:** data-integrity-suite 7cf063b (menus) + 64be32e (guard), both effective Oct 27 2026, live at legal.alpenglowsoftware.com/ghost-code/.
+- **Resend:** click tracking was ON for notify.alpenglowsoftware.com (contradicted the policy); Nathan turned it OFF 10-27. Confirm by hovering links in the next GhostCode email (must not point at a Resend click domain).
+- **First guard run 15:17Z:** 11 due, 4 ok, 5 paused_password, 2 unreachable:http_status (challenged=false), 0 incidents/emails/errors, ~2,160 Inngest steps/month projected (Inngest ~55% used per Nathan).
+- **Scheduled:** local one-shot launchd `com.alpenglow.ghostcode-guard-24h` at 2026-10-28 08:30 MDT runs ~/shopify/ops-oneshots/guard-24h/run.sh: 24h guard review -> ops/daily-review/reports/2026-10-28-guard.md (line 1 GUARD OK / GUARD NEEDS NATHAN), note on gc-1q1s.1, macOS notification, then removes itself. If the Mac was off, run the script by hand.
+- **Open beads:** gc-1q1s.1 (24h review result), gc-1q1s.8 (Tier 2 spike), gc-7gjj.3 (blocked on MENU_LABEL_SIGNAL data), parents gc-7gjj / gc-1q1s.
+- **Dev store facts (gc-7gjj.5, gc-1q1s.1):** Admin API stores raw HTML in menu titles; menus query cost req 30/actual 5 at first=50; nw-dev-store-2 theme "test-data" (Dawn-derived) escapes header titles but sections/footer.liquid:91 prints link.title raw; empty /cart renders no checkout button.
+- **Release 2** (~/shopify/gc-rrh4, feat/gc-rrh4-change-log) still needs a rebase on current main before slice 3; its 10-20 handoff is untracked at ~/shopify/gc-rrh4/memory/handoff-2026-10-20-release2-batch.md.
+
+### Earlier (integration, pre-push) notes below
+
+### (superseded) integration state
 - **Branch `integ/gc-7gjj-gc-1q1s` (~/shopify/gc-integ), head 3680ece, NOT pushed.** Built on fix/gc-dr7a-cartassure
   (56a484b: cartassure.top + 17TRACK advisory, also unpushed). Push to main = prod deploy (Nathan's go).
   36 commits on 56a484b, 127 files. Gate on 3680ece: lint/format/typecheck/build 0; 280 files / 11,248 tests.
