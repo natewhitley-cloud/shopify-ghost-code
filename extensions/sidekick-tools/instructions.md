@@ -1,6 +1,6 @@
 ## When to use these tools
 
-- Use `get_latest_scan_summary` when the merchant asks what GhostCode found in their theme, how much leftover code their theme has, what to fix first, whether their theme has malicious code, whether an app in their theme was named in a security incident, how healthy their theme is, or which apps left code behind.
+- Use `get_latest_scan_summary` when the merchant asks whether their checkout or live store looks safe, what GhostCode found in their theme, how much leftover code their theme has, what to fix first, whether their theme has malicious code, whether an app in their theme was named in a security incident, how healthy their theme is, or which apps left code behind.
 - Use `get_speed_summary` when the merchant asks how fast their store loads, their speed score, which apps slow their store down, or what their latest speed test found.
 
 ## Guidelines
@@ -12,11 +12,12 @@
 - `topFindings` are the findings GhostCode suggests starting with, in its order. Each has an `impact` area, a `location` in the theme, and a `description` of what it costs.
 - `maliciousCode` lists known malicious code. When `found` is above 0, say so first and plainly, give each listed location, and tell the merchant to open the scan in GhostCode to remove it. If `moreNotListed` is true, say more were found than are listed.
 - `appSecurityAdvisories` counts apps in the theme that a public security incident report names; such a finding in `topFindings` has the `impact` "Security advisory", and `themeHealth.verdict` then says "An app named in a security incident is in your theme." When the count is above 0, say so first (right after any malicious code). State only the facts given: the app is in the theme, and a public incident report names it. Never say or suggest the store was hacked, breached or affected, and never add incident details (dates, what happened, who reported it) that are not in the result. Use the finding's own `description` and tell the merchant to open the scan in GhostCode to see what to check.
+- `liveStoreAlerts` lists what GhostCode's checkout guard saw on the live store right now (it can come with a `no_data` status too, before any scan has completed). When it is not empty, say so first, together with any `maliciousCode`. For each alert, give its `summary`, where it was seen (`seenOn`) and when it was first and last seen, then its `description`, which ends with what to do first; tell the merchant to open GhostCode to see the details. State only what GhostCode saw: never say or suggest the store or checkout was hacked, hijacked or breached, and never say customers or orders were affected. Never add hosts, steps or details that are not in the result.
 - `themeHealth.verdict` is GhostCode's one-sentence theme health verdict. GhostCode gives no health score, grade or percentage; never make one up. `cleanChecks` came back clean; `checksNotFullyRun` did not fully run, with the reason.
 - If `newerScanInProgress` is true, say a newer scan is running and this summary is from the scan before it.
 - The speed summary uses the values as GhostCode shows them ("4.2 s", "621 KB", "62 / 100"). "Not available" or "Not measured" means the test did not report that value; never say it is 0.
 - In the speed summary, `reportType` "free_test" is the store's one free homepage test; describe what `scope` says it covers. `costliestApps` are the apps that cost a page the most processing time, costliest first. Give the `caveat` when naming apps. If `latestRun` is set, a newer test has no results yet; give its `message`.
-- If the status is `no_data`, give the `message`. A password-protected storefront (`reason` "password_protected") cannot be tested; say so.
+- If the status is `no_data`, give the `message` (and any `liveStoreAlerts` first, as above). A password-protected storefront (`reason` "password_protected") cannot be tested; say so.
 - If the status is `error`, say GhostCode could not provide the data right now.
 - If the status is `not_available_on_plan`, give the `message` plainly. Do not suggest changing plans.
 - Include the `url` from the result so the merchant can open the matching page in GhostCode.

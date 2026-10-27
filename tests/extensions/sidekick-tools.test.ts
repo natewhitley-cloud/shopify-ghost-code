@@ -127,6 +127,18 @@ describe("extensions/sidekick-tools", () => {
     expect(line).toMatch(/never add incident details .* not in the result/);
   });
 
+  it("explains liveStoreAlerts (checkout guard): first, what GhostCode saw, never hacked or hijacked", () => {
+    const line = instructions.split("\n").find((l) => l.includes("`liveStoreAlerts` lists")) ?? "";
+    expect(line).toContain("say so first");
+    expect(line).toContain("`no_data`");
+    expect(line).toMatch(/`summary`.*`seenOn`.*`description`/);
+    expect(line).toContain("State only what GhostCode saw");
+    expect(line).toMatch(
+      /never say or suggest the store or checkout was hacked, hijacked or breached/,
+    );
+    expect(line).toMatch(/Never add hosts, steps or details that are not in the result/);
+  });
+
   it("adds a one-sentence [sidekick] extensions_summary to shopify.app.toml", () => {
     expect(sidekickSummary).toMatch(/^\s*extensions_summary = "[^"]+"\s*$/);
   });

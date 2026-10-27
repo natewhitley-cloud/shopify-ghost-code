@@ -788,6 +788,43 @@ describe("getSidekickScanSummary: checkout guard incidents (gc-1q1s.6)", () => {
     expect(loadGuardHome).not.toHaveBeenCalled();
   });
 
+  it("no completed scan: the alerts still come with the no_data message", async () => {
+    process.env[FLAG] = "true";
+    setLatest([]);
+    mockCompleted.mockResolvedValue([]);
+    vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [incident()], status: null });
+    const r = await getSidekickScanSummary(admin, "a.myshopify.com");
+    expect(r).toEqual({
+      status: "no_data",
+      message: NO_SCANS_MESSAGE,
+      liveStoreAlerts: [expect.objectContaining({ kind: "Known malicious code" })],
+    });
+
+    setLatest([{ id: "s0", status: "IN_PROGRESS" }]);
+    const running = await getSidekickScanSummary(admin, "a.myshopify.com");
+    expect(running).toMatchObject({ message: FIRST_SCAN_RUNNING_MESSAGE });
+    expect(running.status === "no_data" && running.liveStoreAlerts).toHaveLength(1);
+  });
+
+  it("no completed scan and no incident (or guard dark): the plain no_data answer", async () => {
+    setLatest([]);
+    mockCompleted.mockResolvedValue([]);
+    vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [incident()], status: null });
+    expect(await getSidekickScanSummary(admin, "a.myshopify.com")).toEqual({
+      status: "no_data",
+      message: NO_SCANS_MESSAGE,
+    });
+    process.env[FLAG] = "true";
+    vi.mocked(loadGuardHome).mockResolvedValue({
+      incidents: [incident({ kind: "NEW_SCRIPT_HOST", domain: null })],
+      status: null,
+    });
+    expect(await getSidekickScanSummary(admin, "a.myshopify.com")).toEqual({
+      status: "no_data",
+      message: NO_SCANS_MESSAGE,
+    });
+  });
+
   it("caps the list for the response budget", async () => {
     process.env[FLAG] = "true";
     serveScan([f("a1", "GHOST_SCRIPT", "HIGH")]);

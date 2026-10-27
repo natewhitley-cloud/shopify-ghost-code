@@ -116,7 +116,16 @@ export type SidekickThemeHealth = {
 };
 
 export type SidekickScanSummary =
-  | { status: "no_data"; message: string }
+  | {
+      status: "no_data";
+      message: string;
+      /**
+       * Open checkout guard incidents (gc-1q1s.6): the guard checks the live
+       * store whether or not a theme scan has completed, so they are listed
+       * here too. Present only when there is at least one.
+       */
+      liveStoreAlerts?: SidekickLiveStoreAlert[];
+    }
   | {
       status: "ok";
       scanDate: string;
@@ -234,13 +243,18 @@ export async function getSidekickScanSummary(
   if (!shop) return { status: "no_data", message: NO_SCANS_MESSAGE };
 
   const { latestScan, scan } = await readScan(shop.id);
-  if (!latestScan) return { status: "no_data", message: NO_SCANS_MESSAGE };
+  // No completed scan: still report what the checkout guard saw on the live
+  // store (it never depends on a theme scan).
+  const noData = async (message: string): Promise<SidekickScanSummary> => {
+    const liveStoreAlerts = await readLiveStoreAlerts(shop);
+    return liveStoreAlerts.length > 0
+      ? { status: "no_data", message, liveStoreAlerts }
+      : { status: "no_data", message };
+  };
+  if (!latestScan) return noData(NO_SCANS_MESSAGE);
   const latestIsRunning = latestScan.status === "PENDING" || latestScan.status === "IN_PROGRESS";
   if (!scan || !scan.completedAt || !isSuccessfulScan(scan.status)) {
-    return {
-      status: "no_data",
-      message: latestIsRunning ? FIRST_SCAN_RUNNING_MESSAGE : NO_COMPLETED_SCAN_MESSAGE,
-    };
+    return noData(latestIsRunning ? FIRST_SCAN_RUNNING_MESSAGE : NO_COMPLETED_SCAN_MESSAGE);
   }
 
   const features = getPlanFeatures(shop.plan);
