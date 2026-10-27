@@ -30,7 +30,13 @@ import { isHomepageMaliciousFinding } from "../lib/finding-classification";
 import { isAdvisoryEmbedFinding } from "../lib/finding-remediation";
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
-import type { AdvisoryRisk, MaliciousRisk, MenuRisk, SecurityRisk } from "../lib/security-risk";
+import type {
+  AdvisoryRisk,
+  MaliciousRisk,
+  MenuRisk,
+  MenuRiskItem,
+  SecurityRisk,
+} from "../lib/security-risk";
 import { getFindingsForScan } from "../models/finding.server";
 
 /** The stored finding fields the builder reads. */
@@ -98,19 +104,23 @@ function advisoryRisk(
 }
 
 /**
- * A MENU_INJECTION finding's banner (gc-7gjj.1), from its stored snippet: the
- * first line is the menu path, the second what was seen (both written by the
- * detector, bounded).
+ * One MENU_INJECTION finding as a banner item (gc-7gjj.1), from its stored
+ * snippet: the first line is the menu path, the second what was seen (both
+ * written by the detector, bounded).
  */
-function menuRisk(finding: SecurityRiskSourceFinding): MenuRisk {
+function menuRiskItem(finding: SecurityRiskSourceFinding): MenuRiskItem {
   const [menuPath = "", seenAs = ""] = (finding.codeSnippet ?? "").split("\n");
   return {
-    kind: "menu",
     finding: { id: finding.id, filename: finding.filename, lineNumber: finding.lineNumber },
-    menuPath: menuPath.trim() || "a menu",
+    menuPath: menuPath.trim() || "A menu",
     seenAs: seenAs.trim() || null,
-    description: finding.description,
   };
+}
+
+/** The menu a MENU_INJECTION locator names (`menus/{menuId}/items/...`); the filename when malformed. */
+function menuKey(filename: string): string {
+  const match = /^menus\/([^/]+)\/items\//.exec(filename);
+  return match ? `menu:${match[1]}` : `finding:${filename}`;
 }
 
 /**
@@ -182,18 +192,37 @@ export function buildSecurityRisks(
 ): SecurityRisk[] {
   const advisoryList = lists.advisories ?? APP_INCIDENT_ADVISORIES;
   const domainList = lists.domains ?? KNOWN_MALICIOUS_DOMAINS;
+  // Menu findings group into one banner per menu (deferred LOW, gc-7gjj.1),
+  // placed where that menu's first item was in the order given.
+  const menus = new Map<string, MenuRisk>();
+  const ownSection: SecurityRisk[] = [];
+  for (const f of input.advisories) {
+    if (f.findingType === "MENU_INJECTION") {
+      const key = menuKey(f.filename);
+      const item = menuRiskItem(f);
+      const existing = menus.get(key);
+      if (existing) {
+        existing.items.push(item);
+        continue;
+      }
+      const risk: MenuRisk = {
+        kind: "menu",
+        finding: item.finding,
+        items: [item],
+        description: f.description,
+      };
+      menus.set(key, risk);
+      ownSection.push(risk);
+    } else if (f.findingType === "APP_INCIDENT_ADVISORY") {
+      ownSection.push(advisoryRisk(f, input.now, advisoryList));
+    }
+  }
   return [
     ...maliciousRisks(
       input.malicious.filter((f) => f.findingType === "MALICIOUS_SCRIPT"),
       domainList,
     ),
-    ...input.advisories.flatMap((f): SecurityRisk[] => {
-      if (f.findingType === "MENU_INJECTION") return [menuRisk(f)];
-      if (f.findingType === "APP_INCIDENT_ADVISORY") {
-        return [advisoryRisk(f, input.now, advisoryList)];
-      }
-      return [];
-    }),
+    ...ownSection,
   ];
 }
 

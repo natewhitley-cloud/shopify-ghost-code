@@ -18,7 +18,10 @@
  *   - Advisory: honours ignores, like the scan page's old advisory section. An
  *     ignored advisory has no banner, and is not counted as a security risk.
  *   - Menu (gc-7gjj.1): honours ignores the same way (an `onclick` in a label
- *     can be on purpose), one banner per menu item.
+ *     can be on purpose), one banner per MENU listing its items (deferred
+ *     LOW). The menu path and excerpt are attacker-controlled text: they are
+ *     never put inside a GhostCode sentence (gc-7gjj.6). The copy below only
+ *     LEADS to them; SecurityRiskBanner renders them apart, as quoted code.
  *   - Malicious: shown whether or not it was ignored, like the scan page's
  *     security alert has always been (ignoring it does not take the code out
  *     of the theme). Counted the way each surface already counts it: Home's
@@ -96,19 +99,47 @@ export interface MaliciousRisk {
 }
 
 /**
- * Code in one navigation menu item's label or link (one MENU_INJECTION
- * finding, gc-7gjj.1). Built from the stored finding only: the menu path and
- * the bounded excerpt are its snippet's two lines.
+ * One menu item with code (one MENU_INJECTION finding, gc-7gjj.1). Built
+ * from the stored finding only: the menu path and the bounded excerpt are its
+ * snippet's two lines. Both are attacker-controlled (shown apart, never in a
+ * sentence).
  */
-export interface MenuRisk {
-  kind: "menu";
+export interface MenuRiskItem {
   finding: SecurityRiskFinding;
   /** "Main menu > Shop", the snippet's first line. */
   menuPath: string;
   /** "Label: <img src=x onerror=...>", the snippet's second line, or null. */
   seenAs: string | null;
-  /** The stored description (what kind of code, fixed wording). */
+}
+
+/**
+ * Code in one navigation menu: its MENU_INJECTION findings, grouped by menu
+ * (deferred LOW, gc-7gjj.1), in the order given. `finding` and `description`
+ * are the first item's (the banner's anchor, the one-item wording).
+ */
+export interface MenuRisk {
+  kind: "menu";
+  finding: SecurityRiskFinding;
+  items: MenuRiskItem[];
+  /** The first item's stored description (what kind of code, fixed wording). */
   description: string;
+}
+
+/** A menu banner lists at most this many items, then "And K more in this menu." */
+export const MENU_RISK_ITEMS_SHOWN = 5;
+
+/** The items a menu banner lists (at most `limit`) and how many it leaves out. */
+export function menuRiskItemsShown(
+  risk: MenuRisk,
+  limit: number = MENU_RISK_ITEMS_SHOWN,
+): { shown: MenuRiskItem[]; more: number } {
+  const shown = risk.items.slice(0, Math.max(0, limit));
+  return { shown, more: risk.items.length - shown.length };
+}
+
+/** The line under a capped item list. */
+export function menuRiskMoreLine(more: number): string {
+  return `And ${more} more in this menu.`;
 }
 
 export type SecurityRisk = AdvisoryRisk | MaliciousRisk | MenuRisk;
@@ -133,12 +164,21 @@ export function securityRiskAnchorId(risk: SecurityRisk): string {
   return `security-risk-${risk.findings[0].id}`;
 }
 
-/** The menu banner's title (gc-7gjj.1). */
+/** The menu banner's title (gc-7gjj.1), for one item. */
 export const MENU_RISK_TITLE = "A menu item in your store contains code";
+
+/** The menu banner's title for several items in one menu. */
+export function menuRiskTitle(count: number): string {
+  return count <= 1 ? MENU_RISK_TITLE : `${count} items in one of your store's menus contain code`;
+}
+
+/** Several items' facts (the first item's description names one item only). */
+export const MENU_RISK_GROUP_FACTS =
+  "Labels or links in this menu contain code. Apps and staff can edit menus; in October 2026 a compromised app used menu labels to load code into storefronts.";
 
 /** The banner's title. Names the app, or the domain. */
 export function securityRiskTitle(risk: SecurityRisk): string {
-  if (risk.kind === "menu") return MENU_RISK_TITLE;
+  if (risk.kind === "menu") return menuRiskTitle(risk.items.length);
   if (risk.kind === "malicious") {
     const what = risk.domain ? `${risk.domain}, a domain` : "a domain";
     if (risk.seenIn === "homepage")
@@ -174,9 +214,10 @@ function speedPagesLabel(pages: ReadonlyArray<"home" | "product">): string {
 /** What GhostCode found (in the theme, on the homepage, the speed test, or a menu). */
 export function securityRiskFound(risk: SecurityRisk): string {
   if (risk.kind === "menu") {
-    return risk.seenAs
-      ? `GhostCode found it in ${risk.menuPath}. ${risk.seenAs}`
-      : `GhostCode found it in ${risk.menuPath}.`;
+    // Only a lead: the items themselves follow as quoted code (gc-7gjj.6).
+    return risk.items.length === 1
+      ? "GhostCode found it in this menu item:"
+      : "GhostCode found it in these menu items:";
   }
   if (risk.kind === "malicious") {
     const what = risk.domain ?? "it";
@@ -219,7 +260,8 @@ function sentenceEnd(text: string): string {
 /** The banner's body: the source's facts, what GhostCode found, and what to do. */
 export function securityRiskBody(risk: SecurityRisk): string {
   if (risk.kind === "menu") {
-    return `${sentenceEnd(risk.description)} ${securityRiskFound(risk)} Whether it runs depends on how your theme shows menu labels, so remove it now.`;
+    const facts = risk.items.length === 1 ? sentenceEnd(risk.description) : MENU_RISK_GROUP_FACTS;
+    return `${facts} Whether it runs depends on how your theme shows menu labels, so remove it now. ${securityRiskFound(risk)}`;
   }
   if (risk.kind === "malicious") {
     // The note's grammar varies by entry ("lookalike of ...", "sold in 2024

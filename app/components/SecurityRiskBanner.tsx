@@ -3,6 +3,9 @@ import { Link } from "react-router";
 
 import { FormattedDate } from "./FormattedDate";
 import {
+  MENU_RISK_ITEMS_SHOWN,
+  menuRiskItemsShown,
+  menuRiskMoreLine,
   SECURITY_RISK_LABEL,
   SECURITY_RISK_PLAN_NOTE,
   SEE_WHAT_TO_CHECK,
@@ -11,6 +14,8 @@ import {
   securityRiskDateWords,
   securityRiskSourceLabel,
   securityRiskTitle,
+  type MenuRisk,
+  type MenuRiskItem,
   type SecurityRisk,
 } from "../lib/security-risk";
 import {
@@ -75,6 +80,58 @@ const actions: React.CSSProperties = {
   gap: "8px 16px",
 };
 
+const quoted: React.CSSProperties = {
+  display: "block",
+  fontSize: "13px",
+  lineHeight: "19px",
+  color: TEXT_PRIMARY,
+  whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere",
+};
+
+/**
+ * A menu banner's items (gc-7gjj.6): the menu path and the excerpt are text
+ * from the store's menus (attacker-controlled), so each item sits in its own
+ * boxed code block, apart from GhostCode's sentences, never inside one. React
+ * escapes it; the detector capped its length. At most `limit` items, then
+ * "And K more in this menu." `itemFooter` adds a control under an item (the
+ * scan page's Ignore); `anchors` gives every item after the first the
+ * `finding-{id}` anchor (the banner itself carries the first item's).
+ */
+function MenuRiskItems({
+  risk,
+  limit,
+  anchors,
+  itemFooter,
+}: {
+  risk: MenuRisk;
+  limit: number;
+  anchors: boolean;
+  itemFooter?: (item: MenuRiskItem) => ReactNode;
+}) {
+  const { shown, more } = menuRiskItemsShown(risk, limit);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "8px", minWidth: 0 }}>
+      {shown.map((item, i) => (
+        <s-box
+          key={item.finding.id}
+          id={anchors && i > 0 ? `finding-${item.finding.id}` : undefined}
+          padding="small"
+          background="base"
+          border-width="base"
+          border-color="base"
+          border-radius="base"
+        >
+          <code style={quoted}>{item.menuPath}</code>
+          {item.seenAs && <code style={quoted}>{item.seenAs}</code>}
+          {itemFooter?.(item)}
+        </s-box>
+      ))}
+      {more > 0 && <p style={{ ...facts, margin: 0 }}>{menuRiskMoreLine(more)}</p>}
+    </div>
+  );
+}
+
 /**
  * Security risk banner (gc-q5z8): ONE banner per app named in a security
  * incident (an APP_INCIDENT_ADVISORY finding) and per known malicious domain
@@ -93,6 +150,10 @@ const actions: React.CSSProperties = {
  *   - The source link opens the developer's statement (or the report) in a new
  *     tab; there is none for malicious code, or once an entry has expired.
  *   - `footer` sits under everything (the scan page's Ignore control).
+ *   - A menu banner (gc-7gjj.1) lists its items as quoted code under the
+ *     facts (MenuRiskItems): up to MENU_RISK_ITEMS_SHOWN by default, or
+ *     `menuItemsLimit`; the scan page lists all, each with its own Ignore
+ *     (`menuItemFooter`).
  *
  * Accessibility: a labelled region whose name is the title; the warning sign
  * is decorative. The scan page gives it the anchor Home links to.
@@ -105,6 +166,8 @@ export function SecurityRiskBanner({
   children,
   actions: extraActions,
   footer,
+  menuItemsLimit = MENU_RISK_ITEMS_SHOWN,
+  menuItemFooter,
 }: {
   risk: SecurityRisk;
   /** When the scan (or, for a speed-test hit, the speed test) that found it ran. */
@@ -116,6 +179,10 @@ export function SecurityRiskBanner({
   children?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
+  /** Menu banners: how many items to list (default MENU_RISK_ITEMS_SHOWN). */
+  menuItemsLimit?: number;
+  /** Menu banners: a control under each item (the scan page's Ignore). */
+  menuItemFooter?: (item: MenuRiskItem) => ReactNode;
 }) {
   const id = securityRiskAnchorId(risk);
   const headingId = `${id}-title`;
@@ -133,6 +200,14 @@ export function SecurityRiskBanner({
           {securityRiskTitle(risk)}
         </h2>
         <p style={facts}>{securityRiskBody(risk)}</p>
+        {risk.kind === "menu" && (
+          <MenuRiskItems
+            risk={risk}
+            limit={menuItemsLimit}
+            anchors={anchor}
+            itemFooter={menuItemFooter}
+          />
+        )}
         {children}
         {(checkHref || extraActions || (sourceLabel && sourceUrl)) && (
           <div style={actions}>

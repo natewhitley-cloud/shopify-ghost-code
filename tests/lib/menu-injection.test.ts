@@ -36,6 +36,8 @@ import { SKIPPABLE_CATEGORY_INFO, skippedCategoryLabels } from "../../app/lib/op
 import {
   countKeptSecurityRisks,
   homeRiskSummaryLine,
+  MENU_RISK_GROUP_FACTS,
+  MENU_RISK_ITEMS_SHOWN,
   MENU_RISK_TITLE,
   securityRiskAnchorId,
   securityRiskBody,
@@ -185,18 +187,28 @@ describe("Security risk banner", () => {
   const [risk] = buildSecurityRisks({ advisories: [menuFinding], malicious: [], now: new Date() });
 
   it("an own-section MENU_INJECTION finding becomes one menu banner, built from its snippet", () => {
+    const finding = { id: "f-menu", filename: menuFinding.filename, lineNumber: 0 };
     expect(risk).toEqual<MenuRisk>({
       kind: "menu",
-      finding: { id: "f-menu", filename: menuFinding.filename, lineNumber: 0 },
-      menuPath: "Main menu > Shop",
-      seenAs: "Label: Shop<img src=x onerror=x()>",
+      finding,
+      items: [
+        { finding, menuPath: "Main menu > Shop", seenAs: "Label: Shop<img src=x onerror=x()>" },
+      ],
       description: menuFinding.description,
     });
     expect(securityRiskAnchorId(risk)).toBe("finding-f-menu");
     expect(securityRiskTitle(risk)).toBe(MENU_RISK_TITLE);
     expect(securityRiskSourceLabel(risk)).toBeNull();
-    expect(securityRiskBody(risk)).toContain("GhostCode found it in Main menu > Shop.");
     expect(securityRiskBody(risk)).toContain("remove it now");
+    expect(securityRiskBody(risk)).toMatch(/GhostCode found it in this menu item:$/);
+  });
+
+  // gc-7gjj.6: the menu path and excerpt are the store's (attacker's) text.
+  it("never puts the menu path or excerpt inside GhostCode's sentences", () => {
+    for (const text of [securityRiskTitle(risk), securityRiskBody(risk)]) {
+      expect(text).not.toContain("Main menu > Shop");
+      expect(text).not.toContain("onerror");
+    }
   });
 
   it("a snippet without an excerpt still reads cleanly", () => {
@@ -205,8 +217,75 @@ describe("Security risk banner", () => {
       malicious: [],
       now: new Date(),
     });
-    expect(bare).toMatchObject({ menuPath: "a menu", seenAs: null });
-    expect(securityRiskBody(bare)).toContain("GhostCode found it in a menu.");
+    expect(bare.kind === "menu" && bare.items).toEqual([
+      expect.objectContaining({ menuPath: "A menu", seenAs: null }),
+    ]);
+  });
+
+  // Deferred LOW (gc-7gjj.1): one banner per menu, not one per item.
+  describe("grouped per menu", () => {
+    const item = (id: string, menuId: string, title: string) => ({
+      ...menuFinding,
+      id,
+      filename: `menus/${menuId}/items/${id}/0123456789abcdef`,
+      codeSnippet: `Main menu > ${title}\nLabel: ${title}<svg onload=x()>`,
+    });
+    const many = [
+      item("a1", "11", "One"),
+      item("b1", "12", "Footer"),
+      item("a2", "11", "Two"),
+      ...Array.from({ length: 6 }, (_, n) => item(`a${n + 3}`, "11", `Item ${n + 3}`)),
+    ];
+    const risks = buildSecurityRisks({ advisories: many, malicious: [], now: new Date() });
+
+    it("groups the items of each menu into one banner, at its first item's place", () => {
+      expect(risks.map((r) => (r.kind === "menu" ? r.items.map((i) => i.finding.id) : []))).toEqual(
+        [["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"], ["b1"]],
+      );
+      expect(securityRiskAnchorId(risks[0])).toBe("finding-a1");
+      expect(securityRiskTitle(risks[0])).toBe("8 items in one of your store's menus contain code");
+      expect(securityRiskBody(risks[0])).toContain(MENU_RISK_GROUP_FACTS);
+      expect(securityRiskBody(risks[0])).toMatch(/GhostCode found it in these menu items:$/);
+      expect(securityRiskTitle(risks[1])).toBe(MENU_RISK_TITLE);
+      expect(countKeptSecurityRisks(risks, new Set())).toBe(2);
+    });
+
+    const render = (props: Record<string, unknown>) =>
+      renderToStaticMarkup(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(SecurityRiskBanner, {
+            risk: risks[0],
+            scanDate: "2026-10-27T00:00:00Z",
+            ...props,
+          }),
+        ),
+      );
+
+    it("Home lists up to MENU_RISK_ITEMS_SHOWN items, then 'And K more in this menu.'", () => {
+      const html = render({ checkHref: "/app/scans/s#finding-a1" });
+      expect(MENU_RISK_ITEMS_SHOWN).toBe(5);
+      expect(html.match(/<s-box/g)).toHaveLength(5);
+      expect(html).toContain("Main menu &gt; Item 5");
+      expect(html).not.toContain("Main menu &gt; Item 6");
+      expect(html).toContain("And 3 more in this menu.");
+    });
+
+    it("the scan page lists every item, each anchored after the first, with its own control", () => {
+      const html = render({
+        anchor: true,
+        menuItemsLimit: Infinity,
+        menuItemFooter: (i: { finding: { id: string } }) =>
+          createElement("span", { className: "ignore" }, `ignore-${i.finding.id}`),
+      });
+      expect(html.match(/<s-box/g)).toHaveLength(8);
+      expect(html).not.toContain("more in this menu");
+      expect(html).toContain('id="finding-a1"');
+      expect(html).toContain('id="finding-a2"');
+      expect(html.match(/id="finding-a1"/g)).toHaveLength(1);
+      expect(html).toContain("ignore-a8");
+    });
   });
 
   it("malicious banners come first, then the own-section banners in the order given", () => {
@@ -216,6 +295,21 @@ describe("Security risk banner", () => {
       now: new Date(),
     });
     expect(risks.map((r) => r.kind)).toEqual(["menu"]);
+  });
+
+  it("renders the label as quoted code in its own box, apart from the sentence (gc-7gjj.6)", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(SecurityRiskBanner, { risk, scanDate: "2026-10-27T00:00:00Z" }),
+      ),
+    );
+    const facts = html.slice(html.indexOf("<p"), html.indexOf("</p>"));
+    expect(facts).not.toContain("Main menu");
+    expect(html).toMatch(
+      /<s-box[^>]*><code[^>]*>Main menu &gt; Shop<\/code><code[^>]*>Label: Shop&lt;img/,
+    );
   });
 
   it("renders as markup-safe text (the label is escaped, never run)", () => {

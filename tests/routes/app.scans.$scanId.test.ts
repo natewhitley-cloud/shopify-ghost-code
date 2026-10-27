@@ -6085,6 +6085,47 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(html).not.toContain("security risk (above)");
     });
 
+    // gc-7gjj.1 deferred LOW + gc-7gjj.6: one banner per menu listing every
+    // item as quoted code, each with its own Ignore and anchor.
+    it("menu findings: one banner per menu, every item listed with its own Ignore", async () => {
+      process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+      try {
+        const menuRow = (id: string, menuId: string, title: string, minute: number) =>
+          row(id, "MENU_INJECTION", "HIGH", minute, {
+            filename: `menus/${menuId}/items/${id}/0123456789abcdef`,
+            lineNumber: 0,
+            appName: null,
+            codeSnippet: `Main menu > ${title}\nLabel: ${title}<img src=x onerror=go()>`,
+            description: "A menu item's label contains code that runs when the label is shown.",
+          });
+        const menus = [
+          menuRow("m1", "11", "Shop", 40),
+          menuRow("m2", "11", "Sale", 41),
+          menuRow("f1", "12", "Footer", 42),
+        ];
+        scanWith([...SCRIPTS, ...menus]);
+        servePage([...SCRIPTS, ...menus]);
+
+        const html = await renderPage();
+
+        const banner = html.slice(
+          html.indexOf('<section id="finding-m1"'),
+          html.indexOf("</section>", html.indexOf('<section id="finding-m1"')),
+        );
+        expect(banner).toContain("2 items in one of your store&#x27;s menus contain code");
+        expect(banner).toContain('id="finding-m2"');
+        expect(banner.match(/>Ignore this finding</g)).toHaveLength(2);
+        expect(banner).toContain("<code");
+        expect(banner).toContain("Main menu &gt; Sale");
+        expect(banner).not.toContain("<img src=x");
+        // The second menu is its own banner.
+        expect(html).toContain('<section id="finding-f1"');
+        expect(html.match(/<section id="finding-m2"/g)).toBeNull();
+      } finally {
+        delete process.env.MENU_INJECTION_LIVE_ENABLED;
+      }
+    });
+
     it("renders ONE advisory banner, above Total findings and the Findings list, with Ignore", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
       servePage([...SCRIPTS, ADVISORY]);

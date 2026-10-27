@@ -263,7 +263,7 @@ describe("buildSecurityRisks: several risks, ordering and fallbacks", () => {
     );
     expect(
       risks.map((r) =>
-        r.kind === "malicious" ? r.domain : r.kind === "advisory" ? r.appName : r.menuPath,
+        r.kind === "malicious" ? r.domain : r.kind === "advisory" ? r.appName : r.items[0].menuPath,
       ),
     ).toEqual(["biliing.top", "Swym Wishlist Plus", "Selleasy"]);
     const html = risks.map((r) => render(r)).join("");

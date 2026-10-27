@@ -1853,7 +1853,10 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
       const data = (await runLoader()) as unknown as KillData;
 
       expect(data.securityRisks).toEqual([
-        expect.objectContaining({ kind: "menu", menuPath: "Main menu > Shop" }),
+        expect.objectContaining({
+          kind: "menu",
+          items: [expect.objectContaining({ menuPath: "Main menu > Shop" })],
+        }),
       ]);
       expect(data.findingsTile).toEqual({ total: 3, tone: "critical", securityRisks: 1 });
     });

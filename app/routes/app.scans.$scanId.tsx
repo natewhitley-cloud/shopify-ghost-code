@@ -991,16 +991,17 @@ export function FindingRow({
  */
 function OwnSectionRiskBanner({
   risk,
-  finding,
+  findingById,
   scanDate,
   shopDomain,
 }: {
   risk: AdvisoryRisk | MenuRisk;
-  /** The stored finding (for the copy text and Ignore); always present for a banner the loader built. */
-  finding: FindingLike | undefined;
+  /** The stored findings (for the copy text and Ignore); always present for a banner the loader built. */
+  findingById: (id: string) => FindingLike | undefined;
   scanDate: Date | string;
   shopDomain: string;
 }) {
+  const finding = findingById(risk.finding.id);
   const type = risk.kind === "menu" ? "MENU_INJECTION" : "APP_INCIDENT_ADVISORY";
   const copy = getFindingCardCopy(type, risk.finding.filename);
   const steps = risk.kind === "menu" ? (copy.steps ?? []) : advisoryCheckSteps(risk);
@@ -1026,7 +1027,16 @@ function OwnSectionRiskBanner({
           )}
         </>
       }
-      footer={finding?.id && <FindingIgnoreControls finding={finding} />}
+      // A menu banner lists every item (gc-7gjj.1 deferred LOW: one banner
+      // per menu), each with its own Ignore; an advisory has one Ignore.
+      menuItemsLimit={Infinity}
+      menuItemFooter={(item) => {
+        const f = findingById(item.finding.id);
+        return f?.id ? <FindingIgnoreControls finding={f} /> : null;
+      }}
+      footer={
+        risk.kind === "advisory" && finding?.id && <FindingIgnoreControls finding={finding} />
+      }
     >
       <div style={{ minWidth: 0 }}>
         <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
@@ -2453,7 +2463,7 @@ export default function ScanDetail() {
             <OwnSectionRiskBanner
               key={securityRiskAnchorId(risk)}
               risk={risk}
-              finding={alwaysShownFindings.find((f) => f.id === risk.finding.id)}
+              findingById={(id) => alwaysShownFindings.find((f) => f.id === id)}
               scanDate={scan.completedAt ?? scan.createdAt}
               shopDomain={shopDomain}
             />
