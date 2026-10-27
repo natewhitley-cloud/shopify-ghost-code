@@ -137,6 +137,7 @@ export default function App() {
         <s-link href="/app/ignored">Ignored Findings</s-link>
         {speedReportEnabled && <s-link href="/app/speed">Store speed</s-link>}
         <s-link href="/app/settings">Settings</s-link>
+        <s-link href="/app/help">Help</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

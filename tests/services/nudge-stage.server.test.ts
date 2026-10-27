@@ -328,3 +328,65 @@ describe("speed_teaser stages (gc-iirv)", () => {
     expect(typeof invalid).toBe("function");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Install-source card stages (gc-3twe)
+// ---------------------------------------------------------------------------
+
+describe("install_source stages (gc-3twe)", () => {
+  it("shown claims installSourceShownAt (no preconditions) and emits one event", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(recordNudgeStageOnce("install_source", "shown", DOMAIN)).resolves.toBe(true);
+
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ domain: DOMAIN, installSourceShownAt: null });
+    expect(Object.keys(call.data)).toEqual(["installSourceShownAt"]);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledExactlyOnceWith({
+      data: expect.objectContaining({
+        eventType: "nudge_shown",
+        key: DOMAIN,
+        metadata: { nudgeKey: "install_source" },
+      }),
+    });
+  });
+
+  it("dismissed (Skip) stamps installSourceSkippedAt only for a shown, unanswered card", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(recordNudgeStageOnce("install_source", "dismissed", DOMAIN)).resolves.toBe(true);
+
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({
+      domain: DOMAIN,
+      installSourceSkippedAt: null,
+      installSourceShownAt: { not: null },
+      installSourceAnsweredAt: null,
+    });
+    expect(Object.keys(call.data)).toEqual(["installSourceSkippedAt"]);
+    expect(mockDb.opsEvent.create.mock.calls[0][0].data.eventType).toBe("nudge_dismissed");
+  });
+
+  it("Skip after an answer, or a crafted Skip for a card never shown (no row matched): no event", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(recordNudgeStageOnce("install_source", "dismissed", DOMAIN)).resolves.toBe(false);
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("a second shown (already stamped) emits nothing", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(recordNudgeStageOnce("install_source", "shown", DOMAIN)).resolves.toBe(false);
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects, at compile time, converted and clicked (the answer is claimed atomically elsewhere)", () => {
+    // @ts-expect-error install_source has no `converted` stage claim
+    const converted = () => recordNudgeStageOnce("install_source", "converted", DOMAIN);
+    // @ts-expect-error install_source has no `clicked` stage
+    const clicked = () => recordNudgeStageOnce("install_source", "clicked", DOMAIN);
+    expect(typeof converted).toBe("function");
+    expect(typeof clicked).toBe("function");
+  });
+});

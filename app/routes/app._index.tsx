@@ -17,6 +17,7 @@ import {
   HealthScoreTrendEmptyState,
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
+import { InstallSourceCard } from "../components/InstallSourceCard";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
 import {
@@ -40,6 +41,7 @@ import {
 import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
 import { buildFindingsTile, type FindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
+import { parseInstallSourceAnswer, shouldShowInstallSourceCard } from "../lib/install-source";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
 import { noticeClaimResponse } from "../lib/notice-claim";
@@ -111,6 +113,7 @@ import {
 import { acknowledgeGuardIncident } from "../models/storefront-guard.server";
 import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
 import type { FindingRow } from "../services/finding-aggregation.server";
+import { recordInstallSourceAnswer } from "../services/install-source.server";
 import {
   recordJourneyMilestoneOnce,
   recordScanResultsViewOnce,
@@ -217,6 +220,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
       showFeedbackNudge: false,
+      showInstallSourceCard: false,
       healthScoreTrend: null,
       showTrendEmptyState: false,
       scansNeeded: 0,
@@ -782,6 +786,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const canDiffLatest =
     latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);
 
+  // One-time install-source card (gc-3twe): page content at the end of the
+  // results view, so no prompt cap. `shown` counts once per merchant; the
+  // stamp pre-check skips the claim write on every later load and 3s poll.
+  const showInstallSourceCard = shouldShowInstallSourceCard({
+    hasResults,
+    isInternal: shop.isInternal,
+    installSourceAnsweredAt: shop.installSourceAnsweredAt,
+    installSourceSkippedAt: shop.installSourceSkippedAt,
+  });
+  if (showInstallSourceCard && shop.installSourceShownAt === null) {
+    await recordNudgeStageOnce(NUDGE_KEYS.INSTALL_SOURCE, "shown", session.shop);
+  }
+
   // App-removal banner (gc-frda): apps the latest successful scan found no
   // longer active (or whose leftovers it found cleaned up). Content, not an
   // interruptive prompt, so no prompt cap; Free sees it in full (decision 4A).
@@ -885,6 +902,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     showThemeChangeNudge,
     showMultiThemeNudge,
     showFeedbackNudge,
+    showInstallSourceCard,
     healthScoreTrend,
     showTrendEmptyState,
     scansNeeded,
@@ -933,6 +951,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // feedbackNudgeDismissedAt (which retires the nudge) and emits `dismissed`.
   if (intent === "dismiss-feedback-nudge") {
     await recordNudgeStageOnce(NUDGE_KEYS.FEEDBACK, "dismissed", session.shop);
+    return { dismissed: true };
+  }
+
+  // Install-source card (gc-3twe), session shop only. Send stores the answer
+  // at most once ever (converted on a win); a lost claim (already answered or
+  // skipped) still answers ok. An unknown or missing choice, or a write that
+  // failed, is an error the card shows. Skip stamps installSourceSkippedAt
+  // once, only for a card that was shown and not answered. Neither throws.
+  if (intent === "install-source-answer") {
+    const answer = parseInstallSourceAnswer({
+      source: formData.get("source"),
+      other: formData.get("other"),
+    });
+    if (answer === null) return { installSourceError: "missing_choice" };
+    const outcome = await recordInstallSourceAnswer(session.shop, answer);
+    if (outcome === "failed") return { installSourceError: "save_failed" };
+    return { installSourceAnswered: true };
+  }
+  if (intent === "install-source-skip") {
+    await recordNudgeStageOnce(NUDGE_KEYS.INSTALL_SOURCE, "dismissed", session.shop);
     return { dismissed: true };
   }
 
@@ -1334,6 +1372,7 @@ export default function Dashboard() {
     showThemeChangeNudge,
     showMultiThemeNudge,
     showFeedbackNudge,
+    showInstallSourceCard,
     healthScoreTrend,
     showTrendEmptyState,
     scansNeeded,
@@ -2430,6 +2469,9 @@ export default function Dashboard() {
                 </div>
               </s-stack>
             </div>
+
+            {/* How did you find GhostCode? (gc-3twe): once, after results. */}
+            {showInstallSourceCard && <InstallSourceCard />}
           </>
         )}
       </div>

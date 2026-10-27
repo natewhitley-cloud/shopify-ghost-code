@@ -140,6 +140,6 @@ describe("merchant-facing copy", () => {
     expect(APP_STORE_REVIEW_URL).toBe(
       "https://apps.shopify.com/ghost-code#modal-show=WriteReviewModal",
     );
-    expect(FEEDBACK_NUDGE_HREF).toBe("/app/feedback?src=nudge");
+    expect(FEEDBACK_NUDGE_HREF).toBe("/app/help?topic=feedback&src=nudge");
   });
 });

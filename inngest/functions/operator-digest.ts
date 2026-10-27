@@ -35,6 +35,8 @@ import type { FindingType } from "@prisma/client";
 import { RECONCILE_INSTALLS_KEY } from "./reconcile-installs";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
 import { isSuccessfulScan } from "../../app/lib/format";
+import { HELP_TOPICS } from "../../app/lib/help";
+import { INSTALL_SOURCE_OPTIONS } from "../../app/lib/install-source";
 import {
   deriveJourneyMilestones,
   isResultsViewMeasurable,
@@ -64,6 +66,7 @@ import type { UnknownScriptWindowSummary } from "../../app/models/unknown-script
 import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
 import type { OpsAlertConfigStatus } from "../../app/services/ops-alert.server";
 import { fingerprintFinding, unauditedCategories } from "../../app/services/scan-differ.server";
+import { SUPPORT_EMAIL_FAILURE_CODE } from "../../app/services/support-email.server";
 import { inngest } from "../client";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
@@ -1107,7 +1110,8 @@ export function formatSpeedReportLines(d: SpeedReportDigest | undefined): string
 // Backed by MerchantFeedback rows (the source of truth; the nudge funnel's
 // `converted` counts only each merchant's FIRST submission). 24h / 7d
 // submission counts plus the 7d CSAT histogram, average, and how many left a
-// follow-up email or a worth-paying-for answer.
+// follow-up email or a written message (gc-3twe; the survey's worth-paying-for
+// answer is no longer asked).
 // ---------------------------------------------------------------------------
 
 export interface FeedbackDigest {
@@ -1118,7 +1122,7 @@ export interface FeedbackDigest {
   /** 7d mean CSAT, or null when there were no submissions. */
   avgCsat7d: number | null;
   withEmail7d: number;
-  withWtp7d: number;
+  withMessage7d: number;
 }
 
 /**
@@ -1135,9 +1139,10 @@ export interface FeedbackDigest {
 export function aggregateFeedback(
   rows: Array<{
     shopId: string;
-    csat: number;
+    // Optional since gc-3twe (the Help page asks for it on topic "feedback" only).
+    csat: number | null;
     contactEmail: string | null;
-    wtp: string | null;
+    message: string | null;
     createdAt: Date;
   }>,
   allowedShopIds: Iterable<string>,
@@ -1153,7 +1158,7 @@ export function aggregateFeedback(
     csatCounts7d: [0, 0, 0, 0, 0],
     avgCsat7d: null,
     withEmail7d: 0,
-    withWtp7d: 0,
+    withMessage7d: 0,
   };
   let csatSum = 0;
   let csatN = 0;
@@ -1163,16 +1168,125 @@ export function aggregateFeedback(
     if (t < weekAgo) continue; // defensive; the query already bounds to 7d
     out.submissions7d += 1;
     if (t >= dayAgo) out.submissions24h += 1;
-    if (Number.isInteger(r.csat) && r.csat >= 1 && r.csat <= 5) {
+    if (r.csat !== null && Number.isInteger(r.csat) && r.csat >= 1 && r.csat <= 5) {
       out.csatCounts7d[r.csat - 1] += 1;
       csatSum += r.csat;
       csatN += 1;
     }
     if (r.contactEmail) out.withEmail7d += 1;
-    if (r.wtp) out.withWtp7d += 1;
+    if (r.message) out.withMessage7d += 1;
   }
   out.avgCsat7d = csatN > 0 ? csatSum / csatN : null;
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Help messages (gc-3twe)
+//
+// Every Help page message in 7d by topic (feedback included), how many named a
+// reply-to address (an email is stored only with consent), and how many never
+// reached the support inbox (api_error SUPPORT_EMAIL_FAILURE_CODE rows; the
+// message itself is safe in MerchantFeedback).
+// ---------------------------------------------------------------------------
+
+export interface HelpDigest {
+  messages7d: number;
+  /** 7d count per Help topic, every topic in HELP_TOPICS order (zeros kept). */
+  byTopic7d: Array<{ topic: string; count: number }>;
+  withReplyTo7d: number;
+  failedSends7d: number;
+}
+
+/**
+ * Roll trailing-7d Help messages and failed support sends into the digest's
+ * HELP section. Pure. Exclusion as FEEDBACK: messages count only for
+ * `allowedShopIds`, failures only when their metadata.shopDomain is in
+ * `allowedDomains` (both the handler's non-excluded shop set). A topic outside
+ * HELP_TOPICS (impossible via the validated form) counts in messages7d only.
+ */
+export function aggregateHelpMessages(
+  rows: Array<{ shopId: string; topic: string; contactEmail: string | null; createdAt: Date }>,
+  failures: Array<{ metadata: unknown; createdAt: Date }>,
+  allowedShopIds: Iterable<string>,
+  allowedDomains: Iterable<string>,
+  now: Date,
+): HelpDigest {
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+  const ids = new Set(allowedShopIds);
+  const domains = new Set([...allowedDomains].map((d) => d.toLowerCase()));
+  const byTopic = new Map<string, number>(HELP_TOPICS.map((t) => [t.value, 0]));
+  const out: HelpDigest = { messages7d: 0, byTopic7d: [], withReplyTo7d: 0, failedSends7d: 0 };
+  for (const r of rows) {
+    if (!ids.has(r.shopId) || r.createdAt.getTime() < weekAgo) continue;
+    out.messages7d += 1;
+    if (byTopic.has(r.topic)) byTopic.set(r.topic, (byTopic.get(r.topic) ?? 0) + 1);
+    if (r.contactEmail) out.withReplyTo7d += 1;
+  }
+  for (const f of failures) {
+    const domain =
+      typeof f.metadata === "object" && f.metadata !== null
+        ? (f.metadata as Record<string, unknown>).shopDomain
+        : undefined;
+    if (typeof domain !== "string" || !domains.has(domain.toLowerCase())) continue;
+    if (f.createdAt.getTime() < weekAgo) continue;
+    out.failedSends7d += 1;
+  }
+  out.byTopic7d = [...byTopic].map(([topic, count]) => ({ topic, count }));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Install source (gc-3twe)
+//
+// The one-time "How did you find GhostCode?" card: its 7d funnel (from the
+// install_source nudge row: shown / converted = answered / dismissed = skipped)
+// and the all-time answer counts per option (counts only; the "other" free
+// text is never shown here).
+// ---------------------------------------------------------------------------
+
+export interface InstallSourceDigest {
+  shown7d: number;
+  answered7d: number;
+  skipped7d: number;
+  answeredAllTime: number;
+  /** All-time answers per option, in INSTALL_SOURCE_OPTIONS order (zeros kept). */
+  answersAllTime: Array<{ source: string; count: number }>;
+  /** Stored values outside INSTALL_SOURCE_OPTIONS (a retired option). */
+  unrecognizedAllTime: number;
+}
+
+/**
+ * Build the INSTALL SOURCE section from the shops' stored answers (pinned to
+ * `allowedShopIds`, the non-excluded set) and the already-aggregated nudge
+ * funnel. Pure.
+ */
+export function aggregateInstallSources(
+  shops: Array<{ id: string; installSource: string | null }>,
+  nudges: NudgeFunnelRow[],
+  allowedShopIds: Iterable<string>,
+): InstallSourceDigest {
+  const ids = new Set(allowedShopIds);
+  const counts = new Map<string, number>(INSTALL_SOURCE_OPTIONS.map((o) => [o.value, 0]));
+  let answered = 0;
+  let unrecognized = 0;
+  for (const s of shops) {
+    if (!s.installSource || !ids.has(s.id)) continue;
+    answered += 1;
+    if (counts.has(s.installSource)) {
+      counts.set(s.installSource, (counts.get(s.installSource) ?? 0) + 1);
+    } else {
+      unrecognized += 1;
+    }
+  }
+  const funnel = nudges.find((n) => n.nudgeKey === NUDGE_KEYS.INSTALL_SOURCE)?.last7d;
+  return {
+    shown7d: funnel?.shown ?? 0,
+    answered7d: funnel?.converted ?? 0,
+    skipped7d: funnel?.dismissed ?? 0,
+    answeredAllTime: answered,
+    answersAllTime: [...counts].map(([source, count]) => ({ source, count })),
+    unrecognizedAllTime: unrecognized,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2122,6 +2236,12 @@ export interface OperatorDigestData {
   /** Merchant feedback submissions (gc-97k.3). Optional so callers/tests that
    * predate it still type-check; absent => rendered as "No feedback data". */
   feedback?: FeedbackDigest;
+  /** Help messages by topic + failed support sends (gc-3twe). Optional;
+   * absent => rendered as "No help data". */
+  help?: HelpDigest;
+  /** Install-source card funnel + answers (gc-3twe). Optional; absent =>
+   * rendered as "No install source data". */
+  installSource?: InstallSourceDigest;
   /** Journey funnel + timeline (gc-dpm.3). Optional so callers/tests that
    * predate it still type-check; absent => rendered as "No journey data". */
   journey?: JourneySummary;
@@ -2471,8 +2591,38 @@ export function buildDigestBody(data: OperatorDigestData): string {
     lines.push(`  Submissions: ${feedback.submissions24h} / ${feedback.submissions7d}`);
     lines.push(`  CSAT (7d): 1:${c[0]}  2:${c[1]}  3:${c[2]}  4:${c[3]}  5:${c[4]} | avg ${avg}`);
     lines.push(
-      `  With follow-up email (7d): ${feedback.withEmail7d} | With WTP answer (7d): ${feedback.withWtp7d}`,
+      `  With follow-up email (7d): ${feedback.withEmail7d} | With message (7d): ${feedback.withMessage7d}`,
     );
+  }
+  lines.push("");
+
+  const { help } = data;
+  lines.push("HELP MESSAGES (7d)");
+  if (!help) {
+    lines.push("  No help data");
+  } else {
+    const topics = help.byTopic7d.map((t) => `${t.topic} ${t.count}`).join(", ");
+    lines.push(`  Messages: ${help.messages7d} (${topics}) | With reply-to: ${help.withReplyTo7d}`);
+    lines.push(
+      `  Support emails not delivered: ${help.failedSends7d}${help.failedSends7d > 0 ? " (read them in MerchantFeedback)" : ""}`,
+    );
+  }
+  lines.push("");
+
+  const { installSource } = data;
+  lines.push("INSTALL SOURCE (how did you find GhostCode?)");
+  if (!installSource) {
+    lines.push("  No install source data");
+  } else {
+    lines.push(
+      `  Card (7d): shown ${installSource.shown7d} | answered ${installSource.answered7d} | skipped ${installSource.skipped7d}`,
+    );
+    const answers = installSource.answersAllTime.map((a) => `${a.source} ${a.count}`).join(", ");
+    const unrecognized =
+      installSource.unrecognizedAllTime > 0
+        ? `, unrecognized ${installSource.unrecognizedAllTime}`
+        : "";
+    lines.push(`  Answers (all time, ${installSource.answeredAllTime}): ${answers}${unrecognized}`);
   }
   lines.push("");
 
@@ -2898,11 +3048,53 @@ export const operatorDigest = inngest.createFunction(
       const db = (await import("../../app/db.server")).default;
       const now = new Date();
       const rows = await db.merchantFeedback.findMany({
-        where: { createdAt: { gte: new Date(now.getTime() - 7 * DAY_MS) } },
-        select: { shopId: true, csat: true, contactEmail: true, wtp: true, createdAt: true },
+        // Feedback only (gc-3twe): other Help topics (bugs, how-to, billing)
+        // are support requests, not survey submissions.
+        where: { topic: "feedback", createdAt: { gte: new Date(now.getTime() - 7 * DAY_MS) } },
+        select: { shopId: true, csat: true, contactEmail: true, message: true, createdAt: true },
       });
       return aggregateFeedback(rows, Object.keys(domainById), now);
     })) as FeedbackDigest;
+
+    // Help messages (gc-3twe): every topic, plus the support sends that failed
+    // (api_error rows keyed SUPPORT_EMAIL_FAILURE_CODE). Same non-excluded set.
+    const help = (await step.run("get-help-messages", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const now = new Date();
+      const since = new Date(now.getTime() - 7 * DAY_MS);
+      const [rows, failures] = await Promise.all([
+        db.merchantFeedback.findMany({
+          where: { createdAt: { gte: since } },
+          select: { shopId: true, topic: true, contactEmail: true, createdAt: true },
+        }),
+        db.opsEvent.findMany({
+          where: {
+            eventType: OPS_EVENT_TYPES.API_ERROR,
+            key: SUPPORT_EMAIL_FAILURE_CODE,
+            createdAt: { gte: since },
+          },
+          select: { metadata: true, createdAt: true },
+        }),
+      ]);
+      return aggregateHelpMessages(
+        rows,
+        failures,
+        Object.keys(domainById),
+        Object.values(domainById),
+        now,
+      );
+    })) as HelpDigest;
+
+    // Install source (gc-3twe): stored answers of the non-excluded shops, plus
+    // the card's 7d funnel from NUDGES above.
+    const installSource = (await step.run("get-install-source", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const shops = await db.shop.findMany({
+        where: { installSource: { not: null } },
+        select: { id: true, installSource: true },
+      });
+      return aggregateInstallSources(shops, nudges, Object.keys(domainById));
+    })) as InstallSourceDigest;
 
     // Journey (gc-dpm.3): funnel + per-shop stage + 7d timeline. Pinned to the
     // same non-excluded shop set as FEEDBACK (domainById's ids: honours
@@ -3399,6 +3591,8 @@ export const operatorDigest = inngest.createFunction(
       activity,
       nudges,
       feedback,
+      help,
+      installSource,
       journey,
       scanStartsViews,
       ops: { ...ops, clientErrors },

@@ -94,6 +94,18 @@ const NUDGE_STAGE_CLAIMS = {
       extraWhere: { speedTeaserShownAt: { not: null } },
     },
   },
+  // One-time "How did you find GhostCode?" card at the end of Home (gc-3twe).
+  // Skip counts only for a card that was shown and not yet answered (a
+  // crafted POST cannot record a skip the card never offered). No `converted` here: the answer is
+  // written atomically with its stamp by claimInstallSourceAnswer
+  // (services/install-source.server), which emits converted on a win.
+  [NUDGE_KEYS.INSTALL_SOURCE]: {
+    shown: { column: "installSourceShownAt" },
+    dismissed: {
+      column: "installSourceSkippedAt",
+      extraWhere: { installSourceShownAt: { not: null }, installSourceAnsweredAt: null },
+    },
+  },
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

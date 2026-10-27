@@ -91,6 +91,7 @@ import {
   recordUpgradeReturnDismissal,
   startUpgradeReturnEpisode,
   dismissRemovalNotice,
+  claimInstallSourceAnswer,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -184,6 +185,11 @@ describe("getShopMetadata", () => {
         guardEmailOffAt: true,
         // gc-1q1s.12: consent names an address (no hash: no consent).
         guardEmailConsentHash: true,
+        // gc-3twe: the install-source card's gates and shown pre-check.
+        isInternal: true,
+        installSourceShownAt: true,
+        installSourceAnsweredAt: true,
+        installSourceSkippedAt: true,
       },
     });
   });
@@ -1695,5 +1701,66 @@ describe("dismissRemovalNotice (gc-frda)", () => {
   it("is a safe no-op for a missing shop row (count 0, no throw)", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
     await expect(dismissRemovalNotice("gone", "scan-9")).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimInstallSourceAnswer (gc-3twe)
+// ---------------------------------------------------------------------------
+
+describe("claimInstallSourceAnswer (gc-3twe)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("writes the answer and its stamp only for a shown card, non-internal shop, not answered or skipped", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      claimInstallSourceAnswer("s.myshopify.com", { source: "other", other: "a podcast" }),
+    ).resolves.toBe(true);
+
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({
+      domain: "s.myshopify.com",
+      isInternal: false,
+      installSourceShownAt: { not: null },
+      installSourceAnsweredAt: null,
+      installSourceSkippedAt: null,
+    });
+    expect(call.data).toEqual({
+      installSource: "other",
+      installSourceOther: "a podcast",
+      installSourceAnsweredAt: expect.any(Date),
+    });
+  });
+
+  it("stores a null other for a non-other answer", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await claimInstallSourceAnswer("s.myshopify.com", { source: "sidekick", other: null });
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].data).toMatchObject({
+      installSource: "sidekick",
+      installSourceOther: null,
+    });
+  });
+
+  it("loses (false) once answered or skipped, never shown (crafted POST), internal, or missing (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      claimInstallSourceAnswer("s.myshopify.com", { source: "web_search", other: null }),
+    ).resolves.toBe(false);
+  });
+
+  it("only one of two concurrent answers wins", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+    const results = await Promise.all([
+      claimInstallSourceAnswer("s.myshopify.com", { source: "sidekick", other: null }),
+      claimInstallSourceAnswer("s.myshopify.com", { source: "web_search", other: null }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
   });
 });

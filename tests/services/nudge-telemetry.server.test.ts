@@ -62,6 +62,7 @@ describe("nudge constants", () => {
       UPGRADE_RETURN: "upgrade_return",
       STALE_RESULTS: "stale_results",
       SPEED_TEASER: "speed_teaser",
+      INSTALL_SOURCE: "install_source",
     });
   });
 

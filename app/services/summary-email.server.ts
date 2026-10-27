@@ -44,6 +44,7 @@ import { refreshShopContact } from "./shop-alert-email.server";
 import { SPEED_LINK_LABEL, summarySpeedLines } from "./summary-speed.server";
 import type { SummarySpeed } from "./summary-speed.server";
 import { getPlanFeatures } from "../lib/billing.server";
+import { SUPPORT_EMAIL } from "../lib/help";
 import { logger } from "../lib/logger.server";
 import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
 import { safeErrorFields } from "../lib/safe-error";
@@ -57,7 +58,8 @@ export const MAX_APPS_IN_EMAIL = 5;
 
 /** Sender identity printed in every footer. */
 export const SENDER_NAME = "Alpenglow Software LLC";
-export const SUPPORT_EMAIL = "support@alpenglowsoftware.com";
+/** The support inbox (defined client-safe in lib/help; re-exported for existing importers). */
+export { SUPPORT_EMAIL };
 /** 128x128 PNG on our public site, shown at 32x32 left of SENDER_NAME in the HTML footer. */
 export const ALPENGLOW_LOGO_URL = "https://alpenglowsoftware.com/assets/icons/alpenglow.png";
 /** Label of the scan deep link (text: "{label}:" then the URL; HTML: the link text). */

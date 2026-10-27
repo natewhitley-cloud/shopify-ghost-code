@@ -90,6 +90,18 @@ model Shop {
   feedbackNudgeClickedAt    DateTime?
   feedbackNudgeDismissedAt  DateTime?
   feedbackSubmittedAt       DateTime?
+  // One-time "How did you find GhostCode?" card (install source), shown at the
+  // end of Home once the first scan's results render. installSource is an
+  // INSTALL_SOURCE_OPTIONS value (app/lib/install-source.ts); installSourceOther
+  // is the merchant's own words for "other" (capped). Shown / answered /
+  // skipped are once-per-merchant stamps (claimShopStamp and
+  // claimInstallSourceAnswer) that gate the nudge_* telemetry; answered or
+  // skipped retires the card for good. Deleted with the Shop row on shop/redact.
+  installSource             String?
+  installSourceOther        String?
+  installSourceShownAt      DateTime?
+  installSourceAnsweredAt   DateTime?
+  installSourceSkippedAt    DateTime?
   // Durable journey milestones (gc-dpm.1). Stamped ONCE via the same atomic
   // claim as the nudge stamps (claimShopStamp): firstOpenedAt on the first
   // authenticated app load, firstResultsViewedAt on the first load of a
@@ -361,12 +373,24 @@ model MerchantFeedback {
   id           String   @id @default(cuid())
   shopId       String
   shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  csat         Int
-  valuable     String?
-  improvement  String?
-  wtp          String?
-  contactEmail String?
-  createdAt    DateTime @default(now())
+  // Help page message (topic, message, consent) since the feedback survey was
+  // merged into Help. csat is optional and asked only for topic "feedback";
+  // valuable / improvement / wtp hold answers from the retired survey form
+  // (kept for old rows, no longer written).
+  topic            String    @default("feedback")
+  message          String?
+  csat             Int?
+  valuable         String?
+  improvement      String?
+  wtp              String?
+  contactEmail     String?
+  // When the merchant ticked "You can email me about this request". Null =
+  // no consent; contactEmail is only stored together with consent.
+  contactConsentAt DateTime?
+  // Support context attached on submit (plan, latest scan id), never typed by
+  // the merchant.
+  context          String?
+  createdAt        DateTime  @default(now())
 
   @@index([shopId])
   @@index([createdAt])

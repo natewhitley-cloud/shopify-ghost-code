@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { OPS_EVENT_TYPES, recordOpsEvent } from "./ops-event.server";
 import db from "../db.server";
+import type { InstallSourceAnswer } from "../lib/install-source";
 
 /**
  * The subset of shop fields returned by getShopMetadata.
@@ -49,6 +50,11 @@ export type ShopMetadata = {
   guardEmailNoticeShownAt: Date | null;
   guardEmailOffAt: Date | null;
   guardEmailConsentHash: string | null;
+  isInternal: boolean;
+  // One-time install-source card (gc-3twe).
+  installSourceShownAt: Date | null;
+  installSourceAnsweredAt: Date | null;
+  installSourceSkippedAt: Date | null;
 };
 
 /**
@@ -134,6 +140,10 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       guardEmailNoticeShownAt: true,
       guardEmailOffAt: true,
       guardEmailConsentHash: true,
+      isInternal: true,
+      installSourceShownAt: true,
+      installSourceAnsweredAt: true,
+      installSourceSkippedAt: true,
     },
   });
 }
@@ -406,7 +416,9 @@ export type NudgeStageColumn =
   | "feedbackNudgeShownAt"
   | "feedbackNudgeClickedAt"
   | "feedbackNudgeDismissedAt"
-  | "feedbackSubmittedAt";
+  | "feedbackSubmittedAt"
+  | "installSourceShownAt"
+  | "installSourceSkippedAt";
 
 /** The durable journey milestone stamps (gc-dpm.1). */
 export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
@@ -454,6 +466,38 @@ export async function claimShopStamp(
 ): Promise<boolean> {
   const where: Prisma.ShopWhereInput = { ...extraWhere, domain, [column]: null };
   const { count } = await db.shop.updateMany({ where, data: { [column]: new Date() } });
+  return count === 1;
+}
+
+/**
+ * Store the merchant's install-source answer (gc-3twe), at most once ever.
+ *
+ * A conditional updateMany (`where installSourceAnsweredAt IS NULL AND
+ * installSourceSkippedAt IS NULL`) writes the answer and its stamp together,
+ * so of any number of concurrent submits exactly one sees count === 1, and an
+ * answer after Skip is ignored. It also requires the card to have been offered
+ * (installSourceShownAt set) to a non-internal shop, so a crafted POST cannot
+ * record an answer the card never showed. Returns true IFF this call won; the
+ * caller emits `converted` only then. A missing shop row is a safe false.
+ */
+export async function claimInstallSourceAnswer(
+  domain: string,
+  answer: InstallSourceAnswer,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      domain,
+      isInternal: false,
+      installSourceShownAt: { not: null },
+      installSourceAnsweredAt: null,
+      installSourceSkippedAt: null,
+    },
+    data: {
+      installSource: answer.source,
+      installSourceOther: answer.other,
+      installSourceAnsweredAt: new Date(),
+    },
+  });
   return count === 1;
 }
 
@@ -751,6 +795,9 @@ export async function deleteShopData(domain: string) {
     // MerchantFeedback (gc-97k.3) cascades from Shop too, but it holds the
     // merchant's optional contact email and free text, so the redact path names
     // it explicitly rather than relying on the FK alone (same as ClearSignal).
+    // Since gc-3twe it also holds Help messages: the free-text message, the
+    // contact email (stored only with contactConsentAt) and the server-built
+    // support context.
     db.merchantFeedback.deleteMany({ where: { shopId: shop.id } }),
     // MerchantAlert (gc-syz.1) cascades from Shop too, but its `recipient` is the
     // merchant's email, so it is named explicitly like MerchantFeedback. The Shop
@@ -761,6 +808,9 @@ export async function deleteShopData(domain: string) {
     // the ledger above, so a dropped cascade can never leave them behind.
     db.storefrontIncident.deleteMany({ where: { shopId: shop.id } }),
     db.storefrontGuardState.deleteMany({ where: { shopId: shop.id } }),
+    // The Shop row delete also removes the install-source answer (gc-3twe:
+    // installSource, installSourceOther and its shown / answered / skipped
+    // stamps), which live on the row itself.
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),

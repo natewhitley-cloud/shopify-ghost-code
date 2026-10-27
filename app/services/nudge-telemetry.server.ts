@@ -41,6 +41,7 @@ export const NUDGE_KEYS = {
   UPGRADE_RETURN: "upgrade_return", // gc-97k.9
   STALE_RESULTS: "stale_results", // gc-mgi
   SPEED_TEASER: "speed_teaser", // gc-iirv
+  INSTALL_SOURCE: "install_source", // gc-3twe
 } as const;
 
 export type NudgeKey = (typeof NUDGE_KEYS)[keyof typeof NUDGE_KEYS];

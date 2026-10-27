@@ -46,6 +46,8 @@ import {
   aggregateActivity,
   aggregateClientErrors,
   aggregateFeedback,
+  aggregateHelpMessages,
+  aggregateInstallSources,
   aggregateJourney,
   aggregateNudgeFunnel,
   aggregateSpeedReports,
@@ -2447,23 +2449,38 @@ describe("aggregateFeedback", () => {
   const allowed = [REAL, REAL_2];
 
   const row = (
-    csat: number,
+    csat: number | null,
     msAgo: number,
-    opts: { shopId?: string; email?: string | null; wtp?: string | null } = {},
+    opts: { shopId?: string; email?: string | null; message?: string | null } = {},
   ) => ({
     shopId: opts.shopId ?? REAL,
     csat,
     contactEmail: opts.email ?? null,
-    wtp: opts.wtp ?? null,
+    message: opts.message ?? null,
     createdAt: new Date(now.getTime() - msAgo),
   });
 
-  it("counts 24h / 7d submissions, the 7d CSAT histogram and average, email and WTP", () => {
+  it("gc-3twe: an unrated submission (csat optional on Help) counts, outside the histogram and average", () => {
+    const result = aggregateFeedback([row(null, HOUR_MS), row(4, HOUR_MS)], allowed, now);
+
+    expect(result.submissions24h).toBe(2);
+    expect(result.submissions7d).toBe(2);
+    expect(result.csatCounts7d).toEqual([0, 0, 0, 1, 0]);
+    expect(result.avgCsat7d).toBe(4);
+  });
+
+  it("gc-3twe: only unrated submissions leave the average null", () => {
+    const result = aggregateFeedback([row(null, HOUR_MS)], allowed, now);
+    expect(result.submissions7d).toBe(1);
+    expect(result.avgCsat7d).toBeNull();
+  });
+
+  it("counts 24h / 7d submissions, the 7d CSAT histogram and average, email and message", () => {
     const result = aggregateFeedback(
       [
         row(5, HOUR_MS, { email: "a@b.co" }),
-        row(1, 2 * HOUR_MS, { shopId: REAL_2, wtp: "Auto-fix" }),
-        row(4, 30 * HOUR_MS, { email: "c@d.co", wtp: "Reports" }),
+        row(1, 2 * HOUR_MS, { shopId: REAL_2, message: "Auto-fix" }),
+        row(4, 30 * HOUR_MS, { email: "c@d.co", message: "Reports" }),
         row(4, 100 * HOUR_MS),
       ],
       allowed,
@@ -2476,13 +2493,13 @@ describe("aggregateFeedback", () => {
       csatCounts7d: [1, 0, 0, 2, 1],
       avgCsat7d: 3.5,
       withEmail7d: 2,
-      withWtp7d: 2,
+      withMessage7d: 2,
     });
   });
 
   it("excludes internal / excluded shops (not in the allowed set)", () => {
     const result = aggregateFeedback(
-      [row(5, HOUR_MS), row(1, HOUR_MS, { shopId: INTERNAL, email: "x@y.co", wtp: "leak" })],
+      [row(5, HOUR_MS), row(1, HOUR_MS, { shopId: INTERNAL, email: "x@y.co", message: "leak" })],
       allowed,
       now,
     );
@@ -2492,7 +2509,7 @@ describe("aggregateFeedback", () => {
     expect(result.csatCounts7d).toEqual([0, 0, 0, 0, 1]);
     expect(result.avgCsat7d).toBe(5);
     expect(result.withEmail7d).toBe(0);
-    expect(result.withWtp7d).toBe(0);
+    expect(result.withMessage7d).toBe(0);
   });
 
   it("treats both window boundaries as inclusive and drops anything older than 7d", () => {
@@ -2513,7 +2530,7 @@ describe("aggregateFeedback", () => {
       csatCounts7d: [0, 0, 0, 0, 0],
       avgCsat7d: null,
       withEmail7d: 0,
-      withWtp7d: 0,
+      withMessage7d: 0,
     };
     expect(aggregateFeedback([], allowed, now)).toEqual(empty);
     expect(aggregateFeedback([row(5, HOUR_MS)], [], now)).toEqual(empty);
@@ -2528,6 +2545,158 @@ describe("aggregateFeedback", () => {
   });
 });
 
+describe("aggregateHelpMessages (gc-3twe)", () => {
+  const now = new Date("2026-10-27T12:00:00Z");
+  const H = 3_600_000;
+  const at = (ms: number) => new Date(now.getTime() - ms);
+  const msg = (topic: string, ms: number, shopId = "s1", contactEmail: string | null = null) => ({
+    shopId,
+    topic,
+    contactEmail,
+    createdAt: at(ms),
+  });
+  const fail = (shopDomain: unknown, ms: number) => ({
+    metadata: { level: "error", shopDomain },
+    createdAt: at(ms),
+  });
+
+  it("counts 7d messages per topic (every topic listed), reply-tos and failed sends", () => {
+    const result = aggregateHelpMessages(
+      [
+        msg("bug", H, "s1", "a@b.co"),
+        msg("bug", 2 * H),
+        msg("feedback", 3 * H, "s2"),
+        msg("billing", 6 * 24 * H, "s1", "c@d.co"),
+        msg("bug", 8 * 24 * H), // too old
+        msg("howto", H, "internal", "x@y.co"), // excluded shop
+        msg("retired_topic", H), // counted, but in no topic bucket
+      ],
+      [
+        fail("one.myshopify.com", H),
+        fail("internal.myshopify.com", H),
+        fail("one.myshopify.com", 8 * 24 * H),
+        fail(undefined, H),
+      ],
+      ["s1", "s2"],
+      ["One.myshopify.com"],
+      now,
+    );
+
+    expect(result).toEqual({
+      messages7d: 5,
+      byTopic7d: [
+        { topic: "bug", count: 2 },
+        { topic: "howto", count: 0 },
+        { topic: "feedback", count: 1 },
+        { topic: "billing", count: 1 },
+        { topic: "other", count: 0 },
+      ],
+      withReplyTo7d: 2,
+      failedSends7d: 1,
+    });
+  });
+
+  it("is all zeros with nothing allowed", () => {
+    const result = aggregateHelpMessages(
+      [msg("bug", H)],
+      [fail("one.myshopify.com", H)],
+      [],
+      [],
+      now,
+    );
+    expect(result.messages7d).toBe(0);
+    expect(result.failedSends7d).toBe(0);
+    expect(result.byTopic7d.every((t) => t.count === 0)).toBe(true);
+  });
+});
+
+describe("aggregateInstallSources (gc-3twe)", () => {
+  const funnel = (shown: number, converted: number, dismissed: number) => ({
+    nudgeKey: "install_source",
+    last24h: { shown: 0, clicked: 0, dismissed: 0, converted: 0 },
+    last7d: { shown, clicked: 0, dismissed, converted },
+  });
+
+  it("counts all-time answers per option for allowed shops, plus the 7d card funnel", () => {
+    const result = aggregateInstallSources(
+      [
+        { id: "s1", installSource: "sidekick" },
+        { id: "s2", installSource: "sidekick" },
+        { id: "s3", installSource: "other" },
+        { id: "s4", installSource: null },
+        { id: "s5", installSource: "retired_option" },
+        { id: "internal", installSource: "web_search" },
+      ],
+      [funnel(4, 2, 1)],
+      ["s1", "s2", "s3", "s4", "s5"],
+    );
+
+    expect(result.shown7d).toBe(4);
+    expect(result.answered7d).toBe(2);
+    expect(result.skipped7d).toBe(1);
+    expect(result.answeredAllTime).toBe(4);
+    expect(result.unrecognizedAllTime).toBe(1);
+    expect(result.answersAllTime.map((a) => a.source)).toEqual([
+      "app_store_search",
+      "app_store_browse",
+      "sidekick",
+      "ai_assistant",
+      "web_search",
+      "article",
+      "referral",
+      "other",
+    ]);
+    expect(result.answersAllTime.find((a) => a.source === "sidekick")?.count).toBe(2);
+    expect(result.answersAllTime.find((a) => a.source === "web_search")?.count).toBe(0);
+  });
+
+  it("no install_source nudge row: a zero funnel", () => {
+    const result = aggregateInstallSources([], [], []);
+    expect([result.shown7d, result.answered7d, result.skipped7d]).toEqual([0, 0, 0]);
+    expect(result.answeredAllTime).toBe(0);
+  });
+});
+
+describe("buildDigestBody: HELP MESSAGES and INSTALL SOURCE sections (gc-3twe)", () => {
+  it("fall back to their no-data lines when absent", () => {
+    const body = buildDigestBody(makeData());
+    expect(body).toContain("HELP MESSAGES (7d)\n  No help data");
+    expect(body).toContain(
+      "INSTALL SOURCE (how did you find GhostCode?)\n  No install source data",
+    );
+  });
+
+  it("render counts, with no delivery hint when nothing failed", () => {
+    const body = buildDigestBody(
+      makeData({
+        help: {
+          messages7d: 2,
+          byTopic7d: [
+            { topic: "bug", count: 2 },
+            { topic: "howto", count: 0 },
+          ],
+          withReplyTo7d: 1,
+          failedSends7d: 0,
+        },
+        installSource: {
+          shown7d: 3,
+          answered7d: 1,
+          skipped7d: 1,
+          answeredAllTime: 1,
+          answersAllTime: [{ source: "sidekick", count: 1 }],
+          unrecognizedAllTime: 0,
+        },
+      }),
+    );
+    expect(body).toContain(
+      "HELP MESSAGES (7d)\n  Messages: 2 (bug 2, howto 0) | With reply-to: 1\n  Support emails not delivered: 0\n",
+    );
+    expect(body).toContain(
+      "INSTALL SOURCE (how did you find GhostCode?)\n  Card (7d): shown 3 | answered 1 | skipped 1\n  Answers (all time, 1): sidekick 1\n",
+    );
+  });
+});
+
 describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
   const HEADER = "FEEDBACK (merchant survey submissions, 24h / 7d)";
   const section = (body: string) => {
@@ -2536,7 +2705,7 @@ describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
     return body.slice(start, body.indexOf("\n\n", start));
   };
 
-  it("renders counts, histogram, average, email and WTP lines", () => {
+  it("renders counts, histogram, average, email and message lines", () => {
     const body = buildDigestBody(
       makeData({
         feedback: {
@@ -2545,7 +2714,7 @@ describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
           csatCounts7d: [0, 1, 0, 1, 1],
           avgCsat7d: 11 / 3,
           withEmail7d: 2,
-          withWtp7d: 1,
+          withMessage7d: 1,
         },
       }),
     );
@@ -2555,7 +2724,7 @@ describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
         HEADER,
         "  Submissions: 1 / 3",
         "  CSAT (7d): 1:0  2:1  3:0  4:1  5:1 | avg 3.7/5",
-        "  With follow-up email (7d): 2 | With WTP answer (7d): 1",
+        "  With follow-up email (7d): 2 | With message (7d): 1",
       ].join("\n"),
     );
   });
@@ -2569,7 +2738,7 @@ describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
           csatCounts7d: [0, 0, 0, 0, 0],
           avgCsat7d: null,
           withEmail7d: 0,
-          withWtp7d: 0,
+          withMessage7d: 0,
         },
       }),
     );

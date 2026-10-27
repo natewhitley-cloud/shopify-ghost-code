@@ -57,6 +57,7 @@ const fakeDb = vi.hoisted(() => {
       if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
         const c = cond as R;
         if ("in" in c && !(c.in as unknown[]).includes(value)) return false;
+        if ("not" in c && value === c.not) return false;
         if ("notIn" in c && (c.notIn as unknown[]).includes(value)) return false;
         if ("gte" in c && !(value instanceof Date && value >= (c.gte as Date))) return false;
         if ("lt" in c && !(value instanceof Date && value < (c.lt as Date))) return false;
@@ -449,47 +450,63 @@ function seed() {
   );
 
   // Merchant feedback (gc-97k.3): real + churned-real rows, one too old, and a
-  // CSAT-1 row with an email and WTP answer for EVERY excluded store (incl. the
+  // CSAT-1 row with an email and a message for EVERY excluded store (incl. the
   // isInternal-only uninstalled one) that would skew every line if it leaked.
   tables.merchantFeedback.push(
     {
       id: "f1",
+      topic: "feedback",
       shopId: "shop-a",
       csat: 5,
       contactEmail: "owner@real-a.test",
-      wtp: null,
+      message: null,
       createdAt: ago(HOUR),
     },
     {
       id: "f2",
+      topic: "feedback",
       shopId: "shop-b",
       csat: 2,
       contactEmail: null,
-      wtp: "Reports",
+      message: "Reports",
       createdAt: ago(30 * HOUR),
     },
     {
       id: "f3",
+      topic: "feedback",
       shopId: "shop-churned",
       csat: 4,
       contactEmail: null,
-      wtp: null,
+      message: null,
       createdAt: ago(5 * HOUR),
     },
     {
       id: "f4",
+      topic: "feedback",
       shopId: "shop-a",
       csat: 1,
       contactEmail: null,
-      wtp: null,
+      message: null,
       createdAt: ago(8 * 24 * HOUR),
+    },
+    // gc-3twe: a real shop's Help bug report (a support request, not a survey
+    // submission) with a CSAT and email that would skew every line if counted.
+    {
+      id: "f5",
+      topic: "bug",
+      shopId: "shop-a",
+      csat: 1,
+      contactEmail: "bug@real-a.test",
+      message: "bug message",
+      createdAt: ago(HOUR),
     },
     ...[...EXCLUDED.map((s) => s.id), "shop-internal-2"].map((shopId, i) => ({
       id: `fx${i}`,
+      topic: "feedback",
       shopId,
       csat: 1,
       contactEmail: "leak@excluded.test",
-      wtp: "excluded-wtp",
+      message: "excluded-message",
       createdAt: ago(HOUR),
     })),
   );
@@ -709,7 +726,7 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     expect(body).toContain("NUDGES (funnel per nudge, 24h / 7d)\n  No nudge events in the last 7d");
   });
 
-  it("counts feedback from real (incl. churned) shops only, never excluded stores (gc-97k.3)", async () => {
+  it("counts feedback from real (incl. churned) shops only, never excluded stores or other Help topics (gc-97k.3, gc-3twe)", async () => {
     const body = await runDigest();
 
     const header = "FEEDBACK (merchant survey submissions, 24h / 7d)";
@@ -719,9 +736,94 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
         header,
         "  Submissions: 2 / 3",
         "  CSAT (7d): 1:0  2:1  3:0  4:1  5:1 | avg 3.7/5",
-        "  With follow-up email (7d): 1 | With WTP answer (7d): 1",
+        "  With follow-up email (7d): 1 | With message (7d): 1",
       ].join("\n"),
     );
+  });
+
+  it("HELP MESSAGES and INSTALL SOURCE count real shops only, never excluded stores (gc-3twe)", async () => {
+    const now = Date.now();
+    const ago = (ms: number) => new Date(now - ms);
+    // Answers: two real shops, plus one per excluded store (would leak as
+    // web_search 3+ if counted).
+    for (const [id, source] of [
+      ["shop-a", "sidekick"],
+      ["shop-churned", "other"],
+      ...EXCLUDED.map((x) => [x.id, "web_search"]),
+    ]) {
+      const shop = tables.shop.find((r) => r.id === id);
+      if (shop) Object.assign(shop, { installSource: source, installSourceOther: "secret words" });
+    }
+    // Card funnel: shown + answered for a real shop, a skip for an excluded one.
+    tables.opsEvent.push(
+      {
+        id: "is1",
+        eventType: "nudge_shown",
+        key: "real-a.myshopify.com",
+        metadata: { nudgeKey: "install_source" },
+        createdAt: ago(HOUR),
+      },
+      {
+        id: "is2",
+        eventType: "nudge_converted",
+        key: "real-a.myshopify.com",
+        metadata: { nudgeKey: "install_source" },
+        createdAt: ago(HOUR),
+      },
+      {
+        id: "is3",
+        eventType: "nudge_dismissed",
+        key: EXCLUDED[0].domain,
+        metadata: { nudgeKey: "install_source" },
+        createdAt: ago(HOUR),
+      },
+      // Support sends that missed the inbox: one real, one excluded, one too old.
+      {
+        id: "se1",
+        eventType: "api_error",
+        key: "support_email_delivery_failed",
+        metadata: { level: "error", shopDomain: "real-b.myshopify.com", reason: "http_error" },
+        createdAt: ago(HOUR),
+      },
+      {
+        id: "se2",
+        eventType: "api_error",
+        key: "support_email_delivery_failed",
+        metadata: { level: "error", shopDomain: EXCLUDED[1].domain, reason: "exception" },
+        createdAt: ago(HOUR),
+      },
+      {
+        id: "se3",
+        eventType: "api_error",
+        key: "support_email_delivery_failed",
+        metadata: { level: "error", shopDomain: "real-b.myshopify.com", reason: "exception" },
+        createdAt: ago(8 * 24 * HOUR),
+      },
+    );
+
+    const body = await runDigest();
+    const sectionOf = (header: string) => {
+      const start = body.indexOf(header);
+      expect(start).toBeGreaterThan(-1);
+      return body.slice(start, body.indexOf("\n\n", start));
+    };
+
+    // Messages in 7d from real shops: f1, f2, f3 (feedback) + f5 (bug); f4 is
+    // too old; one reply-to address (f1).
+    expect(sectionOf("HELP MESSAGES (7d)")).toBe(
+      [
+        "HELP MESSAGES (7d)",
+        "  Messages: 4 (bug 1, howto 0, feedback 3, billing 0, other 0) | With reply-to: 2",
+        "  Support emails not delivered: 1 (read them in MerchantFeedback)",
+      ].join("\n"),
+    );
+    const installSource = sectionOf("INSTALL SOURCE (how did you find GhostCode?)");
+    expect(installSource).toContain("  Card (7d): shown 1 | answered 1 | skipped 0");
+    expect(installSource).toContain("Answers (all time, 2): app_store_search 0,");
+    expect(installSource).toContain("sidekick 1");
+    expect(installSource).toContain("web_search 0");
+    expect(installSource).toContain("other 1");
+    expect(body).not.toContain("secret words");
   });
 
   it("renders the feedback empty state when there are no submissions", async () => {
