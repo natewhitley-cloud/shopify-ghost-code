@@ -27,6 +27,7 @@ import { safeErrorFields } from "../lib/safe-error";
 import {
   claimGuardEmailNoticeShown,
   enableGuardEmail,
+  getGuardEmailConsent,
   turnOffGuardEmail,
 } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -168,9 +169,14 @@ export async function guardEmailSettingFor(
 /**
  * Settings' toggle. Off: the notice's "Turn off" (always allowed). On: consent
  * for the address the card showed (`shownEmail`), stamped like the notice
- * (enableGuardEmail), refused when the control is not offered, all mail is
- * off, or the address is no longer the one the card would show. Session shop
- * only (the caller passes the session shop's row).
+ * (enableGuardEmail; an already-on shop's hash is re-stamped to it), refused
+ * when the control is not offered, all mail is off, or the address is no
+ * longer the one the card would show. Session shop only (the caller passes
+ * the session shop's row).
+ *
+ * The answer is the state stored AFTER the write (wave 3 U5), never the one
+ * asked for: a concurrent unsubscribe or turn-off reads as off ("refused"
+ * when on was asked), so the card never claims email is on when it is not.
  */
 export async function setGuardEmailFromSettings(
   shop: GuardEmailNoticeShop & { id: string },
@@ -180,11 +186,18 @@ export async function setGuardEmailFromSettings(
 ): Promise<"on" | "off" | "refused"> {
   if (!enabled) {
     await turnOffGuardEmail(shop.id);
-    return "off";
+  } else {
+    if (!settingOffered(shop) || !shop.alertsEnabled) return "refused";
+    const email = await noticeEmail(shop, admin);
+    if (!sameAddress(email, shownEmail)) return "refused";
+    await enableGuardEmail(shop.id, email ? guardConsentHash(email) : null);
   }
-  if (!settingOffered(shop) || !shop.alertsEnabled) return "refused";
-  const email = await noticeEmail(shop, admin);
-  if (!sameAddress(email, shownEmail)) return "refused";
-  await enableGuardEmail(shop.id, email ? guardConsentHash(email) : null);
-  return "on";
+  const stored = await getGuardEmailConsent(shop.id);
+  const on =
+    !!stored &&
+    stored.alertsEnabled &&
+    stored.guardEmailNoticeShownAt !== null &&
+    stored.guardEmailOffAt === null;
+  if (on) return "on";
+  return enabled ? "refused" : "off";
 }

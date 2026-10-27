@@ -220,21 +220,36 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
 
 describe("optionalScopeUnlocks (plan-aware copy)", () => {
   it("on a plan without Broken links, read_content makes no broken-links claim", () => {
-    const line = optionalScopeUnlocks("read_content", false);
+    const line = optionalScopeUnlocks("read_content", false, true);
     expect(line).toBe("Finds orphaned content pages left behind by uninstalled apps.");
     expect(line.toLowerCase()).not.toContain("broken");
   });
 
   it("on a plan with Broken links, read_content keeps the full line", () => {
-    expect(optionalScopeUnlocks("read_content", true)).toBe(
+    expect(optionalScopeUnlocks("read_content", true, true)).toBe(
       OPTIONAL_SCOPE_INFO.read_content.unlocks,
     );
   });
 
   it("no other scope's line changes by plan", () => {
     for (const scope of OPTIONAL_SCOPES.filter((s) => s !== "read_content")) {
-      expect(optionalScopeUnlocks(scope, false)).toBe(OPTIONAL_SCOPE_INFO[scope].unlocks);
+      expect(optionalScopeUnlocks(scope, false, true)).toBe(OPTIONAL_SCOPE_INFO[scope].unlocks);
       expect(OPTIONAL_SCOPE_INFO[scope].unlocks.toLowerCase()).not.toContain("broken link");
+    }
+  });
+
+  it("names the menu check only while it runs (wave 3 U4); the label never changes", () => {
+    const off = optionalScopeUnlocks("read_online_store_navigation", true, false);
+    expect(off).toBe("Finds orphaned URL redirects left behind by uninstalled apps.");
+    expect(off.toLowerCase()).not.toContain("menu");
+    expect(optionalScopeUnlocks("read_online_store_navigation", true, true)).toBe(
+      OPTIONAL_SCOPE_INFO.read_online_store_navigation.unlocks,
+    );
+    expect(OPTIONAL_SCOPE_INFO.read_online_store_navigation.label).toBe("Menus and URL redirects");
+    for (const scope of OPTIONAL_SCOPES.filter((s) => s !== "read_online_store_navigation")) {
+      expect(optionalScopeUnlocks(scope, true, false)).toBe(
+        optionalScopeUnlocks(scope, true, true),
+      );
     }
   });
 });

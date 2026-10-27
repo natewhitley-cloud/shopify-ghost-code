@@ -40,6 +40,7 @@ import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
 import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
+import { isMenuInjectionLive } from "../services/soft-launch-flags.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import {
   guardEmailSettingFor,
@@ -104,6 +105,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Checkout guard emails (gc-njwa #5): the on/off control, Standard and
     // Professional only, while guard email is live; null otherwise (no card).
     guardEmail: await guardEmailSettingFor(shop, admin ?? null),
+    // The Permissions card names the menu check only while it runs (wave 3 U4).
+    menuCheckLive: isMenuInjectionLive(),
     // Free speed test: the Free tile lists it while the speed report is live,
     // straight from the plan matrix (Free only since gc-d0ui).
     freeSpeedTestTiles: {
@@ -355,7 +358,14 @@ function rowCell(index: number, extra?: React.CSSProperties): React.CSSPropertie
  * exception is Broken links, which is a Standard feature by plan, not by
  * permission, so a plan without it says so instead of implying a grant adds it.
  */
-export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: boolean }) {
+export function PermissionsCard({
+  brokenLinksIncluded,
+  menuCheckLive,
+}: {
+  brokenLinksIncluded: boolean;
+  /** MENU_INJECTION_LIVE_ENABLED: the navigation line names the menu check only while it runs. */
+  menuCheckLive: boolean;
+}) {
   const { granted, unsupported, failed, requesting, missing, requestMissing } = useOptionalScopes();
   const allGranted = granted !== null && allOptionalScopesGranted(granted);
 
@@ -402,7 +412,7 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
                             {OPTIONAL_SCOPE_INFO[scope].label}
                           </div>
                           <div style={{ ...textSubduedSm, marginTop: "2px" }}>
-                            {optionalScopeUnlocks(scope, brokenLinksIncluded)}
+                            {optionalScopeUnlocks(scope, brokenLinksIncluded, menuCheckLive)}
                           </div>
                         </td>
                         <td style={rowCell(i, statusColumn)}>
@@ -480,6 +490,7 @@ export default function Settings() {
     trialEligible,
     alerts,
     guardEmail,
+    menuCheckLive,
     freeSpeedTestTiles,
     speedReportTiles,
   } = useLoaderData<typeof loader>();
@@ -538,7 +549,10 @@ export default function Settings() {
 
         {/* Permissions, every plan (gc-4n0y): the checks these scopes unlock run on
           Free scans too; Broken links stays a Standard feature by plan. */}
-        <PermissionsCard brokenLinksIncluded={features.canDetectDanglingReferences} />
+        <PermissionsCard
+          brokenLinksIncluded={features.canDetectDanglingReferences}
+          menuCheckLive={menuCheckLive}
+        />
 
         <p style={{ ...textSubduedSm, margin: 0, textAlign: "center" }}>GhostCode 1.0.0</p>
       </div>

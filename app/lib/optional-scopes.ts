@@ -69,11 +69,21 @@ export const BROKEN_LINKS_STANDARD_NOTE =
 /**
  * The Permissions card's "unlocks" line for a scope on the viewer's plan. The
  * read_content line names broken links, which are Standard+ by plan, so a plan
- * without them gets the line without that claim (audit fix, gc-4n0y).
+ * without them gets the line without that claim (audit fix, gc-4n0y). The
+ * navigation line names the menu check only while it runs
+ * (`menuCheckLive` = MENU_INJECTION_LIVE_ENABLED, wave 3 U4); the label stays
+ * "Menus and URL redirects" either way (owner decision).
  */
-export function optionalScopeUnlocks(scope: OptionalScope, brokenLinksIncluded: boolean): string {
+export function optionalScopeUnlocks(
+  scope: OptionalScope,
+  brokenLinksIncluded: boolean,
+  menuCheckLive: boolean,
+): string {
   if (scope === "read_content" && !brokenLinksIncluded) {
     return "Finds orphaned content pages left behind by uninstalled apps.";
+  }
+  if (scope === "read_online_store_navigation" && !menuCheckLive) {
+    return "Finds orphaned URL redirects left behind by uninstalled apps.";
   }
   return OPTIONAL_SCOPE_INFO[scope].unlocks;
 }

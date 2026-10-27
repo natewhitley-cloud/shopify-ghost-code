@@ -345,7 +345,7 @@ const REMEDIATION: Record<string, Remediation> = {
   // Store data, not theme code: fixed in the menu, never in a theme file.
   MENU_INJECTION: {
     impact:
-      "A menu item holds code that can run in shoppers' browsers if your theme prints menu labels without escaping them. In October 2026 a compromised app used menu labels to load a fake checkout.",
+      "A menu item holds code that can run in shoppers' browsers if your theme prints menu labels without escaping them. In October 2026 a compromised app used menu labels to load code into storefronts.",
     howTo: numberedSteps(MENU_INJECTION_STEPS),
   },
 

@@ -159,9 +159,11 @@ export async function turnOffGuardEmail(shopId: string): Promise<void> {
  * Settings' checkout guard email toggle turned ON (gc-njwa #5): the merchant
  * read the address on the card, so this is consent, stamped like the notice:
  * guardEmailNoticeShownAt now, with `consentHash` (the hashed address shown,
- * or null for the generic wording), and any "Turn off" cleared. Conditional:
- * a shop already on keeps its first consent time (a repeat changes nothing).
- * Returns true IFF this call turned it on.
+ * or null for the generic wording), and any "Turn off" cleared. A shop
+ * already on keeps its first consent time, but its consent hash is re-stamped
+ * to the address shown (wave 3 U5: a stale hash from an old owner email would
+ * otherwise keep every email blocked while the card says "on"). Returns true
+ * IFF this call turned it on.
  */
 export async function enableGuardEmail(
   shopId: string,
@@ -178,7 +180,20 @@ export async function enableGuardEmail(
       guardEmailConsentHash: consentHash,
     },
   });
-  return count === 1;
+  if (count === 1) return true;
+  await db.shop.updateMany({
+    where: { id: shopId, guardEmailOffAt: null, guardEmailNoticeShownAt: { not: null } },
+    data: { guardEmailConsentHash: consentHash },
+  });
+  return false;
+}
+
+/** The stored guard email consent fields (Settings reads its real state back), or null. */
+export async function getGuardEmailConsent(shopId: string) {
+  return db.shop.findUnique({
+    where: { id: shopId },
+    select: { alertsEnabled: true, guardEmailNoticeShownAt: true, guardEmailOffAt: true },
+  });
 }
 
 /** Append one sent-summary row to the ledger ((shopId, scanId) is unique). */
@@ -192,8 +207,9 @@ export async function setShopAlertEmail(shopId: string, email: string | null): P
 }
 
 /**
- * The Settings summary-email toggle (gc-ol95). Turning it OFF clears nothing
- * else. Turning it ON depends on whether sending is live:
+ * The Settings summary-email toggle (gc-ol95). Turning it OFF also withdraws
+ * checkout guard email consent (guardEmailOffAt, wave 3 U1); turning it back
+ * on leaves guard email off. Turning it ON depends on whether sending is live:
  *   - live (`sendingLive`): the merchant read the live card ("We email ...
  *     only when something changed"), so this is consent: summaryOptedInAt.
  *   - dark: the card promised "We'll let you know before any are sent", so it
@@ -207,7 +223,13 @@ export async function setSummaryEmailsEnabled(
   opts: { sendingLive: boolean; noticeShown: boolean },
 ): Promise<void> {
   if (!enabled) {
-    await db.shop.update({ where: { id: shopId }, data: { alertsEnabled: false } });
+    // Mail off also withdraws guard email consent (wave 3 U1), so turning
+    // summaries back on never turns guard email back on with them; only the
+    // guard toggle can.
+    await db.shop.update({
+      where: { id: shopId },
+      data: { alertsEnabled: false, guardEmailOffAt: new Date() },
+    });
     return;
   }
   const now = new Date();
@@ -318,7 +340,9 @@ export async function disableAlertsByToken(token: string): Promise<boolean> {
     // Rotate: the token may already sit in an access log (the RFC 8058 header
     // URL carries it in the path), so a used token must be dead. The next send's
     // ensureUnsubscribeToken mints a fresh one; re-enabling in Settings needs none.
-    data: { alertsEnabled: false, alertUnsubscribeToken: null },
+    // An unsubscribe also withdraws checkout guard email consent (wave 3 U1):
+    // re-enabling summaries later must not silently resume guard email.
+    data: { alertsEnabled: false, alertUnsubscribeToken: null, guardEmailOffAt: new Date() },
   });
   return result.count > 0;
 }

@@ -173,8 +173,15 @@ export function menuRiskTitle(count: number): string {
 }
 
 /** Several items' facts (the first item's description names one item only). */
-export const MENU_RISK_GROUP_FACTS =
-  "Labels or links in this menu contain code. Apps and staff can edit menus; in October 2026 a compromised app used menu labels to load code into storefronts.";
+/**
+ * Why menu code matters, hedged (wave 3 U2): what the October 2026 incident
+ * did, never a claim about this store's checkout. Shared by the menu banner
+ * and the stored MENU_INJECTION description.
+ */
+export const MENU_INCIDENT_CONTEXT =
+  "Apps and staff can edit menus; in October 2026 a compromised app used menu labels to load code into storefronts.";
+
+export const MENU_RISK_GROUP_FACTS = `Labels or links in this menu contain code. ${MENU_INCIDENT_CONTEXT}`;
 
 /** The banner's title. Names the app, or the domain. */
 export function securityRiskTitle(risk: SecurityRisk): string {

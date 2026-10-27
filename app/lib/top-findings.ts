@@ -229,7 +229,8 @@ export function findingCostLine(findingType: FindingType): string {
     return "A security incident report names this app.";
   }
   if (findingType === "MENU_INJECTION") {
-    return "This code can run in shoppers' browsers and send them to a fake checkout.";
+    // Hedged (wave 3 U2): whether it runs depends on how the theme prints labels.
+    return "This code could run in shoppers' browsers.";
   }
   const lane = CONSEQUENCE_MAP[findingType].primary;
   return lane === null ? "" : soWhatForLane(lane);

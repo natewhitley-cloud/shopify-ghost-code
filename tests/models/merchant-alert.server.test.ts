@@ -142,12 +142,26 @@ describe("shop preference helpers", () => {
     });
   });
 
-  it("setSummaryEmailsEnabled(false) turns the toggle off and clears nothing else", async () => {
+  it("setSummaryEmailsEnabled(false) turns mail off and withdraws guard email consent (wave 3 U1)", async () => {
     await setSummaryEmailsEnabled("s1", false, { sendingLive: true, noticeShown: false });
     expect(mockDb.shop.update).toHaveBeenCalledWith({
       where: { id: "s1" },
-      data: { alertsEnabled: false },
+      data: { alertsEnabled: false, guardEmailOffAt: expect.any(Date) },
     });
+  });
+
+  it("turning summaries back on never turns guard email back on (wave 3 U1)", async () => {
+    for (const opts of [
+      { sendingLive: true, noticeShown: false },
+      { sendingLive: false, noticeShown: true },
+      { sendingLive: false, noticeShown: false },
+    ]) {
+      mockDb.shop.update.mockClear();
+      await setSummaryEmailsEnabled("s1", true, opts);
+      const data = mockDb.shop.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty("guardEmailOffAt");
+      expect(data).not.toHaveProperty("guardEmailNoticeShownAt");
+    }
   });
 
   it("opting in while sending is LIVE records consent (summaryOptedInAt), no notice owed", async () => {
@@ -255,7 +269,12 @@ describe("disableAlertsByToken", () => {
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: { alertUnsubscribeToken: "tok" },
       // Rotates: the used token is nulled so a logged token is already dead.
-      data: { alertsEnabled: false, alertUnsubscribeToken: null },
+      // Wave 3 U1: also withdraws checkout guard email consent.
+      data: {
+        alertsEnabled: false,
+        alertUnsubscribeToken: null,
+        guardEmailOffAt: expect.any(Date),
+      },
     });
   });
 
@@ -510,6 +529,15 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
     });
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
     await expect(enableGuardEmail("shop-1", null)).resolves.toBe(false);
+  });
+
+  it("enableGuardEmail on a shop already on re-stamps a stale hash to the address shown (wave 3 U5)", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    await expect(enableGuardEmail("shop-1", "hash-new")).resolves.toBe(false);
+    expect(mockDb.shop.updateMany).toHaveBeenLastCalledWith({
+      where: { id: "shop-1", guardEmailOffAt: null, guardEmailNoticeShownAt: { not: null } },
+      data: { guardEmailConsentHash: "hash-new" },
+    });
   });
 
   it("countGuardAlertsSince counts only guard emails for the shop", async () => {

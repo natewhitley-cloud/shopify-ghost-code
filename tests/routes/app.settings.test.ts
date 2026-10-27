@@ -48,6 +48,7 @@ vi.mock("../../app/models/merchant-alert.server", () => ({
   // gc-njwa #5: the guard email toggle's writes.
   enableGuardEmail: vi.fn(),
   turnOffGuardEmail: vi.fn(),
+  getGuardEmailConsent: vi.fn(),
   claimGuardEmailNoticeShown: vi.fn(),
 }));
 
@@ -83,6 +84,7 @@ import { PLAN_LISTING_BULLETS, TRIAL_BULLET } from "../../app/lib/plan-tiles";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import {
   enableGuardEmail,
+  getGuardEmailConsent,
   setSummaryEmailsEnabled,
   turnOffGuardEmail,
 } from "../../app/models/merchant-alert.server";
@@ -185,6 +187,23 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("app.settings loader", () => {
+  it("passes whether the menu check runs, for the Permissions card (wave 3 U4)", async () => {
+    const prev = process.env.MENU_INJECTION_LIVE_ENABLED;
+    try {
+      delete process.env.MENU_INJECTION_LIVE_ENABLED;
+      expect(((await loader(makeLoaderArgs())) as { menuCheckLive: boolean }).menuCheckLive).toBe(
+        false,
+      );
+      process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+      expect(((await loader(makeLoaderArgs())) as { menuCheckLive: boolean }).menuCheckLive).toBe(
+        true,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.MENU_INJECTION_LIVE_ENABLED;
+      else process.env.MENU_INJECTION_LIVE_ENABLED = prev;
+    }
+  });
+
   it("returns current plan, feature info, and the managed pricing URL", async () => {
     const result = (await loader(makeLoaderArgs())) as {
       shop: { plan: string; domain: string };
@@ -1051,6 +1070,38 @@ describe("Settings: checkout guard emails (gc-njwa #5)", () => {
   });
 
   describe("action: set-guard-email", () => {
+    // The stored consent the action reads back (wave 3 U5): the writes move it.
+    let stored: {
+      alertsEnabled: boolean;
+      guardEmailNoticeShownAt: Date | null;
+      guardEmailOffAt: Date | null;
+    };
+    beforeEach(() => {
+      stored = { alertsEnabled: true, guardEmailNoticeShownAt: null, guardEmailOffAt: null };
+      vi.mocked(enableGuardEmail).mockImplementation(async () => {
+        stored = { ...stored, guardEmailNoticeShownAt: new Date(), guardEmailOffAt: null };
+        return true;
+      });
+      vi.mocked(turnOffGuardEmail).mockImplementation(async () => {
+        stored = { ...stored, guardEmailOffAt: new Date() };
+      });
+      vi.mocked(getGuardEmailConsent).mockImplementation(async () => stored as never);
+    });
+
+    it("answers with the REAL stored state, not the one asked for (wave 3 U5)", async () => {
+      live();
+      const on = { intent: "set-guard-email", enabled: "true", email: "owner@example.com" };
+      // An unsubscribe lands between the gate read and the write: still off.
+      vi.mocked(enableGuardEmail).mockImplementationOnce(async () => {
+        stored = { ...stored, alertsEnabled: false };
+        return false;
+      });
+      await expect(post(on)).resolves.toHaveProperty("guardEmailError");
+      // A shop already on (enable changes nothing) still reads on.
+      stored = { alertsEnabled: true, guardEmailNoticeShownAt: new Date(), guardEmailOffAt: null };
+      vi.mocked(enableGuardEmail).mockResolvedValueOnce(false);
+      await expect(post(on)).resolves.toEqual({ guardEmail: "on" });
+    });
     it("on = consent for the SESSION shop, stamped with the hash of the address shown", async () => {
       live();
       const { guardConsentHash } =

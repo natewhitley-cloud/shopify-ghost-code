@@ -5,6 +5,9 @@
  */
 import { describe, it, expect } from "vitest";
 
+import { getFindingImpact } from "../../app/lib/finding-remediation";
+import { MENU_INCIDENT_CONTEXT, MENU_RISK_GROUP_FACTS } from "../../app/lib/security-risk";
+import { findingCostLine } from "../../app/lib/top-findings";
 import {
   detectMenuInjection,
   isScriptUrl,
@@ -459,5 +462,27 @@ describe("detectMenuInjection: linear time", () => {
     const started = Date.now();
     detectMenuInjection([item(title, title)]);
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe("menu copy is hedged (wave 3 U2)", () => {
+  it("the stored description never claims a hijack or fake checkout", () => {
+    for (const rule of ["script", "handler", "frame", "script_url", "domain"] as const) {
+      for (const field of ["title", "url"] as const) {
+        const text = menuInjectionDescription({ rule, field, domain: "cartassure.top" });
+        expect(text, rule).not.toMatch(/hijack|fake checkout|hacked/i);
+        expect(text, rule).toContain("could load code into your storefront");
+        expect(text, rule).toContain(MENU_INCIDENT_CONTEXT);
+      }
+    }
+  });
+
+  it("the Start here cost line and the finding's impact text are hedged too", () => {
+    expect(findingCostLine("MENU_INJECTION")).toBe("This code could run in shoppers' browsers.");
+    expect(getFindingImpact("MENU_INJECTION")).not.toMatch(/hijack|fake checkout/i);
+  });
+
+  it("the menu banner and the stored description share the incident context", () => {
+    expect(MENU_RISK_GROUP_FACTS).toContain(MENU_INCIDENT_CONTEXT);
   });
 });

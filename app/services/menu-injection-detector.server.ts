@@ -54,6 +54,7 @@ import { FindingType, Severity } from "@prisma/client";
 import { decodeAttributeValue } from "./runtime-malicious.server";
 import { indexOfIgnoreCase, isHtmlSpace, urlHostsOnLine } from "./scan-engine.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
+import { MENU_INCIDENT_CONTEXT } from "../lib/security-risk";
 import type { CreateFindingInput } from "../models/finding.server";
 
 /** One menu item as the detector reads it (built by menu-fetcher.server.ts). */
@@ -358,7 +359,13 @@ const RULE_WORDS: Record<MenuInjectionRule, string> = {
   domain: "a link to a known malicious domain",
 };
 
-/** The stored description for a match (fixed wording, the domain only from the curated list). */
+/**
+ * The stored description for a match (fixed wording, the domain only from the
+ * curated list). Hedged (wave 3 U2): it never says the store's checkout was
+ * hijacked; the October 2026 context is MENU_INCIDENT_CONTEXT, shared with the
+ * menu banner. Safe to reword: MENU_INJECTION is stored only while
+ * MENU_INJECTION_LIVE_ENABLED is on, which is still dark in production.
+ */
 export function menuInjectionDescription(
   match: Pick<MenuInjectionMatch, "rule" | "domain" | "field">,
 ): string {
@@ -367,7 +374,7 @@ export function menuInjectionDescription(
     match.rule === "domain" && match.domain
       ? `a link to ${match.domain}, a known malicious domain`
       : RULE_WORDS[match.rule];
-  return `${where} contains ${what}. Apps and staff can edit menus; in October 2026 a compromised app used menu labels to hijack checkouts.`;
+  return `${where} contains ${what}, which could load code into your storefront. ${MENU_INCIDENT_CONTEXT}`;
 }
 
 /**

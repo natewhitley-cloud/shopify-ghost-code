@@ -32,9 +32,11 @@ function state(over: Partial<OptionalScopesState>): OptionalScopesState {
   } as OptionalScopesState;
 }
 
-function render(s: OptionalScopesState, brokenLinksIncluded = true): string {
+function render(s: OptionalScopesState, brokenLinksIncluded = true, menuCheckLive = true): string {
   mockHook.mockReturnValue(s);
-  return renderToStaticMarkup(createElement(PermissionsCard, { brokenLinksIncluded }));
+  return renderToStaticMarkup(
+    createElement(PermissionsCard, { brokenLinksIncluded, menuCheckLive }),
+  );
 }
 
 const badges = (html: string) =>
@@ -43,6 +45,15 @@ const badges = (html: string) =>
 beforeEach(() => mockHook.mockReset());
 
 describe("PermissionsCard", () => {
+  it("claims the menu check only while it runs (wave 3 U4)", () => {
+    const all = state({ granted: [...OPTIONAL_SCOPES] });
+    expect(render(all, true, false)).not.toContain("menu labels and links");
+    expect(render(all, true, false)).toContain("Menus and URL redirects");
+    expect(render(all, true, true)).toContain(
+      "checks your menu labels and links for injected code",
+    );
+  });
+
   it("is an h2 section header over a section card (no s-card / s-heading)", () => {
     const html = render(state({ granted: [...OPTIONAL_SCOPES] }));
     expect(html).toMatch(/^<section><h2 style="[^"]*">Permissions<\/h2><div style="/);

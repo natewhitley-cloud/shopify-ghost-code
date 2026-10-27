@@ -139,6 +139,27 @@ describe("extensions/sidekick-tools", () => {
     expect(line).toMatch(/Never add hosts, steps or details that are not in the result/);
   });
 
+  it("never lets Sidekick call the checkout safe from liveStoreAlerts (wave 3 U3)", () => {
+    const line = instructions.split("\n").find((l) => l.includes("`liveStoreAlerts` lists")) ?? "";
+    expect(line).toContain(
+      "An empty `liveStoreAlerts` does not mean the checkout is safe: GhostCode only checks the homepage and cart page markup. Never say the checkout is safe or clear.",
+    );
+    // No trigger routes "does my checkout look safe" as a question GhostCode answers.
+    const triggers =
+      instructions.split("\n").find((l) => l.includes("Use `get_latest_scan_summary` when")) ?? "";
+    expect(triggers).not.toMatch(/looks? safe|is safe|checkout is/i);
+    expect(read("tools.json")).not.toMatch(/\bsafe\b/i);
+  });
+
+  it("has a menu-code guardrail next to the advisory one: never hacked or hijacked (wave 3 U3)", () => {
+    const lines = instructions.split("\n");
+    const at = lines.findIndex((l) => l.includes("code in a menu"));
+    const advisoryAt = lines.findIndex((l) => l.includes("`appSecurityAdvisories`"));
+    expect(at).toBe(advisoryAt + 1);
+    expect(lines[at]).toMatch(/never say or suggest the store or checkout was hacked or hijacked/);
+    expect(lines[at]).toContain("Use its own `description`");
+  });
+
   it("adds a one-sentence [sidekick] extensions_summary to shopify.app.toml", () => {
     expect(sidekickSummary).toMatch(/^\s*extensions_summary = "[^"]+"\s*$/);
   });
