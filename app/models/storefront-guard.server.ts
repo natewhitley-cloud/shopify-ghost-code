@@ -250,3 +250,36 @@ export async function markIncidentsEmailed(
     });
   }
 }
+
+/**
+ * Hosts the shop's latest successful theme scan recorded (ScanDomain rows; no
+ * Shopify hosts are stored there). They are "known to the theme", so the guard
+ * never calls them new. Empty when the shop has no successful scan.
+ */
+export async function latestScanThemeHosts(shopId: string): Promise<Set<string>> {
+  const scan = await db.scan.findFirst({
+    where: { shopId, status: { in: ["COMPLETED", "PARTIAL"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!scan) return new Set();
+  const rows = await db.scanDomain.findMany({
+    where: { scanId: scan.id },
+    select: { domain: true },
+  });
+  return new Set(rows.map((r) => r.domain.toLowerCase()));
+}
+
+/** Installed shops with the guard fields the due check needs. */
+export function listGuardCandidateShops() {
+  return db.shop.findMany({
+    where: { uninstalledAt: null },
+    select: {
+      id: true,
+      domain: true,
+      plan: true,
+      storefrontGuardState: { select: { lastCheckedAt: true, backoffUntil: true } },
+    },
+    orderBy: { id: "asc" },
+  });
+}
