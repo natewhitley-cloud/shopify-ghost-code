@@ -16,6 +16,7 @@ import {
   MAX_BASELINE_HOSTS,
   MAX_HOSTS_PER_CHECK,
   newHostFingerprint,
+  PARTIAL_HOME_AUTHORITY,
   type GuardCheckInput,
   type GuardHostSighting,
   type GuardIncident,
@@ -415,5 +416,59 @@ describe("backoff", () => {
     ]);
     expect(r.state.consecutiveUnreachable).toBe(0);
     expect(r.state.backoffUntil).toBeNull();
+  });
+});
+
+describe("a store whose /cart never reads (audit fix)", () => {
+  it("home-only incidents resolve once the homepage has been authoritative long enough", () => {
+    const partial = ok({ complete: false });
+    const r = run([
+      ok({ sightings: [MAL], complete: false }),
+      ...Array(PARTIAL_HOME_AUTHORITY + 2).fill(partial),
+    ]);
+    const i = r.incidents.get(MAL.fingerprint)!;
+    expect(i.state).toBe("resolved");
+    expect(i.resolution).toBe("clean");
+  });
+
+  it("before that, partial checks never clear it", () => {
+    const partial = ok({ complete: false });
+    const r = run([ok({ sightings: [MAL], complete: false }), partial, partial]);
+    expect(r.incidents.get(MAL.fingerprint)!.state).toBe("open");
+  });
+
+  it("incidents seen on /cart still need a complete check", () => {
+    const partial = ok({ complete: false });
+    const r = run([
+      ok({ sightings: [{ ...MAL, page: "cart" }] }),
+      ...Array(PARTIAL_HOME_AUTHORITY + 3).fill(partial),
+    ]);
+    expect(r.incidents.get(MAL.fingerprint)!.state).toBe("open");
+  });
+
+  it("a complete check resets the partial run", () => {
+    const r = run([ok({ complete: false }), ok({ complete: false }), ok()]);
+    expect(r.state.consecutivePartial).toBe(0);
+  });
+});
+
+describe("flap reopen past the auto-merge age", () => {
+  it("a new-host incident reopened inside the flap window more than 14 days after opening merges at once", () => {
+    const opened = run([ok({ hosts: ["new.io"] }), ok({ hosts: ["new.io"] }), ok(), ok()], {
+      state: learned(),
+    });
+    const i = opened.incidents.get(newHostFingerprint("new.io"))!;
+    expect(i.state).toBe("resolved");
+    // Resolved 14 days after it opened, seen again a day later (inside the
+    // 7-day flap window): the same episode reopens, now past the merge age.
+    const lateResolved = { ...i, resolvedAt: at(AUTO_MERGE_MS) };
+    const r = run([ok({ hosts: ["new.io"] })], {
+      state: opened.state,
+      incidents: [lateResolved],
+      t: AUTO_MERGE_MS + DAY,
+    });
+    const after = r.incidents.get(newHostFingerprint("new.io"))!;
+    expect(after.resolution).toBe("auto_merged");
+    expect(r.state.baselineHosts["new.io"]).toBeDefined();
   });
 });

@@ -275,11 +275,6 @@ model MerchantAlert {
   @@unique([shopId, scanId])
 }
 
-// Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal
-// ba-1zbf.1). CSAT 1-5 is required; the three open-text answers and the
-// follow-up email are optional (null = left blank). Several rows per shop are
-// allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
-// deleteShopData (the email is personal data, so the redact path names it).
 // Checkout guard (gc-1q1s.4): one row per shop checked by the storefront-guard
 // cron. Hostnames, timestamps and counters only: never a path, query string or
 // page HTML, and no personal data. Cascades from Shop (shop/redact), and
@@ -299,6 +294,9 @@ model StorefrontGuardState {
   // paused_redirect only: the host the store sent us to (host only).
   lastRedirectHost       String?
   consecutiveUnreachable Int       @default(0)
+  // ok checks in a row whose /cart was unreadable. From 3, the homepage alone
+  // can clear home-only incidents (a store whose /cart never reads).
+  consecutivePartial     Int       @default(0)
   backoffUntil           DateTime?
   // Complete readable checks so far; new-host learning ends at 3.
   readableChecks         Int       @default(0)
@@ -349,6 +347,11 @@ model StorefrontIncident {
   @@index([shopId, state])
 }
 
+// Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal
+// ba-1zbf.1). CSAT 1-5 is required; the three open-text answers and the
+// follow-up email are optional (null = left blank). Several rows per shop are
+// allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
+// deleteShopData (the email is personal data, so the redact path names it).
 model MerchantFeedback {
   id           String   @id @default(cuid())
   shopId       String

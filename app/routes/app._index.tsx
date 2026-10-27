@@ -920,8 +920,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { dismissed: true };
   }
 
-  // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
-  // Session shop only; idempotent.
   // Checkout guard "This is expected" (gc-1q1s.6) on a NEW_SCRIPT_HOST
   // incident: scoped to this shop's own open new-host incident.
   if (intent === "guard-acknowledge") {
@@ -936,6 +934,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { guardEmailOff: true };
   }
 
+  // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
+  // Session shop only; idempotent.
   if (intent === "dismiss-summary-notice") {
     await dismissSummaryNotice(shop.id);
     return { dismissed: true };

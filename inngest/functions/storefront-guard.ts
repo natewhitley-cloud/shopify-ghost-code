@@ -33,6 +33,11 @@ export const STOREFRONT_GUARD_ID = "storefront-guard";
 export const GUARD_CHUNK_SIZE = 15;
 /** Shops checked in parallel inside a chunk. */
 export const GUARD_POOL = 5;
+/**
+ * At most this many shops per run (40 chunks at about 60 s worst case). The
+ * rest stay due and go first next hour. Raise with the pool when installs grow.
+ */
+export const MAX_GUARD_SHOPS_PER_RUN = 600;
 
 type DueShop = { id: string; domain: string; plan: string };
 
@@ -56,8 +61,14 @@ export const storefrontGuard = inngest.createFunction(
       const { isGuardDue } = await import("../../app/services/storefront-guard.server");
       const now = new Date();
       const candidates = await listGuardCandidateShops();
+      // Never-checked first, then the longest-waiting, capped so one run
+      // stays well inside the hour (the first live run makes every shop due).
+      const lastChecked = (s: (typeof candidates)[number]) =>
+        s.storefrontGuardState?.lastCheckedAt?.getTime() ?? -Infinity;
       const due: DueShop[] = candidates
         .filter((s) => isGuardDue(s, now))
+        .sort((a, b) => lastChecked(a) - lastChecked(b))
+        .slice(0, MAX_GUARD_SHOPS_PER_RUN)
         .map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
       return { shops: due, firedAt: now.toISOString() };
     });
@@ -93,14 +104,15 @@ export const storefrontGuard = inngest.createFunction(
     }
     const opened = results.flatMap((r) => (r.status === "checked" ? r.opened : []));
 
-    // Incident email (gc-1q1s.7): one step per shop that opened an emailable
-    // incident this run (incidents batched into one email). Only when the
-    // email flag is on; sendGuardIncidentEmail re-checks every gate.
+    // Incident email (gc-1q1s.7): one step per shop with an open, not yet
+    // emailed KNOWN_MALICIOUS / SCRIPT_LOADER episode from the last 24 h on a
+    // plan with guard email (checkGuardShop's toEmail), so a failed or
+    // throttled send is retried next run. Incidents batched into one email.
+    // Only when the email flag is on; sendGuardIncidentEmail re-checks every
+    // gate (consent, turn-off, unsubscribe, transport, throttle).
     const { isStorefrontGuardEmailLive } =
       await import("../../app/services/soft-launch-flags.server");
-    const emailable = opened.filter(
-      (o) => o.kind === "KNOWN_MALICIOUS" || o.kind === "SCRIPT_LOADER",
-    );
+    const emailable = results.flatMap((r) => (r.status === "checked" ? r.toEmail : []));
     const emailed: Record<string, string> = {};
     if (emailable.length > 0 && isStorefrontGuardEmailLive()) {
       const byShop = new Map<string, string[]>();

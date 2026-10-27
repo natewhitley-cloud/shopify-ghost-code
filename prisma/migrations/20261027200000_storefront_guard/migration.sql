@@ -33,6 +33,7 @@ CREATE TABLE "StorefrontGuardState" (
     "lastReadableAt" TIMESTAMP(3),
     "lastRedirectHost" TEXT,
     "consecutiveUnreachable" INTEGER NOT NULL DEFAULT 0,
+    "consecutivePartial" INTEGER NOT NULL DEFAULT 0,
     "backoffUntil" TIMESTAMP(3),
     "readableChecks" INTEGER NOT NULL DEFAULT 0,
     "baselineHosts" JSONB NOT NULL DEFAULT '{}',

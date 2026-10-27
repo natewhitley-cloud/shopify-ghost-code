@@ -16,12 +16,12 @@ import {
 } from "../lib/storefront-guard-copy";
 import { textSubduedSm } from "../styles/shared";
 
-/** "First seen {date} · shown on every plan", plus "Seen N times, last on {date}". */
+/** "Open since {date} · shown on every plan", plus "Seen N times, last on {date}". */
 function SeenLine({ incident }: { incident: GuardIncidentView }) {
   const again = guardSightingsLead(incident);
   return (
     <div style={{ ...textSubduedSm, overflowWrap: "anywhere" }}>
-      First seen <FormattedDate value={incident.openedAt} />
+      Open since <FormattedDate value={incident.openedAt} />
       {again && (
         <>
           {". "}

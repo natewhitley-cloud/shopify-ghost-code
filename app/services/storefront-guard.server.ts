@@ -28,6 +28,7 @@ import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
 import {
   applyGuardCheck,
+  EMAIL_INCIDENT_KINDS,
   type GuardCheckInput,
   type GuardHostSighting,
   type GuardIncident,
@@ -78,6 +79,9 @@ export function isGuardDue(shop: GuardDueInput, now: Date): boolean {
   return guardHourSlot(shop.id) === now.getUTCHours() && age >= DAILY_MIN_GAP_MS;
 }
 
+/** How long an unemailed incident episode keeps being offered to the email step. */
+export const EMAIL_RETRY_WINDOW_MS = 24 * HOUR_MS;
+
 /** One newly opened incident episode, as the cron passes it on (JSON-safe). */
 export type OpenedIncident = {
   shopId: string;
@@ -88,7 +92,18 @@ export type OpenedIncident = {
 };
 
 export type GuardShopResult =
-  | { status: "checked"; outcome: string; opened: OpenedIncident[] }
+  | {
+      status: "checked";
+      outcome: string;
+      opened: OpenedIncident[];
+      /**
+       * Open KNOWN_MALICIOUS / SCRIPT_LOADER episodes opened within
+       * EMAIL_RETRY_WINDOW_MS and not yet emailed, on a plan with guard email.
+       * Re-offered every run, so a failed or throttled send is retried (audit
+       * fix); the email's own gates (consent, transport) still decide.
+       */
+      toEmail: OpenedIncident[];
+    }
   | { status: "stale"; outcome: string }
   | { status: "failed" };
 
@@ -158,10 +173,11 @@ async function resolveDomains(
 
 /**
  * One shop's check, end to end. Never throws. `opened` lists the incident
- * episodes this check opened (every kind; the caller decides what may email).
+ * episodes this check opened (every kind); `toEmail` the ones the email step
+ * should (re)try.
  */
 export async function checkGuardShop(
-  shop: { id: string; domain: string },
+  shop: { id: string; domain: string; plan: string },
   now: Date,
   deps: GuardShopDeps,
 ): Promise<GuardShopResult> {
@@ -202,16 +218,34 @@ export async function checkGuardShop(
       });
       return { status: "stale", outcome };
     }
+    type Saved = GuardIncident & { id: string; openedAt: Date };
+    const asOpened = (i: Saved): OpenedIncident => ({
+      shopId: shop.id,
+      incidentId: i.id,
+      kind: i.kind,
+      openedAt: i.openedAt.toISOString(),
+    });
     const opened = result.opened
       .map((i) => saved.incidents.get(i.fingerprint))
-      .filter((i): i is GuardIncident & { id: string; openedAt: Date } => !!i?.id && !!i.openedAt)
-      .map((i) => ({
-        shopId: shop.id,
-        incidentId: i.id,
-        kind: i.kind,
-        openedAt: i.openedAt.toISOString(),
-      }));
-    return { status: "checked", outcome, opened };
+      .filter((i): i is Saved => !!i?.id && !!i.openedAt)
+      .map(asOpened);
+    // Every incident as it now stands (the loaded rows, overlaid by this write).
+    const current = new Map(loaded.incidents.map((i) => [i.fingerprint, i]));
+    for (const [fp, i] of saved.incidents) current.set(fp, i);
+    const toEmail = getPlanFeatures(shop.plan).storefrontGuardEmail
+      ? [...current.values()]
+          .filter(
+            (i): i is Saved =>
+              !!i.id &&
+              i.state === "open" &&
+              i.openedAt !== null &&
+              EMAIL_INCIDENT_KINDS.has(i.kind) &&
+              i.emailedOpenedAt?.getTime() !== i.openedAt.getTime() &&
+              now.getTime() - i.openedAt.getTime() < EMAIL_RETRY_WINDOW_MS,
+          )
+          .map(asOpened)
+      : [];
+    return { status: "checked", outcome, opened, toEmail };
   } catch (err) {
     logger.error("checkout guard check failed", {
       function: "storefront-guard",

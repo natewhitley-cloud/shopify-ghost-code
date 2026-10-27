@@ -55,6 +55,14 @@ export const FLAP_WINDOW_MS = 7 * DAY_MS;
 export const AUTO_MERGE_MS = 14 * DAY_MS;
 export const BASELINE_DECAY_MS = 30 * DAY_MS;
 export const BACKOFF_AFTER = 3;
+/**
+ * From this many partial checks in a row (homepage read, /cart not), the
+ * homepage alone may clear incidents seen only on the homepage, so a store
+ * whose /cart never reads does not keep a resolved incident open forever.
+ * Incidents seen on /cart, learning and new-host debounce still need a
+ * complete check.
+ */
+export const PARTIAL_HOME_AUTHORITY = 3;
 export const MAX_BACKOFF_MS = DAY_MS;
 /** Bounds on stored host lists (a page with thousands of hosts stays small). */
 export const MAX_HOSTS_PER_CHECK = 200;
@@ -102,6 +110,8 @@ export interface GuardStateData {
   lastReadableAt: Date | null;
   lastRedirectHost: string | null;
   consecutiveUnreachable: number;
+  /** ok checks in a row whose /cart was unreadable (reset by a complete one). */
+  consecutivePartial: number;
   backoffUntil: Date | null;
   /** Complete ok checks so far (learning ends at LEARNING_CHECKS). */
   readableChecks: number;
@@ -117,6 +127,7 @@ export const EMPTY_GUARD_STATE: GuardStateData = {
   lastReadableAt: null,
   lastRedirectHost: null,
   consecutiveUnreachable: 0,
+  consecutivePartial: 0,
   backoffUntil: null,
   readableChecks: 0,
   baselineHosts: {},
@@ -206,6 +217,7 @@ export function applyGuardCheck(
     lastReadableAt: now,
     lastRedirectHost: null,
     consecutiveUnreachable: 0,
+    consecutivePartial: check.complete ? 0 : prev.consecutivePartial + 1,
     backoffUntil: null,
   };
   const byFingerprint = new Map(incidents.map((i) => [i.fingerprint, { ...i }]));
@@ -306,10 +318,13 @@ export function applyGuardCheck(
     }
   }
 
-  // --- Clean streaks (complete checks only) -----------------------------------
-  if (check.complete) {
+  // --- Clean streaks (complete checks; home-only incidents after a run of
+  // partial checks, see PARTIAL_HOME_AUTHORITY) --------------------------------
+  const homeAuthoritative = !check.complete && state.consecutivePartial >= PARTIAL_HOME_AUTHORITY;
+  if (check.complete || homeAuthoritative) {
     for (const i of byFingerprint.values()) {
       if (seen.has(i.fingerprint)) continue;
+      if (!check.complete && i.page !== "home") continue;
       if (i.state === "pending") {
         touch(resolve(i, now, "lapsed"));
       } else if (i.state === "open") {

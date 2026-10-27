@@ -36,7 +36,7 @@ import type { AdminApiContext } from "../../app/types/shopify";
 
 const NOW = new Date("2026-10-27T05:17:00Z");
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
-const SHOP = { id: "shop-1", domain: "shop-1.myshopify.com" };
+const SHOP = { id: "shop-1", domain: "shop-1.myshopify.com", plan: "Standard" };
 
 const STOREFRONT = (body: string) =>
   `<html><head><script>Shopify.shop = "shop-1.myshopify.com";</script></head><body>${body}</body></html>`;
@@ -81,7 +81,7 @@ beforeEach(() => {
   model.saveGuardCheck.mockImplementation(async (input: { changed: GuardIncident[] }) => ({
     status: "saved",
     incidents: new Map(
-      input.changed.map((i) => [i.fingerprint, { ...i, id: `id-${i.fingerprint}` }]),
+      input.changed.map((i) => [i.fingerprint, { ...i, id: i.id ?? `id-${i.fingerprint}` }]),
     ),
   }));
 });
@@ -167,17 +167,17 @@ describe("checkGuardShop", () => {
     model.loadGuard.mockResolvedValue(loaded());
     storefront(STOREFRONT(LOADER_17TRACK));
     const out = await checkGuardShop(SHOP, NOW, deps());
+    const openedItem = {
+      shopId: "shop-1",
+      incidentId: "id-KNOWN_MALICIOUS:cartassure.top",
+      kind: "KNOWN_MALICIOUS",
+      openedAt: NOW.toISOString(),
+    };
     expect(out).toEqual({
       status: "checked",
       outcome: "ok",
-      opened: [
-        {
-          shopId: "shop-1",
-          incidentId: "id-KNOWN_MALICIOUS:cartassure.top",
-          kind: "KNOWN_MALICIOUS",
-          openedAt: NOW.toISOString(),
-        },
-      ],
+      opened: [openedItem],
+      toEmail: [openedItem],
     });
     const saved = model.saveGuardCheck.mock.calls[0][0];
     expect(saved.expectedVersion).toBe(2);
@@ -248,7 +248,12 @@ describe("checkGuardShop", () => {
         : new Response(null, { status: 302, headers: { location: "/password" } }),
     );
     const out = await checkGuardShop(SHOP, NOW, deps());
-    expect(out).toEqual({ status: "checked", outcome: "paused_password", opened: [] });
+    expect(out).toEqual({
+      status: "checked",
+      outcome: "paused_password",
+      opened: [],
+      toEmail: [],
+    });
   });
 
   it("a blocked fetch (403) is unreachable and backs off at once", async () => {
@@ -298,5 +303,56 @@ describe("mapPool", () => {
 
   it("handles an empty list", async () => {
     expect(await mapPool([], 5, async () => 1)).toEqual([]);
+  });
+});
+
+describe("checkGuardShop: what the email step is offered (audit fix)", () => {
+  const openMal = (over: Partial<GuardIncident> = {}): GuardIncident => ({
+    id: "inc-m",
+    kind: "KNOWN_MALICIOUS",
+    fingerprint: "KNOWN_MALICIOUS:cartassure.top",
+    host: "cartassure.top",
+    page: "home",
+    sourceLabel: "Loaded by a script tag in the page",
+    state: "open",
+    openedAt: ago(2 * 60 * 60 * 1000),
+    firstSeenAt: ago(2 * 60 * 60 * 1000),
+    lastSeenAt: ago(60 * 60 * 1000),
+    seenCount: 2,
+    cleanStreak: 0,
+    resolvedAt: null,
+    resolution: null,
+    acknowledgedAt: null,
+    emailedOpenedAt: null,
+    ...over,
+  });
+  function quietStorefront() {
+    fetchImpl.mockImplementation(async () => new Response(STOREFRONT("")));
+  }
+
+  it("re-offers an unemailed episode from an earlier run (a failed send is retried)", async () => {
+    model.loadGuard.mockResolvedValue(loaded({ incidents: [openMal()] }));
+    quietStorefront();
+    const out = await checkGuardShop(SHOP, NOW, deps());
+    expect(out.status === "checked" && out.opened).toEqual([]);
+    expect(out.status === "checked" && out.toEmail.map((i) => i.incidentId)).toEqual(["inc-m"]);
+  });
+
+  it("never offers an emailed episode, an old one, a new host, or a Free shop's", async () => {
+    model.loadGuard.mockResolvedValue(
+      loaded({
+        incidents: [
+          openMal({ id: "a", fingerprint: "a", emailedOpenedAt: ago(2 * 60 * 60 * 1000) }),
+          openMal({ id: "b", fingerprint: "b", openedAt: ago(25 * 60 * 60 * 1000) }),
+          openMal({ id: "c", fingerprint: "NEW_SCRIPT_HOST:x.io", kind: "NEW_SCRIPT_HOST" }),
+        ],
+      }),
+    );
+    quietStorefront();
+    const out = await checkGuardShop(SHOP, NOW, deps());
+    expect(out.status === "checked" && out.toEmail).toEqual([]);
+    model.loadGuard.mockResolvedValue(loaded({ incidents: [openMal()] }));
+    const free = await checkGuardShop({ ...SHOP, plan: "free" }, NOW, deps());
+    expect(free.status === "checked" && free.toEmail).toEqual([]);
   });
 });

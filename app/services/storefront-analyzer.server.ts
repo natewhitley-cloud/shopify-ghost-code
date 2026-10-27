@@ -198,31 +198,48 @@ export function analyzeStorefrontHtml(html: string, ctx: AnalyzeContext = {}): S
 
   const hosts = new Map<string, NewHostCandidate>();
 
+  /**
+   * A host the store, its theme or a known app owns: the shop's own domains
+   * (Shopify serves theme assets from the primary domain, `/cdn/shop/...`),
+   * hosts the latest theme scan recorded, the allowlist, known apps and
+   * benign libraries. A loader on such a host is not evidence by itself
+   * (audit fix: a theme's own menu script must never email the merchant).
+   */
+  const isTrustedHost = (host: string, rawUrl: string | null): boolean => {
+    if (isShopifyDomain(host) || shopHosts.has(host) || isGuardAllowedHost(host)) return true;
+    if (ctx.knownThemeHosts?.has(host)) return true;
+    const url = rawUrl?.trim() || `https://${host}/`;
+    return identifyAppForExternalUrl(url) !== null || isBenignLibrary(url);
+  };
+
   walkHomepage(html, scriptTagUrls, {
     host(rawHost, source, rawUrl) {
       if (!NEW_HOST_SOURCES.has(source)) return;
       const host = cleanHost(rawHost);
       if (!host || hosts.has(host)) return;
-      if (isShopifyDomain(host) || shopHosts.has(host) || isGuardAllowedHost(host)) return;
-      if (matchMaliciousDomain(host)) return;
-      if (ctx.knownThemeHosts?.has(host)) return;
-      const url = rawUrl?.trim() || `https://${host}/`;
-      if (identifyAppForExternalUrl(url) !== null || isBenignLibrary(url)) return;
+      if (matchMaliciousDomain(host) || isTrustedHost(host, rawUrl)) return;
       hosts.set(host, { host, source, label: NEW_HOST_LABELS[source] ?? "Loaded by the page" });
     },
     handler(element, name, value, at) {
       if (element === "script") return;
       const hit = findScriptPayload(value, { urlCounts: SELF_FIRING_HANDLERS.has(name) });
       if (!hit) return;
+      const host = hit.host ? cleanHost(hit.host) : null;
+      const trusted = host !== null && isTrustedHost(host, null);
+      // A URL alone is evidence only on a host nobody vouches for.
+      if (hit.reason === "external_url" && (host === null || trusted)) return;
       const region = regionAt(regions, at);
       const where = region ? ` ${REGION_WORDS[region]}` : " in the page";
-      addLoader(hit.host, hit.reason, `Code in an ${name} attribute${where}`);
+      // Code construction stays a loader; a trusted host is not its identity.
+      addLoader(trusted ? null : host, hit.reason, `Code in an ${name} attribute${where}`);
     },
     script(at, info) {
       if (!info.runs) return;
       const region = regionAt(regions, at);
       if (!region) return;
-      const srcHost = info.src ? firstExternalHost(info.src) : null;
+      const external = info.src ? firstExternalHost(info.src) : null;
+      const srcHost =
+        external && !isTrustedHost(cleanHost(external) ?? external, info.src) ? external : null;
       const payload = info.src ? null : findScriptPayload(info.body());
       if (!srcHost && !payload) return;
       addLoader(

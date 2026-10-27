@@ -37,6 +37,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 
 import {
   GUARD_CHUNK_SIZE,
+  MAX_GUARD_SHOPS_PER_RUN,
   storefrontGuard,
   STOREFRONT_GUARD_CRON,
 } from "../../inngest/functions/storefront-guard";
@@ -61,7 +62,12 @@ beforeEach(() => {
     async (items: unknown[], _limit: number, fn: (x: unknown) => Promise<unknown>) =>
       Promise.all(items.map(fn)),
   );
-  svc.checkGuardShop.mockResolvedValue({ status: "checked", outcome: "ok", opened: [] });
+  svc.checkGuardShop.mockResolvedValue({
+    status: "checked",
+    outcome: "ok",
+    opened: [],
+    toEmail: [],
+  });
 });
 afterEach(() => {
   delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
@@ -104,9 +110,15 @@ describe("storefront-guard cron", () => {
         status: "checked",
         outcome: "ok",
         opened: [{ shopId: "s0", incidentId: "i", kind: "KNOWN_MALICIOUS", openedAt: "x" }],
+        toEmail: [],
       })
       .mockResolvedValueOnce({ status: "failed" })
-      .mockResolvedValueOnce({ status: "checked", outcome: "paused_password", opened: [] });
+      .mockResolvedValueOnce({
+        status: "checked",
+        outcome: "paused_password",
+        opened: [],
+        toEmail: [],
+      });
     const step = createMockInngestStep();
     const out = await run(step);
     const names = step.run.mock.calls.map((c) => c[0]);
@@ -122,6 +134,24 @@ describe("storefront-guard cron", () => {
     expect(mockRecordCronHeartbeat).toHaveBeenCalledWith("storefront-guard");
   });
 
+  it("caps a run at MAX_GUARD_SHOPS_PER_RUN, never-checked and longest-waiting first", async () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    const many = shops(MAX_GUARD_SHOPS_PER_RUN + 5).map((s, i) => ({
+      ...s,
+      storefrontGuardState:
+        i === 0
+          ? null
+          : { lastCheckedAt: new Date(Date.UTC(2026, 9, 1, 0, i)), backoffUntil: null },
+    }));
+    model.listGuardCandidateShops.mockResolvedValue([...many].reverse());
+    const out = await run();
+    expect(out.due).toBe(MAX_GUARD_SHOPS_PER_RUN);
+    expect(svc.checkGuardShop.mock.calls[0][0].id).toBe("s0");
+    expect(svc.checkGuardShop.mock.calls[1][0].id).toBe("s1");
+    const checked = new Set(svc.checkGuardShop.mock.calls.map((c) => c[0].id));
+    expect(checked.has(`s${MAX_GUARD_SHOPS_PER_RUN + 4}`)).toBe(false);
+  });
+
   it("passes only id, domain and plan forward from selection", async () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
     model.listGuardCandidateShops.mockResolvedValue(shops(1));
@@ -134,11 +164,12 @@ describe("storefront-guard cron", () => {
   });
 
   describe("incident email (gc-1q1s.7)", () => {
-    const opened = (shopId: string, incidentId: string, kind: string) => ({
-      status: "checked",
-      outcome: "ok",
-      opened: [{ shopId, incidentId, kind, openedAt: "2026-10-27T05:17:00.000Z" }],
-    });
+    // checkGuardShop decides what is offered (emailable kinds, paid plans):
+    // the cron only groups toEmail by shop.
+    const opened = (shopId: string, incidentId: string, kind: string, offered = true) => {
+      const item = { shopId, incidentId, kind, openedAt: "2026-10-27T05:17:00.000Z" };
+      return { status: "checked", outcome: "ok", opened: [item], toEmail: offered ? [item] : [] };
+    };
 
     beforeEach(() => {
       process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
@@ -150,11 +181,13 @@ describe("storefront-guard cron", () => {
       email.sendGuardIncidentEmail.mockResolvedValue({ sent: true, reason: "sent" });
       svc.checkGuardShop
         .mockResolvedValueOnce(opened("s0", "a", "KNOWN_MALICIOUS"))
-        .mockResolvedValueOnce(opened("s1", "b", "NEW_SCRIPT_HOST"))
+        .mockResolvedValueOnce(opened("s1", "b", "NEW_SCRIPT_HOST", false))
         .mockResolvedValueOnce({
           status: "checked",
           outcome: "ok",
-          opened: [
+          opened: [],
+          // An earlier run's unemailed episodes are offered again.
+          toEmail: [
             { shopId: "s2", incidentId: "c", kind: "SCRIPT_LOADER", openedAt: "x" },
             { shopId: "s2", incidentId: "d", kind: "KNOWN_MALICIOUS", openedAt: "x" },
           ],

@@ -10,7 +10,10 @@
  *     `Function(`, `atob(`, `fromCharCode`, `document.write(`.
  *   - A URL on a non-Shopify host counts only when `urlCounts` is set: the
  *     guard sets it for handlers that fire on their own (`onerror`,
- *     `onload`). A click handler that opens a link (`onclick="window.open(
+ *     `onload`), and then only when the text names a `.js`/`.mjs` file or
+ *     makes a network call or navigation (`fetch(`, `sendBeacon(`, `open(`,
+ *     `location`). An image fallback (`this.src='https://x/y.png'`) never
+ *     counts. A click handler that opens a link (`onclick="window.open(
  *     'https://wa.me/...')"`) is navigation, not a loader.
  *   - Handlers that only touch the element (`onload="this.media='all'"`, the
  *     async CSS idiom; `onerror="this.style.display='none'"`) never match.
@@ -44,6 +47,12 @@ const CODE_PATTERNS: ReadonlyArray<[ScriptPayloadReason, RegExp]> = [
   ["writes_markup", /\bdocument\s*\.\s*write(?:ln)?\s*\(/],
 ];
 
+/** A URL path ending in .js / .mjs (query, hash or quote may follow). */
+const SCRIPT_URL_RE = /\/\/[^\s'"`]+\.m?js(?=$|[?#'"`\s)])/i;
+/** A network send or a navigation. */
+const NETWORK_CALL_RE =
+  /\b(?:fetch|sendBeacon|XMLHttpRequest|open)\s*\(|\blocation\s*(?:\.\s*(?:href|assign|replace)\b|=)/;
+
 /** The first URL host in `text` that is not a Shopify domain, lower case. */
 export function firstExternalHost(text: string): string | null {
   for (const host of urlHostsOnLine(text)) {
@@ -63,6 +72,11 @@ export function findScriptPayload(
   for (const [reason, pattern] of CODE_PATTERNS) {
     if (pattern.test(value)) return { reason, host };
   }
-  if (opts.urlCounts && host) return { reason: "external_url", host };
+  // A URL alone (no code construction) counts only when it LOADS or SENDS:
+  // a script file, a network call or a navigation. An image fallback
+  // (`this.src='https://cdn.example/x.png'`) never does (audit fix).
+  if (opts.urlCounts && host && (SCRIPT_URL_RE.test(value) || NETWORK_CALL_RE.test(value))) {
+    return { reason: "external_url", host };
+  }
   return null;
 }

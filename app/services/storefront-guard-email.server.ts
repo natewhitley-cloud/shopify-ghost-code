@@ -24,6 +24,8 @@
  * fixed labels and the steps only; never page text or customer data.
  */
 
+import { createHash } from "node:crypto";
+
 import {
   buildBodyUnsubscribeUrl,
   buildHeaderUnsubscribeUrl,
@@ -31,7 +33,6 @@ import {
   getMerchantAlertConfigStatus,
   sendMerchantAlert,
 } from "./merchant-alert.server";
-import { djb2Hex } from "./scan-differ.server";
 import { refreshShopContact } from "./shop-alert-email.server";
 import { isStorefrontGuardEmailLive } from "./soft-launch-flags.server";
 import { toIncidentView } from "./storefront-guard-home.server";
@@ -188,7 +189,8 @@ export function guardEmailShopSkipReason(shop: GuardEmailShop): GuardEmailSkipRe
 /** Ledger key for a batch: stable for the same incident episodes (retries). */
 export function guardLedgerKey(incidents: ReadonlyArray<{ id: string; openedAt: Date }>): string {
   const parts = incidents.map((i) => `${i.id}:${i.openedAt.toISOString()}`).sort();
-  return `guard:${djb2Hex(parts.join("|"))}`;
+  // SHA-256 (not a 32-bit hash): a collision would read as "already sent".
+  return `guard:${createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 40)}`;
 }
 
 export type GuardEmailOutcome = {
