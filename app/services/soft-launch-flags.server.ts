@@ -122,3 +122,15 @@ export function isHomepageMaliciousCheckLive(): boolean {
 export function isSuspiciousCodeSignalEnabled(): boolean {
   return process.env.SUSPICIOUS_CODE_SIGNAL_ENABLED === "true";
 }
+
+/**
+ * Whether the unescaped menu-label detector runs (gc-7gjj.2 Phase 0): theme
+ * Liquid that prints a menu label without `| escape`, counted into the
+ * scan_signal OpsEvent only. Like isSuspiciousCodeSignalEnabled: not in
+ * SOFT_LAUNCH_FLAGS (no FindingType, no Finding rows, nothing a merchant can
+ * see). Off (unset or anything but "true") = the detector does not run and
+ * scan_signal is unchanged. Read in the scan worker thread.
+ */
+export function isMenuLabelSignalEnabled(): boolean {
+  return process.env.MENU_LABEL_SIGNAL_ENABLED === "true";
+}

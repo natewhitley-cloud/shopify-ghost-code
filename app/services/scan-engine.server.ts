@@ -77,7 +77,10 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { blankNonExecutingLiquid } from "./liquid-error-detector.server";
 import { classifySeverity } from "./severity-classifier.server";
-import { isSuspiciousCodeSignalEnabled } from "./soft-launch-flags.server";
+import {
+  isMenuLabelSignalEnabled,
+  isSuspiciousCodeSignalEnabled,
+} from "./soft-launch-flags.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import {
   activeAdvisories,
@@ -101,6 +104,11 @@ import {
   type SuspiciousCodeReason,
   type SuspiciousCodeSummary,
 } from "../lib/suspicious-code";
+import {
+  detectUnescapedMenuLabels,
+  summarizeUnescapedMenuLabels,
+  type UnescapedMenuLabelSummary,
+} from "../lib/unescaped-menu-label";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 import type { ThirdPartyDomainRef } from "../models/scan-domain.server";
@@ -204,6 +212,11 @@ export type ScanResult = {
   // Finding. Present ONLY while SUSPICIOUS_CODE_SIGNAL_ENABLED is on, so a
   // flag-off ScanResult is exactly as before. Bounded (20 file entries).
   suspiciousCode?: SuspiciousCodeSummary;
+  // Unescaped menu-label aggregate (gc-7gjj.2 Phase 0, dark): Liquid that
+  // prints a menu label without `| escape`, for scan_signal only, never a
+  // Finding. Present ONLY while MENU_LABEL_SIGNAL_ENABLED is on. Bounded (20
+  // file entries of at most 20 lines).
+  menuLabels?: UnescapedMenuLabelSummary;
 };
 
 // ---------------------------------------------------------------------------
@@ -5968,6 +5981,10 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
   // the detector does no work at all and the result carries no key.
   const suspiciousHits: Array<{ path: string; reasons: SuspiciousCodeReason[] }> | null =
     isSuspiciousCodeSignalEnabled() ? [] : null;
+  // Unescaped menu-label signal (gc-7gjj.2 Phase 0): null while the flag is off.
+  const menuLabelHits: Array<{ path: string; lines: number[] }> | null = isMenuLabelSignalEnabled()
+    ? []
+    : null;
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -6005,6 +6022,11 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
       continue;
     }
     if (!scannable) continue;
+
+    if (menuLabelHits) {
+      const { lines } = detectUnescapedMenuLabels(blankLiquidComments(file.content));
+      if (lines.length > 0) menuLabelHits.push({ path: file.filename, lines });
+    }
 
     findings.push(...capped(detectGhostScripts(file)));
     findings.push(...capped(detectGhostStyles(file)));
@@ -6154,5 +6176,6 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     thirdPartyDomains,
     findingCapHits,
     ...(suspiciousHits ? { suspiciousCode: summarizeSuspiciousCode(suspiciousHits) } : {}),
+    ...(menuLabelHits ? { menuLabels: summarizeUnescapedMenuLabels(menuLabelHits) } : {}),
   };
 }

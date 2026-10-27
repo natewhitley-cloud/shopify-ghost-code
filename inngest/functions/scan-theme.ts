@@ -1229,6 +1229,7 @@ export const scanTheme = inngest.createFunction(
         benignLibrarySkips,
         findingCapHits,
         suspiciousCode,
+        menuLabels,
         suppressedDetectorHits,
         liveFindingTypes: persistedLiveFindingTypes,
         unknownScriptCount,
@@ -1338,6 +1339,7 @@ export const scanTheme = inngest.createFunction(
           thirdPartyDomains,
           findingCapHits,
           suspiciousCode,
+          menuLabels,
         } = await scanThemeFilesInPool(files);
         const themeScanMs = Date.now() - themeScanStart;
 
@@ -1538,6 +1540,8 @@ export const scanTheme = inngest.createFunction(
           findingCapHits: findingCapHits ?? {},
           // gc-dcyh Phase 0 (dark): present only while its flag is on.
           ...(suspiciousCode ? { suspiciousCode } : {}),
+          // gc-7gjj.2 Phase 0 (dark): present only while its flag is on.
+          ...(menuLabels ? { menuLabels } : {}),
           suppressedDetectorHits,
           // Recorded on the scan by finalize-scan (gc-rvo0); computed from the
           // same flag reads as the persistence filter above. Small string[].
@@ -2787,6 +2791,12 @@ export const scanTheme = inngest.createFunction(
               // Obfuscated / pirated-marker asset JS (gc-dcyh Phase 0, dark,
               // FP measurement). Absent while SUSPICIOUS_CODE_SIGNAL_ENABLED is off.
               ...(suspiciousCode ? { suspiciousCode } : {}),
+              // Liquid printing a menu label without `| escape` (gc-7gjj.2
+              // Phase 0, dark), with the theme's name so the share of hits can
+              // be read per theme. Absent while MENU_LABEL_SIGNAL_ENABLED is off.
+              ...(menuLabels
+                ? { menuLabels: { ...menuLabels, themeName: themeInfo?.name ?? null } }
+                : {}),
               unknownScriptCount,
               thirdPartyDomainCount,
               detectorHits,

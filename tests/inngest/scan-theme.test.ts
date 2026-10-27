@@ -2821,6 +2821,40 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
     expect("suspiciousCode" in arg.metadata).toBe(false);
   });
 
+  it("threads the unescaped menu-label summary and the theme name into the scan_signal (gc-7gjj.2)", async () => {
+    const menuLabels = {
+      fileCount: 1,
+      outputCount: 2,
+      files: [{ path: "blocks/_header-menu.liquid", lines: [57, 114] }],
+    };
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [], menuLabels });
+    mockFetchThemeFiles.mockResolvedValueOnce([
+      ...MOCK_FILES,
+      {
+        filename: "config/settings_schema.json",
+        content: JSON.stringify([
+          { name: "theme_info", theme_name: "Horizon", theme_version: "4.3.0" },
+        ]),
+      },
+    ]);
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata.menuLabels).toEqual({ ...menuLabels, themeName: "Horizon" });
+    // Telemetry only: no Finding rows come from it.
+    expect(arg.metadata.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("omits menuLabels from the scan_signal when the scan result has none (gc-7gjj.2, flag off)", async () => {
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect("menuLabels" in arg.metadata).toBe(false);
+  });
+
   it("computes totalTextBytes/largestFileBytes/scannableTextBytes over mixed file types (gc-d4e)", async () => {
     // Mixed fixture: one scannable liquid template, one non-scannable asset JS
     // file (the largest), and one non-scannable JSON file — so
