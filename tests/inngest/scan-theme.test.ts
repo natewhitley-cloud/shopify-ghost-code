@@ -199,8 +199,8 @@ vi.mock("../../app/services/menu-fetcher.server", () => ({
   fetchMenuItems: vi.fn(),
 }));
 vi.mock("../../app/services/menu-injection-detector.server", () => ({
-  detectMenuInjection: (items: Array<{ menuId: string; itemId: string; title: string }>) =>
-    items
+  detectMenuInjection: (items: Array<{ menuId: string; itemId: string; title: string }>) => ({
+    findings: items
       .filter((item) => item.title.includes("onerror"))
       .map((item) => ({
         filename: `menus/${item.menuId}/items/${item.itemId}`,
@@ -210,6 +210,9 @@ vi.mock("../../app/services/menu-injection-detector.server", () => ({
         severity: "HIGH",
         description: "A menu item's label contains code.",
       })),
+    // A title marked "flood" stands in for more matches than the detector keeps.
+    truncated: items.some((item) => item.title.includes("flood")),
+  }),
 }));
 
 // gc-747u: the worker calls the chunkable pieces. App-pattern detection is
@@ -7937,12 +7940,42 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     expect(menuCreates()).toHaveLength(1);
   });
 
-  it("a failed menus fetch propagates (the step retries, never reads as no menus)", async () => {
+  it("a failed menus read never fails the scan: recorded as not run (not live, not skipped)", async () => {
     process.env.MENU_INJECTION_LIVE_ENABLED = "true";
     mockFetchMenuItems.mockRejectedValue(new Error("[menu-fetcher] Failed to fetch menus: boom"));
 
-    await expect(runScanTheme()).rejects.toThrow(/Failed to fetch menus/);
-    expect(mockFinalizeScan).not.toHaveBeenCalled();
+    await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+    expect(menuCreates()).toEqual([]);
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
+  });
+
+  it("more matches than the detector keeps: capped (the cut items never resolve)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockResolvedValue({
+      items: [{ ...payloadItem, title: `${payloadItem.title} flood` }],
+      capped: false,
+    });
+
+    await runScanTheme();
+
+    expect(finalizeArg().cappedCategories).toContain("MENU_INJECTION");
+  });
+
+  it("the flag flipped on after fetch-and-scan: the step does nothing (the scan recorded it not live)", async () => {
+    const base = createMockInngestStep();
+    await runScanTheme(undefined, {
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        if (name === "menu-audit") process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+        return fn();
+      }),
+    } as unknown as Partial<typeof base>);
+
+    expect(mockFetchMenuItems).not.toHaveBeenCalled();
+    expect(menuCreates()).toEqual([]);
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
   });
 
   it("records the walk's pages and items in scan_signal (counts only)", async () => {

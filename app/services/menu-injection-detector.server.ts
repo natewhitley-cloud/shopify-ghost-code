@@ -40,6 +40,7 @@
 import { FindingType, Severity } from "@prisma/client";
 
 import { decodeAttributeValue } from "./runtime-malicious.server";
+import { djb2Hex } from "./scan-differ.server";
 import { indexOfIgnoreCase, urlHostsOnLine } from "./scan-engine.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import type { CreateFindingInput } from "../models/finding.server";
@@ -82,15 +83,18 @@ const PATH_TITLE_MAX = 80;
 /** A tag start in a title: `<` and a letter (an element name). */
 const TAG_START_RE = /<[a-z]/gi;
 /** An event-handler attribute inside a tag segment: separator, `on`, letters, `=`. */
-const HANDLER_ATTR_RE = /[\s/"']on[a-z]{1,40}[ \t\n\f\r]{0,20}=/i;
+// Whitespace around `=` is unbounded, as in HTML; each run belongs to one
+// candidate name, so the scan stays linear (audit fix: a bounded run let
+// `onerror` + 25 spaces + `=` through).
+const HANDLER_ATTR_RE = /[\s/"']on[a-z]{1,40}\s*=/i;
 /** Frame-like elements that load or run a document. */
 const FRAME_TAG_RE = /^<(?:iframe|object|embed)(?=[\s/>]|$)/i;
 /** A `srcdoc=` attribute inside a tag segment. */
-const SRCDOC_ATTR_RE = /[\s/"']srcdoc[ \t\n\f\r]{0,20}=/i;
+const SRCDOC_ATTR_RE = /[\s/"']srcdoc\s*=/i;
 /** `<meta` with an `http-equiv` attribute (a refresh redirect). */
-const META_REFRESH_RE = /^<meta(?=[\s/])[^]*?[\s/"']http-equiv[ \t\n\f\r]{0,20}=/i;
+const META_REFRESH_RE = /^<meta(?=[\s/])[^]*?[\s/"']http-equiv\s*=/i;
 /** Attribute values inside a tag segment: quoted, or unquoted up to a separator. */
-const ATTR_VALUE_RE = /=[ \t\n\f\r]{0,20}(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+const ATTR_VALUE_RE = /=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
 /** Schemes that run code or render HTML when a link is followed. */
 const SCRIPT_SCHEME_RE = /^(?:javascript:|vbscript:|data:text\/html)/;
 /** What a browser drops from a URL before reading its scheme: U+0000 to space, and DEL. */
@@ -103,18 +107,47 @@ export function isScriptUrl(value: string): boolean {
 }
 
 /**
- * The tag segments of a title: each `<letter ...` up to and including the
- * next `>` (or the end). Segments never overlap, so reading them is linear.
+ * Where the start tag at `start` ends (and whether it closed): one past its closing `>`, skipping a
+ * `>` inside a quoted attribute value (`<img alt=">" onerror=...>`, audit
+ * fix), or the end of the title when it never closes. A quote opens a value
+ * only after `=`, as in HTML. Linear: every step moves forward.
+ */
+function tagEnd(title: string, start: number): { end: number; closed: boolean } {
+  const n = title.length;
+  let i = start + 1;
+  while (i < n) {
+    const c = title[i];
+    if (c === ">") return { end: i + 1, closed: true };
+    if (c === "=") {
+      i++;
+      while (i < n && /\s/.test(title[i])) i++;
+      const q = title[i];
+      if (q === '"' || q === "'") {
+        const close = title.indexOf(q, i + 1);
+        if (close === -1) return { end: n, closed: false };
+        i = close + 1;
+        continue;
+      }
+      continue;
+    }
+    i++;
+  }
+  return { end: n, closed: false };
+}
+
+/**
+ * The tag segments of a title: each `<letter ...` up to and including its
+ * closing `>` (see tagEnd), or the end. Segments never overlap, so reading
+ * them is linear.
  */
 function tagSegments(title: string): Array<{ at: number; text: string }> {
   const segments: Array<{ at: number; text: string }> = [];
   TAG_START_RE.lastIndex = 0;
   let found: RegExpExecArray | null;
   while ((found = TAG_START_RE.exec(title)) !== null) {
-    const close = title.indexOf(">", found.index + 1);
-    const end = close === -1 ? title.length : close + 1;
+    const { end, closed } = tagEnd(title, found.index);
     segments.push({ at: found.index, text: title.slice(found.index, end) });
-    if (close === -1) break;
+    if (!closed) break;
     TAG_START_RE.lastIndex = end;
   }
   return segments;
@@ -209,29 +242,47 @@ export function menuInjectionDescription(
   return `${where} contains ${what}. Apps and staff can edit menus; in October 2026 a compromised app used menu labels to hijack checkouts.`;
 }
 
-/** The synthetic locator of a menu item: `menus/{menuId}/items/{itemId}`. */
-export function menuItemFilename(item: Pick<MenuItemData, "menuId" | "itemId">): string {
-  return `menus/${item.menuId}/items/${item.itemId}`;
+/**
+ * The synthetic locator of a menu item: `menus/{menuId}/items/{itemId}/{hash}`,
+ * the hash over the item's FULL label and link. The finding's fingerprint
+ * includes the filename, so any rewrite of the item (a new payload, past the
+ * excerpt or the path's 80-character cut, or in the link only) reads as a new
+ * finding and is not covered by an ignore of the old one (audit fix).
+ */
+export function menuItemFilename(
+  item: Pick<MenuItemData, "menuId" | "itemId" | "title" | "url">,
+): string {
+  return `menus/${item.menuId}/items/${item.itemId}/${djb2Hex(`${item.title}\0${item.url ?? ""}`)}`;
+}
+
+/** What the detector returns: the findings, and whether MAX_MENU_INJECTION_FINDINGS cut them. */
+export interface MenuInjectionResult {
+  findings: CreateFindingInput[];
+  /** True when more items matched than were kept (recorded as capped). */
+  truncated: boolean;
 }
 
 /**
  * The MENU_INJECTION findings for a store's menu items, at most
  * MAX_MENU_INJECTION_FINDINGS, in the order given (the fetcher's menu order).
+ * `truncated` says more matched, so the caller records the category as
+ * capped and the differ never resolves an item past the cut.
  *
  * Stored shape:
  *   filename     menuItemFilename(item)
  *   lineNumber   0 (not a file)
- *   codeSnippet  line 1 = the menu path ("Main menu > Shop"), the fingerprinted
- *                line; line 2 = "Label: <excerpt>" or "Link: <excerpt>", at
- *                most MENU_EXCERPT_MAX characters of the matched field.
+ *   codeSnippet  line 1 = the menu path ("Main menu > Shop"); line 2 =
+ *                "Label: <excerpt>" or "Link: <excerpt>", at most
+ *                MENU_EXCERPT_MAX characters of the matched field.
  *   severity     HIGH, always
  *   description  menuInjectionDescription(match)
  */
-export function detectMenuInjection(items: readonly MenuItemData[]): CreateFindingInput[] {
+export function detectMenuInjection(items: readonly MenuItemData[]): MenuInjectionResult {
   const findings: CreateFindingInput[] = [];
   for (const item of items) {
     const match = matchMenuItem(item);
     if (!match) continue;
+    if (findings.length >= MAX_MENU_INJECTION_FINDINGS) return { findings, truncated: true };
     const field = match.field === "url" ? (item.url ?? "") : item.title;
     findings.push({
       filename: menuItemFilename(item),
@@ -241,7 +292,6 @@ export function detectMenuInjection(items: readonly MenuItemData[]): CreateFindi
       severity: Severity.HIGH,
       description: menuInjectionDescription(match),
     });
-    if (findings.length >= MAX_MENU_INJECTION_FINDINGS) break;
   }
-  return findings;
+  return { findings, truncated: false };
 }

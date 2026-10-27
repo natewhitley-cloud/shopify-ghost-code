@@ -391,6 +391,12 @@ async function runMenuAudit(opts: {
   scanId: string;
   shopId: string;
   grantedOptionalScopes: GrantedOptionalScopes;
+  /**
+   * Whether MENU_INJECTION is in the live set fetch-and-scan recorded for
+   * this scan. The step runs only then, so a flag flipped on mid-run can
+   * never persist findings the scan records as not live (audit fix).
+   */
+  live: boolean;
 }): Promise<MenuAuditStepResult> {
   const none = {
     findingCount: 0,
@@ -402,7 +408,7 @@ async function runMenuAudit(opts: {
     throttleSleepMs: 0,
     cost: sumQueryCost([]),
   };
-  if (!isMenuInjectionLive()) return none;
+  if (!opts.live || !isMenuInjectionLive()) return none;
 
   const db = (await import("../../app/db.server")).default;
   const shop = await db.shop.findUnique({ where: { id: opts.shopId } });
@@ -426,8 +432,26 @@ async function runMenuAudit(opts: {
   const { fetchMenuItems } = await import("../../app/services/menu-fetcher.server");
   const { detectMenuInjection } = await import("../../app/services/menu-injection-detector.server");
   const stats: PaginateStats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
-  const { items, capped } = await fetchMenuItems(admin, stats);
-  const findings = detectMenuInjection(items);
+  let fetched: Awaited<ReturnType<typeof fetchMenuItems>>;
+  try {
+    fetched = await fetchMenuItems(admin, stats);
+  } catch (err) {
+    // The menus query's cost and failure modes are unmeasured (gc-7gjj.5): a
+    // failed read must not fail the whole scan (theme findings, malicious
+    // code). Recorded as not run: not live, so no prior finding resolves.
+    const { logger } = await import("../../app/lib/logger.server");
+    const { safeErrorFields } = await import("../../app/lib/safe-error");
+    logger.warn("menu audit failed; menu labels recorded as not checked", {
+      function: "scan-theme",
+      stepName: "menu-audit",
+      shopId: opts.shopId,
+      ...safeErrorFields(err),
+    });
+    return none;
+  }
+  const { items } = fetched;
+  const { findings, truncated } = detectMenuInjection(items);
+  const capped = fetched.capped || truncated;
 
   await persistAuditFindings({
     scanId: opts.scanId,
@@ -1905,7 +1929,14 @@ export const scanTheme = inngest.createFunction(
       // MENU_INJECTION_LIVE_ENABLED is "true" (inert: no request).
       const menusStart = Date.now();
       const menuResult = await step.run("menu-audit", () =>
-        runMenuAudit({ scanId, shopId, grantedOptionalScopes }),
+        runMenuAudit({
+          scanId,
+          shopId,
+          grantedOptionalScopes,
+          live:
+            Array.isArray(persistedLiveFindingTypes) &&
+            persistedLiveFindingTypes.includes(FindingType.MENU_INJECTION),
+        }),
       );
       const menusMs = Date.now() - menusStart;
 

@@ -105,7 +105,9 @@ export type FindingListDiff =
  * recorded live set cannot be judged. The summary email's counts
  * (computeFindingChanges) and the change log's rows both come from here; the
  * email leaves affected-app advisories out (`includeAdvisories: false`,
- * gc-14x5), the change log keeps them (security rows).
+ * gc-14x5), and code in a menu with them (gc-7gjj.1: store data, not theme
+ * code, and in-app only like the advisory); the change log keeps both
+ * (security rows).
  */
 export function diffFindingLists(
   args: FindingDiffArgs,
@@ -119,7 +121,9 @@ export function diffFindingLists(
   const scoped = <T extends DiffableFinding>(findings: T[]): T[] =>
     opts.includeAdvisories
       ? findings
-      : findings.filter((f) => f.findingType !== "APP_INCIDENT_ADVISORY");
+      : findings.filter(
+          (f) => f.findingType !== "APP_INCIDENT_ADVISORY" && f.findingType !== "MENU_INJECTION",
+        );
   const current = filterIgnoredExceptMalicious(scoped(args.currentFindings), args.ignores).shown;
   const diff = diffScans(
     current,

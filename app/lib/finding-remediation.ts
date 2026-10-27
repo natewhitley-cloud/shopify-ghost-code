@@ -119,7 +119,6 @@ const ADVISORY_EMBED_REMEDIATION: Remediation = {
   howTo: numberedSteps(ADVISORY_EMBED_STEPS),
 };
 
-/** "1. First 2. Second ...": steps as the one-string how-to. */
 /**
  * What to do about code in a menu label or link (gc-7gjj.1). GhostCode is
  * read-only and never edits menus, so every step is the merchant's.
@@ -132,6 +131,7 @@ export const MENU_INJECTION_STEPS: readonly string[] = [
   "Contact Shopify Support and tell them what GhostCode found.",
 ];
 
+/** "1. First 2. Second ...": steps as the one-string how-to. */
 function numberedSteps(steps: readonly string[]): string {
   return steps.map((step, i) => `${i + 1}. ${step}`).join(" ");
 }

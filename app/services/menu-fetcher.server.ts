@@ -7,7 +7,7 @@
  * redirect audit, so the scope check reuses hasNavigationScope (no new probe).
  *
  * The query was validated against the Admin schema (Shopify's validator,
- * 2026-10-27; required scope reported: read_online_store_navigation). Menu
+ * 2026-10-26; required scope reported: read_online_store_navigation). Menu
  * items nest three levels (a top-level item plus two levels of drop-downs), and
  * `items` is a plain list, not a connection, so one menu comes back whole.
  *

@@ -374,7 +374,7 @@ const THEME_FILE_FINDING_TYPES = new Set([
  *   - GHOST_TAG        → `products/{id}`                     (product-tag-detector)
  *   - GHOST_METAFIELD  → `products/{id}/metafields`          (metafield-detector)
  *   - GHOST_TRANSLATION→ `translations/{locale}/{resource}`  (translation-detector)
- *   - MENU_INJECTION   → `menus/{menuId}/items/{itemId}`     (menu-injection-detector, gc-7gjj.1)
+ *   - MENU_INJECTION   → `menus/{menuId}/items/{itemId}/{hash}` (menu-injection-detector, gc-7gjj.1)
  *
  * NOTE: the gc-3on brief cited GHOST_TAG as a "theme-code" type, but the
  * product-tag detector attributes it to `products/{id}` — a product resource,

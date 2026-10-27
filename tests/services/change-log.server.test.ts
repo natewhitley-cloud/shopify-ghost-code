@@ -893,6 +893,21 @@ describe("diffFindingLists (shared with the summary email)", () => {
     expect(email.fixedFindings).toEqual([]);
   });
 
+  it("code in a menu is a security row in the change log but stays out of the email (gc-7gjj.1)", () => {
+    const menu = finding({
+      filename: "menus/1/items/2/0badc0de",
+      findingType: FindingType.MENU_INJECTION,
+    });
+    const base = args();
+    const withMenu = { ...base, currentFindings: [...base.currentFindings, menu] };
+    const log = diffFindingLists(withMenu, { includeAdvisories: true });
+    const email = diffFindingLists(withMenu, { includeAdvisories: false });
+    if (!log.ok || !email.ok) throw new Error("expected ok");
+    expect(log.newFindings.map((f) => f.findingType)).toContain("MENU_INJECTION");
+    expect(email.newFindings.map((f) => f.findingType)).not.toContain("MENU_INJECTION");
+    expect(email.openCount).toBe(4);
+  });
+
   it("an unversioned side cannot be judged (baseline checked first)", () => {
     expect(
       diffFindingLists(
