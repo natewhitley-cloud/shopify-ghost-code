@@ -48,8 +48,9 @@
 import { FindingType, Severity } from "@prisma/client";
 
 import {
+  asciiLowerCase,
   blankInertComments,
-  indexOfIgnoreCase,
+  closeTagAt,
   parseOpenTagAttributes,
   scriptUrlHost,
   urlHostsOnLine,
@@ -281,6 +282,10 @@ export function walkHomepage(
   for (const url of scriptTagUrls) add(scriptUrlHost(url), "script_tag", url, -1);
 
   const live = blankInertComments(html, "homepage.html");
+  // Close tags are found on an ASCII-lower-cased copy (same offsets) and
+  // only when the name really ends there (closeTagAt, wave 4): a script
+  // string holding `</scriptx` must not end the script early.
+  const lower = asciiLowerCase(live);
   // Handlers seen in the start tag being parsed, kept until it closes.
   let handlers: Array<{ name: string; value: string }> = [];
   const onAttribute = (name: string, value: string): void => {
@@ -302,7 +307,7 @@ export function walkHomepage(
     if (!loadAttributes && handlersOff) {
       if (!opaque) continue;
       // An inert or text-only element: skip to its closing tag.
-      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
+      const close = closeTagAt(lower, element, at + found[0].length);
       if (close === -1) break;
       TAG_START_RE.lastIndex = close;
       continue;
@@ -321,7 +326,7 @@ export function walkHomepage(
       if (loadAttributes) break;
       handlersOff = true;
       if (!opaque) continue;
-      const close = indexOfIgnoreCase(live, `</${element}`, at + found[0].length);
+      const close = closeTagAt(lower, element, at + found[0].length);
       if (close === -1) break;
       TAG_START_RE.lastIndex = close;
       continue;
@@ -334,7 +339,7 @@ export function walkHomepage(
 
     if (opaque) {
       // An inert or text-only element: skip to its closing tag.
-      const close = indexOfIgnoreCase(live, `</${element}`, tag.end);
+      const close = closeTagAt(lower, element, tag.end);
       if (close === -1) break;
       TAG_START_RE.lastIndex = close;
       continue;
@@ -349,7 +354,7 @@ export function walkHomepage(
         continue;
       }
       // An iframe's body is fallback text the browser never parses as tags.
-      const close = indexOfIgnoreCase(live, "</iframe", tag.end);
+      const close = closeTagAt(lower, "iframe", tag.end);
       if (close === -1) break;
       TAG_START_RE.lastIndex = close;
       continue;
@@ -370,7 +375,7 @@ export function walkHomepage(
       TAG_START_RE.lastIndex = tag.end;
       continue;
     }
-    const close = indexOfIgnoreCase(live, "</script", tag.end);
+    const close = closeTagAt(lower, "script", tag.end);
     const bodyEnd = close === -1 ? live.length : close;
     const isJs = isJavaScriptType(tag.attributes.type?.value);
     visitor.script?.(at, {

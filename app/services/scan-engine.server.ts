@@ -1785,6 +1785,24 @@ const isAsciiAlnum = (c: number): boolean => (c >= 48 && c <= 57) || isAsciiAlph
 // isHtmlSpace is shared with the menu-label detector (gc-7gjj.8).
 export const isHtmlSpace = (c: number): boolean =>
   c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+
+/**
+ * Index of the first `</name` close tag at or after `from` whose name really
+ * is `name`: the next character is whitespace, `/`, `>` or the end, so
+ * `</a` is not `</aside>`, `</nav` is not `</navx>` (wave 3 D4) and
+ * `</scriptx` never ends a script (wave 4). `lower` is an asciiLowerCase copy
+ * (offsets equal the original's); `name` is lower-case ASCII.
+ */
+export function closeTagAt(lower: string, name: string, from: number): number {
+  const needle = `</${name}`;
+  for (let i = lower.indexOf(needle, from); i !== -1; i = lower.indexOf(needle, i + 1)) {
+    const at = i + needle.length;
+    if (at >= lower.length) return i;
+    const c = lower.charCodeAt(at);
+    if (isHtmlSpace(c) || c === CC_SLASH || c === CC_GT) return i;
+  }
+  return -1;
+}
 const isLineTerminator = (c: number): boolean =>
   c === CC_NEWLINE || c === CC_RETURN || c === 0x2028 || c === 0x2029;
 // Hostname label chars as URL_HOST_RE accepts them: [a-z0-9_-].

@@ -46,6 +46,7 @@ import {
 import {
   asciiLowerCase,
   blankInertComments,
+  closeTagAt,
   identifyAppForExternalUrl,
   isHtmlSpace,
   isShopifyDomain,
@@ -137,22 +138,6 @@ const OPAQUE_ELEMENTS: ReadonlySet<string> = new Set([
 
 const CC_SLASH = 0x2f;
 const CC_GT = 0x3e;
-
-/**
- * Index of the first `</name` close tag at or after `from` whose name really
- * is `name`: the next character is whitespace, `/`, `>` or the end, so
- * `</a` is not `</aside>` and `</nav` is not `</navx>` (wave 3 D4).
- */
-function closeTagAt(lower: string, name: string, from: number): number {
-  const needle = `</${name}`;
-  for (let i = lower.indexOf(needle, from); i !== -1; i = lower.indexOf(needle, i + 1)) {
-    const at = i + needle.length;
-    if (at >= lower.length) return i;
-    const c = lower.charCodeAt(at);
-    if (isHtmlSpace(c) || c === CC_SLASH || c === CC_GT) return i;
-  }
-  return -1;
-}
 
 /** Whether a `role` value names the navigation role (a space-separated, any-case list). */
 function isNavigationRole(value: string | null | undefined): boolean {
