@@ -42,9 +42,9 @@
  *   - GHOST_TRANSLATION        → `{admin}/settings/languages` (VERIFIED — the
  *                                Shopify Help Center links localization/translation
  *                                to Settings > Languages; list-level surface)
- *   - MENU_INJECTION           → `{admin}/content/menus/{menuId}` (UNVERIFIED,
- *                                spike gc-7gjj §2.5: menus live under Content >
- *                                Menus; to confirm on the dev store, gc-7gjj.5),
+ *   - MENU_INJECTION           → `{admin}/content/menus/{menuId}` (VERIFIED —
+ *                                opens that menu's editor on a dev store,
+ *                                2026-10-27, gc-7gjj.9),
  *                                falling back to `{admin}/content/menus` when the
  *                                locator carries no numeric menu id
  */

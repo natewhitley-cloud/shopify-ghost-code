@@ -140,6 +140,20 @@ describe("fetchMenuItems", () => {
     expect(firstOpts.variables.first).toBe(MENU_PAGE_SIZE);
   });
 
+  it("reads 50 menus per page (measured cost: requested 30 / actual 5, gc-7gjj.9)", async () => {
+    const admin = mockAdmin([page([])]);
+    await fetchMenuItems(admin as never);
+    const [, opts] = admin.graphql.mock.calls[0] as unknown as [
+      string,
+      { variables: { first: number } },
+    ];
+    expect(opts.variables.first).toBe(50);
+    // The caps are unchanged, and a capped walk is a whole number of pages.
+    expect(MENU_CAP).toBe(250);
+    expect(MENU_ITEM_CAP).toBe(5_000);
+    expect(MENU_CAP % MENU_PAGE_SIZE).toBe(0);
+  });
+
   it("a store with no menus returns nothing", async () => {
     const result = await fetchMenuItems(mockAdmin([page([])]) as never);
     expect(result).toEqual({ items: [], capped: false });

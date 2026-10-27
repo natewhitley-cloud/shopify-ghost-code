@@ -12,8 +12,10 @@
  * `items` is a plain list, not a connection, so one menu comes back whole.
  *
  * Cost: Shopify does not document it, and a menu can hold up to 10,000 items.
- * Until it is measured on a dev store (gc-7gjj.5), the walk is conservative:
- * MENU_PAGE_SIZE menus per page, at most MENU_CAP menus and MENU_ITEM_CAP items.
+ * Measured on a real store (gc-7gjj.5, 2026-10-27): at first=50 the query
+ * costs requested 30 / actual 5 (bucket 2000), so MENU_PAGE_SIZE is 50
+ * (gc-7gjj.9; was 5). The walk still stops at MENU_CAP menus and
+ * MENU_ITEM_CAP items.
  * Hitting either cap marks the category capped (cappedCategories), so the
  * differ never resolves a finding past the cap.
  */
@@ -25,8 +27,8 @@ import {
 } from "../lib/graphql-pagination.server";
 import type { AdminApiContext } from "../types/shopify";
 
-/** Menus requested per page (conservative until the query cost is measured, gc-7gjj.5). */
-export const MENU_PAGE_SIZE = 5;
+/** Menus requested per page (measured: requested cost 30 / actual 5 at 50, gc-7gjj.9). */
+export const MENU_PAGE_SIZE = 50;
 /** Max menus read per scan (Shopify allows 1,000; real stores have 2-10). */
 export const MENU_CAP = 250;
 /** Max menu items read per scan, across every menu and level. */
