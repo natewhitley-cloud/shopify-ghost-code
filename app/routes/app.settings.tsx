@@ -15,6 +15,15 @@ import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLAN_TILE_META, planTileBullets, planTileCta, TILE_PLANS } from "../lib/plan-tiles";
 import { PLANS } from "../lib/plans";
 import {
+  GUARD_SETTINGS_HEADING,
+  GUARD_SETTINGS_MAIL_OFF,
+  GUARD_SETTINGS_REFUSED,
+  GUARD_SETTINGS_SAVED_OFF,
+  GUARD_SETTINGS_SAVED_ON,
+  GUARD_SETTINGS_TOGGLE,
+  guardSettingsParagraph,
+} from "../lib/storefront-guard-copy";
+import {
   SUMMARY_CARD_HEADING,
   SUMMARY_COMING_SOON,
   SUMMARY_FREE_PARAGRAPH,
@@ -32,6 +41,11 @@ import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
 import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
+import {
+  guardEmailSettingFor,
+  setGuardEmailFromSettings,
+  type GuardEmailSetting,
+} from "../services/storefront-guard-notice.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -52,7 +66,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const shop = await getShopMetadata(session.shop);
 
@@ -87,6 +101,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // speed change, but only while the speed report is live.
       speedInSummary: isSpeedReportLive() && features.speedReport === true,
     },
+    // Checkout guard emails (gc-njwa #5): the on/off control, Standard and
+    // Professional only, while guard email is live; null otherwise (no card).
+    guardEmail: await guardEmailSettingFor(shop, admin ?? null),
     // Free speed test: the Free tile lists it while the speed report is live,
     // straight from the plan matrix (Free only since gc-d0ui).
     freeSpeedTestTiles: {
@@ -108,10 +125,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  // Checkout guard emails on/off (gc-njwa #5). Turning on is consent for the
+  // address the card showed (posted back and re-checked on the server).
+  if (intent === "set-guard-email") {
+    const value = formData.get("enabled");
+    if (value !== "true" && value !== "false") return { error: "Invalid value." };
+    const shop = await getShopMetadata(session.shop);
+    if (!shop) return { error: "Shop not found. Please reinstall the app." };
+    const shown = formData.get("email");
+    const result = await setGuardEmailFromSettings(
+      shop,
+      value === "true",
+      typeof shown === "string" && shown !== "" ? shown : null,
+      admin ?? null,
+    );
+    return result === "refused"
+      ? { guardEmailError: GUARD_SETTINGS_REFUSED }
+      : { guardEmail: result };
+  }
+
   if (intent !== "set-alerts-enabled") {
     return { error: "Unknown request." };
   }
@@ -220,6 +257,58 @@ function SummaryEmailsCard({
                 </a>
               </div>
             </>
+          )}
+        </s-stack>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Checkout guard emails card (gc-njwa #5): paid plans, guard email live
+// ---------------------------------------------------------------------------
+
+/**
+ * The turn-back-on control for guard email (the notice's "Turn off" had none).
+ * Shows the address the consent covers; checking it posts that address, and
+ * the server stamps consent only for it. Disabled while all GhostCode mail is
+ * off for the store (alertsEnabled), since nothing could be sent.
+ */
+function GuardEmailCard({ setting }: { setting: GuardEmailSetting }) {
+  const fetcher = useFetcher<typeof action>();
+  const saving = fetcher.state !== "idle";
+  const checked = fetcher.formData ? fetcher.formData.get("enabled") === "true" : setting.on;
+  const data = fetcher.state === "idle" ? fetcher.data : undefined;
+  return (
+    <section>
+      <h2 style={h2Style}>{GUARD_SETTINGS_HEADING}</h2>
+      <div style={cardStyle}>
+        <s-stack direction="block" gap="base">
+          <s-checkbox
+            label={GUARD_SETTINGS_TOGGLE}
+            checked={checked && setting.mailOn ? true : undefined}
+            disabled={saving || !setting.mailOn ? true : undefined}
+            onChange={(e: unknown) =>
+              fetcher.submit(
+                {
+                  intent: "set-guard-email",
+                  enabled: String(readChecked(e)),
+                  email: setting.email ?? "",
+                },
+                { method: "POST" },
+              )
+            }
+          />
+          <p style={subdued}>
+            {setting.mailOn ? guardSettingsParagraph(setting.email) : GUARD_SETTINGS_MAIL_OFF}
+          </p>
+          {data && "guardEmailError" in data && (
+            <s-banner tone="critical">{data.guardEmailError}</s-banner>
+          )}
+          {data && "guardEmail" in data && (
+            <s-banner tone="success">
+              {data.guardEmail === "on" ? GUARD_SETTINGS_SAVED_ON : GUARD_SETTINGS_SAVED_OFF}
+            </s-banner>
           )}
         </s-stack>
       </div>
@@ -390,6 +479,7 @@ export default function Settings() {
     pricingPlansUrl,
     trialEligible,
     alerts,
+    guardEmail,
     freeSpeedTestTiles,
     speedReportTiles,
   } = useLoaderData<typeof loader>();
@@ -443,6 +533,8 @@ export default function Settings() {
           pricingPlansUrl={pricingPlansUrl}
           trialEligible={trialEligible}
         />
+
+        {guardEmail && <GuardEmailCard setting={guardEmail} />}
 
         {/* Permissions, every plan (gc-4n0y): the checks these scopes unlock run on
           Free scans too; Broken links stays a Standard feature by plan. */}

@@ -97,6 +97,23 @@ describe("allOptionalScopesGranted", () => {
   });
 });
 
+describe("the navigation scope card (D4, gc-7gjj.1)", () => {
+  it("is labelled for both checks it unlocks: menus and URL redirects", () => {
+    expect(OPTIONAL_SCOPE_INFO.read_online_store_navigation).toEqual({
+      label: "Menus and URL redirects",
+      unlocks:
+        "Finds orphaned URL redirects left behind by uninstalled apps, and checks your menu labels and links for injected code.",
+    });
+  });
+
+  it("the skipped-check categories keep their own labels", () => {
+    expect(skippedCategoryLabels(["GHOST_REDIRECT", "MENU_INJECTION"])).toEqual([
+      "URL redirects",
+      "Menu labels",
+    ]);
+  });
+});
+
 describe("skippedCategoryLabels", () => {
   it("maps known categories to their human labels", () => {
     expect(skippedCategoryLabels(["GHOST_PAGE", "GHOST_REDIRECT"])).toEqual([

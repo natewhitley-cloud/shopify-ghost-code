@@ -16,6 +16,7 @@ import {
   resetGuardEmailNotice,
   countGuardAlertsSince,
   turnOffGuardEmail,
+  enableGuardEmail,
   claimSummaryNoticeShown,
   claimSummaryOptInFirstShown,
   declineSummaryOptIn,
@@ -448,6 +449,24 @@ describe("checkout guard email helpers (gc-1q1s.7)", () => {
       where: { id: "shop-1", guardEmailOffAt: null },
       data: { guardEmailOffAt: expect.any(Date) },
     });
+  });
+
+  it("enableGuardEmail stamps consent with the hash and clears Turn off, only when not already on", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(enableGuardEmail("shop-1", "hash-1")).resolves.toBe(true);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "shop-1",
+        OR: [{ guardEmailOffAt: { not: null } }, { guardEmailNoticeShownAt: null }],
+      },
+      data: {
+        guardEmailOffAt: null,
+        guardEmailNoticeShownAt: expect.any(Date),
+        guardEmailConsentHash: "hash-1",
+      },
+    });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(enableGuardEmail("shop-1", null)).resolves.toBe(false);
   });
 
   it("countGuardAlertsSince counts only guard emails for the shop", async () => {

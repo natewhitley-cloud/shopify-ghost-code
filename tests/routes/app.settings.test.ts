@@ -45,6 +45,14 @@ vi.mock("../../app/models/billing-event.server", () => ({
 // gc-syz.6: monitoring-emails card collaborators, mocked at their boundaries.
 vi.mock("../../app/models/merchant-alert.server", () => ({
   setSummaryEmailsEnabled: vi.fn(),
+  // gc-njwa #5: the guard email toggle's writes.
+  enableGuardEmail: vi.fn(),
+  turnOffGuardEmail: vi.fn(),
+  claimGuardEmailNoticeShown: vi.fn(),
+}));
+
+vi.mock("../../app/services/shop-alert-email.server", () => ({
+  refreshShopAlertEmail: vi.fn(),
 }));
 
 vi.mock("../../app/services/merchant-alert.server", () => ({
@@ -73,7 +81,11 @@ import { BROKEN_LINKS_STANDARD_NOTE } from "../../app/lib/optional-scopes";
 import { canReceiveAlerts } from "../../app/lib/plan-gating.server";
 import { PLAN_LISTING_BULLETS, TRIAL_BULLET } from "../../app/lib/plan-tiles";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
-import { setSummaryEmailsEnabled } from "../../app/models/merchant-alert.server";
+import {
+  enableGuardEmail,
+  setSummaryEmailsEnabled,
+  turnOffGuardEmail,
+} from "../../app/models/merchant-alert.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import Settings, { action, loader, scopeBadge } from "../../app/routes/app.settings";
 import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
@@ -962,5 +974,183 @@ describe("Settings Permissions card (gc-4n0y)", () => {
 
   it("the plan note has no em or en dash", () => {
     expect(BROKEN_LINKS_STANDARD_NOTE).not.toMatch(/[–—]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Checkout guard emails card (gc-njwa #5)
+// ---------------------------------------------------------------------------
+
+describe("Settings: checkout guard emails (gc-njwa #5)", () => {
+  const PAID_GUARD = { ...FREE_FEATURES, storefrontGuardEmail: true, alertCadence: "weekly" };
+  const GUARD_SHOP = {
+    ...SHOP,
+    plan: "Standard",
+    guardEmailNoticeShownAt: null as Date | null,
+    guardEmailOffAt: new Date("2026-10-26T10:00:00Z") as Date | null,
+  };
+  const live = () => {
+    process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
+    process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
+  };
+  const post = (fields: Record<string, string>) =>
+    action({
+      request: new Request(`https://${SHOP_DOMAIN}/app/settings`, {
+        method: "POST",
+        body: new URLSearchParams(fields),
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+  type GuardData = { guardEmail: { email: string | null; on: boolean; mailOn: boolean } | null };
+
+  beforeEach(() => {
+    mockGetPlanFeatures.mockReturnValue(PAID_GUARD);
+    mockAlertConfig.mockReturnValue({ configured: true });
+    mockGetShopMetadata.mockResolvedValue(GUARD_SHOP);
+  });
+  afterEach(() => {
+    delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
+    delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
+  });
+
+  describe("loader", () => {
+    it("a paid shop that turned it off: offered, off, naming the address", async () => {
+      live();
+      const result = (await loader(makeLoaderArgs())) as GuardData;
+      expect(result.guardEmail).toEqual({ email: "owner@example.com", on: false, mailOn: true });
+    });
+
+    it("consented and not turned off reads on", async () => {
+      live();
+      mockGetShopMetadata.mockResolvedValue({
+        ...GUARD_SHOP,
+        guardEmailNoticeShownAt: new Date(),
+        guardEmailOffAt: null,
+      });
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail?.on).toBe(true);
+    });
+
+    it("all mail off: offered with mailOn false", async () => {
+      live();
+      mockGetShopMetadata.mockResolvedValue({ ...GUARD_SHOP, alertsEnabled: false });
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail?.mailOn).toBe(false);
+    });
+
+    it("not offered on Free, while guard email is dark, or without mail transport", async () => {
+      live();
+      mockGetPlanFeatures.mockReturnValue({ ...FREE_FEATURES, storefrontGuardEmail: false });
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail).toBeNull();
+      mockGetPlanFeatures.mockReturnValue(PAID_GUARD);
+      mockAlertConfig.mockReturnValue({ configured: false, reason: "disabled" });
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail).toBeNull();
+      mockAlertConfig.mockReturnValue({ configured: true });
+      delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
+      expect(((await loader(makeLoaderArgs())) as GuardData).guardEmail).toBeNull();
+    });
+  });
+
+  describe("action: set-guard-email", () => {
+    it("on = consent for the SESSION shop, stamped with the hash of the address shown", async () => {
+      live();
+      const { guardConsentHash } =
+        await import("../../app/services/storefront-guard-notice.server");
+      await expect(
+        post({
+          intent: "set-guard-email",
+          enabled: "true",
+          email: "owner@example.com",
+          shopId: "other-shop",
+        }),
+      ).resolves.toEqual({ guardEmail: "on" });
+      expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
+      expect(enableGuardEmail).toHaveBeenCalledExactlyOnceWith(
+        "shop-1",
+        guardConsentHash("owner@example.com"),
+      );
+    });
+
+    it("off = the notice's Turn off, always allowed", async () => {
+      await expect(post({ intent: "set-guard-email", enabled: "false" })).resolves.toEqual({
+        guardEmail: "off",
+      });
+      expect(turnOffGuardEmail).toHaveBeenCalledExactlyOnceWith("shop-1");
+    });
+
+    it("refuses on for a stale address, all mail off, Free, or dark; nothing written", async () => {
+      live();
+      const on = { intent: "set-guard-email", enabled: "true", email: "owner@example.com" };
+      await expect(post({ ...on, email: "old@example.com" })).resolves.toHaveProperty(
+        "guardEmailError",
+      );
+      mockGetShopMetadata.mockResolvedValueOnce({ ...GUARD_SHOP, alertsEnabled: false });
+      await expect(post(on)).resolves.toHaveProperty("guardEmailError");
+      mockGetPlanFeatures.mockReturnValue({ ...FREE_FEATURES, storefrontGuardEmail: false });
+      await expect(post(on)).resolves.toHaveProperty("guardEmailError");
+      mockGetPlanFeatures.mockReturnValue(PAID_GUARD);
+      delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
+      await expect(post(on)).resolves.toHaveProperty("guardEmailError");
+      expect(enableGuardEmail).not.toHaveBeenCalled();
+    });
+
+    it("rejects an invalid value", async () => {
+      await expect(post({ intent: "set-guard-email", enabled: "yes" })).resolves.toEqual({
+        error: "Invalid value.",
+      });
+    });
+  });
+
+  describe("card", () => {
+    function render(guardEmail: GuardData["guardEmail"]) {
+      const loaderData = {
+        shop: { plan: "Standard", domain: SHOP_DOMAIN },
+        features: FREE_FEATURES,
+        pricingPlansUrl: PRICING_PLANS_URL,
+        trialEligible: false,
+        alerts: DARK_ALERTS,
+        guardEmail,
+        freeSpeedTestTiles: { free: true },
+        speedReportTiles: { standard: true, professional: true },
+      };
+      const Stub = createRoutesStub([
+        {
+          id: "settings",
+          path: "/app/settings",
+          Component: Settings as never,
+          loader: () => loaderData,
+        },
+      ]);
+      return renderToStaticMarkup(
+        createElement(Stub, {
+          initialEntries: ["/app/settings"],
+          hydrationData: { loaderData: { settings: loaderData } },
+        }),
+      );
+    }
+
+    it("shows the toggle and the address the consent covers", () => {
+      const html = render({ email: "owner@example.com", on: false, mailOn: true });
+      expect(html).toContain("Checkout guard emails");
+      expect(html).toContain('label="Email me when the checkout guard finds a problem"');
+      expect(html).toContain("We email owner@example.com only when");
+      expect(html).not.toMatch(/hijack|hacked/i);
+      expect(html).not.toMatch(/[\u2014\u2013]/);
+    });
+
+    it("checked when on; disabled with an explanation while all mail is off", () => {
+      expect(render({ email: null, on: true, mailOn: true })).toMatch(
+        /<s-checkbox[^>]*label="Email me when the checkout guard[^"]*"[^>]*checked/,
+      );
+      const off = render({ email: null, on: true, mailOn: false });
+      expect(off).toMatch(/<s-checkbox[^>]*disabled/);
+      expect(off).not.toMatch(
+        /<s-checkbox[^>]*label="Email me when the checkout guard[^"]*"[^>]*checked/,
+      );
+      expect(off).toContain("Emails from GhostCode are off for this store");
+    });
+
+    it("no card when not offered (Free, dark)", () => {
+      expect(render(null)).not.toContain("Checkout guard emails");
+    });
   });
 });

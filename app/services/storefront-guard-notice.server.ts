@@ -24,7 +24,11 @@ import { isStorefrontGuardEmailLive } from "./soft-launch-flags.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
-import { claimGuardEmailNoticeShown } from "../models/merchant-alert.server";
+import {
+  claimGuardEmailNoticeShown,
+  enableGuardEmail,
+  turnOffGuardEmail,
+} from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
 
 export type GuardEmailNoticeShop = {
@@ -114,4 +118,73 @@ export async function claimGuardEmailNoticeRendered(
     });
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings: turn guard email back on (gc-njwa #5)
+// ---------------------------------------------------------------------------
+
+/** The Settings control's state. */
+export type GuardEmailSetting = {
+  /** The address the consent covers (null: the generic wording). */
+  email: string | null;
+  /** Consented and not turned off. */
+  on: boolean;
+  /** alertsEnabled: false while all GhostCode mail is off (the control is disabled). */
+  mailOn: boolean;
+};
+
+/** Whether Settings offers the control: a plan with guard email, and guard email live. No query. */
+function settingOffered(shop: Pick<GuardEmailNoticeShop, "plan">): boolean {
+  return (
+    getPlanFeatures(shop.plan).storefrontGuardEmail &&
+    isStorefrontGuardEmailLive() &&
+    getMerchantAlertConfigStatus().configured
+  );
+}
+
+/**
+ * Settings' guard email control, or null when it is not offered (Free: in-app
+ * only; or guard email dark, when there is nothing to turn on). Never throws.
+ */
+export async function guardEmailSettingFor(
+  shop: GuardEmailNoticeShop & { id: string },
+  admin: AdminApiContext | null,
+): Promise<GuardEmailSetting | null> {
+  if (!settingOffered(shop)) return null;
+  let email: string | null = null;
+  try {
+    email = await noticeEmail(shop, admin);
+  } catch (err) {
+    logger.warn("guard-email-setting-read-failed", { shop: shop.domain, ...safeErrorFields(err) });
+  }
+  return {
+    email,
+    on: shop.guardEmailNoticeShownAt !== null && shop.guardEmailOffAt === null,
+    mailOn: shop.alertsEnabled,
+  };
+}
+
+/**
+ * Settings' toggle. Off: the notice's "Turn off" (always allowed). On: consent
+ * for the address the card showed (`shownEmail`), stamped like the notice
+ * (enableGuardEmail), refused when the control is not offered, all mail is
+ * off, or the address is no longer the one the card would show. Session shop
+ * only (the caller passes the session shop's row).
+ */
+export async function setGuardEmailFromSettings(
+  shop: GuardEmailNoticeShop & { id: string },
+  enabled: boolean,
+  shownEmail: string | null,
+  admin: AdminApiContext | null,
+): Promise<"on" | "off" | "refused"> {
+  if (!enabled) {
+    await turnOffGuardEmail(shop.id);
+    return "off";
+  }
+  if (!settingOffered(shop) || !shop.alertsEnabled) return "refused";
+  const email = await noticeEmail(shop, admin);
+  if (!sameAddress(email, shownEmail)) return "refused";
+  await enableGuardEmail(shop.id, email ? guardConsentHash(email) : null);
+  return "on";
 }

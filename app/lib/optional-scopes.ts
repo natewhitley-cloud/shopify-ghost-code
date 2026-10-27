@@ -45,9 +45,11 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
     label: "Pages & content",
     unlocks: "Finds orphaned content pages and broken links to pages that no longer exist.",
   },
+  // D4 (owner, 2026-10-27): the one navigation scope covers both checks.
   read_online_store_navigation: {
-    label: "URL redirects",
-    unlocks: "Finds orphaned URL redirects left behind by uninstalled apps.",
+    label: "Menus and URL redirects",
+    unlocks:
+      "Finds orphaned URL redirects left behind by uninstalled apps, and checks your menu labels and links for injected code.",
   },
   read_locales: {
     label: "Store languages",

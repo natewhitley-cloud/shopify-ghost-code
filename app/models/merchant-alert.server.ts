@@ -109,6 +109,32 @@ export async function turnOffGuardEmail(shopId: string): Promise<void> {
   });
 }
 
+/**
+ * Settings' checkout guard email toggle turned ON (gc-njwa #5): the merchant
+ * read the address on the card, so this is consent, stamped like the notice:
+ * guardEmailNoticeShownAt now, with `consentHash` (the hashed address shown,
+ * or null for the generic wording), and any "Turn off" cleared. Conditional:
+ * a shop already on keeps its first consent time (a repeat changes nothing).
+ * Returns true IFF this call turned it on.
+ */
+export async function enableGuardEmail(
+  shopId: string,
+  consentHash: string | null,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      id: shopId,
+      OR: [{ guardEmailOffAt: { not: null } }, { guardEmailNoticeShownAt: null }],
+    },
+    data: {
+      guardEmailOffAt: null,
+      guardEmailNoticeShownAt: new Date(),
+      guardEmailConsentHash: consentHash,
+    },
+  });
+  return count === 1;
+}
+
 /** Append one sent-summary row to the ledger ((shopId, scanId) is unique). */
 export function recordMerchantAlert(input: RecordMerchantAlertInput): Promise<MerchantAlert> {
   return db.merchantAlert.create({ data: input });

@@ -215,3 +215,26 @@ export function guardNoticeLead(email: string | null): string {
     "We email only when GhostCode finds known malicious code or a script loader on your live store, never routine updates."
   );
 }
+
+// Settings card (gc-njwa #5): the guard email on/off control, paid plans only.
+
+export const GUARD_SETTINGS_HEADING = "Checkout guard emails";
+export const GUARD_SETTINGS_TOGGLE = "Email me when the checkout guard finds a problem";
+
+/** The card's paragraph: the address this consent covers, and when mail goes out. */
+export function guardSettingsParagraph(email: string | null): string {
+  const to = email ?? "your store's owner email address";
+  return (
+    `We email ${to} only when GhostCode's hourly check finds known malicious code or a script loader on your live store, never routine updates. ` +
+    "Every alert is also shown in the app."
+  );
+}
+
+/** Shown, with the control disabled, while all GhostCode email is off for the store. */
+export const GUARD_SETTINGS_MAIL_OFF =
+  "Emails from GhostCode are off for this store (unsubscribed, or turned off under Summary emails). Turn them on there to get checkout guard emails.";
+export const GUARD_SETTINGS_SAVED_ON = "Checkout guard emails are on.";
+export const GUARD_SETTINGS_SAVED_OFF =
+  "Checkout guard emails are off. Alerts still show in the app.";
+export const GUARD_SETTINGS_REFUSED =
+  "We couldn't change this setting. Reload the page and try again.";
