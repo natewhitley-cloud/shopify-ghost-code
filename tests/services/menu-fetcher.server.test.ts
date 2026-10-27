@@ -184,4 +184,15 @@ describe("fetchMenuItems", () => {
     const admin = mockAdmin([{ errors: [{ message: "Internal error" }] }]);
     await expect(fetchMenuItems(admin as never)).rejects.toThrow(/Failed to fetch menus/);
   });
+
+  // Audit fix: a response without the connection is a failed read, so the
+  // step records the audit as not run and never resolves prior findings.
+  it.each([
+    ["null menus", { data: { menus: null } }],
+    ["missing menus", { data: {} }],
+    ["null data", { data: null }],
+  ])("throws when the response has %s (never read as no menus)", async (_label, response) => {
+    const admin = mockAdmin([response]);
+    await expect(fetchMenuItems(admin as never)).rejects.toThrow(/Failed to fetch menus/);
+  });
 });

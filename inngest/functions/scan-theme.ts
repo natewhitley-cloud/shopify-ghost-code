@@ -2864,12 +2864,14 @@ export const scanTheme = inngest.createFunction(
                 products: productsMs,
                 pages: pagesMs,
                 redirects: redirectsMs,
-                menus: menusMs,
+                // gc-7gjj.1: menu fields only when the audit ran (audit fix:
+                // a dark flag adds nothing to scan_signal).
+                ...(menuResult.audited ? { menus: menusMs } : {}),
               },
               pageCounts: {
                 products: productResult.pageCount,
                 redirects: redirectResult.pageCount,
-                menus: menuResult.pageCount,
+                ...(menuResult.audited ? { menus: menuResult.pageCount } : {}),
               },
               throttleSleepMs: productResult.throttleSleepMs + redirectResult.throttleSleepMs,
               truncatedWalks,
@@ -2885,10 +2887,12 @@ export const scanTheme = inngest.createFunction(
                 redirects: walkCostSignal(redirectResult.cost, redirectResult.pageCount),
                 // gc-7gjj.1: the menus query's cost is undocumented; this is
                 // where the first live scans measure it (with gc-7gjj.5).
-                menus: walkCostSignal(menuResult.cost, menuResult.pageCount),
+                ...(menuResult.audited
+                  ? { menus: walkCostSignal(menuResult.cost, menuResult.pageCount) }
+                  : {}),
               },
               // gc-7gjj.1: menu items read (counts only, no menu text).
-              menuItemCount: menuResult.itemCount,
+              ...(menuResult.audited ? { menuItemCount: menuResult.itemCount } : {}),
               walkThrottleSleepMs: {
                 products: productResult.throttleSleepMs,
                 redirects: redirectResult.throttleSleepMs,

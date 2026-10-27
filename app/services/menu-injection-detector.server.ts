@@ -86,19 +86,18 @@ const HTML_SPACE: ReadonlySet<string> = new Set([" ", "\t", "\n", "\f", "\r"]);
 
 /** A tag start in a title: `<` and a letter (an element name). */
 const TAG_START_RE = /<[a-z]/gi;
-/** An event-handler attribute inside a tag segment: separator, `on`, letters, `=`. */
-// Whitespace around `=` is unbounded, as in HTML; each run belongs to one
-// candidate name, so the scan stays linear (audit fix: a bounded run let
-// `onerror` + 25 spaces + `=` through).
-const HANDLER_ATTR_RE = /[\s/"']on[a-z]{1,40}\s*=/i;
+/** An event-handler attribute name: `on` then letters (any, known event or not). */
+const HANDLER_NAME_RE = /^on[a-z]+$/;
+/**
+ * An event-handler attribute in the text of a quoted value that never closes
+ * (separator, `on`, letters, `=`). Where that value really ends depends on the
+ * theme markup after the label, so doubt reads it as attributes.
+ */
+const HANDLER_IN_TEXT_RE = /[\s/"']on[a-z]{1,40}\s*=/i;
 /** Frame-like elements that load or run a document. */
 const FRAME_TAG_RE = /^<(?:iframe|object|embed)(?=[\s/>]|$)/i;
-/** A `srcdoc=` attribute inside a tag segment. */
-const SRCDOC_ATTR_RE = /[\s/"']srcdoc\s*=/i;
-/** `<meta` with an `http-equiv` attribute (a refresh redirect). */
-const META_REFRESH_RE = /^<meta(?=[\s/])[^]*?[\s/"']http-equiv\s*=/i;
-/** Attribute values inside a tag segment: quoted, or unquoted up to a separator. */
-const ATTR_VALUE_RE = /=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+/** A `<meta` tag. */
+const META_TAG_RE = /^<meta(?=[\s/>]|$)/i;
 /** Schemes that run code or render HTML when a link is followed. */
 const SCRIPT_SCHEME_RE = /^(?:javascript:|vbscript:|data:text\/html)/;
 /** What a browser drops from a URL before reading its scheme: U+0000 to space, and DEL. */
@@ -183,11 +182,71 @@ function tagSegments(title: string): Array<{ at: number; text: string }> {
   return segments;
 }
 
+/**
+ * The attributes of one tag segment as the HTML tokenizer reads them: names
+ * lower case, a repeated name ignored (the first one wins, as in a browser),
+ * `value` null for an attribute with no `=`. `unclosedValue` is the text of a
+ * quoted value that never closes in the segment (see HANDLER_IN_TEXT_RE).
+ * Only real attribute names are read: `on...=` written inside a value is not
+ * an attribute (audit fix). Linear: every step moves forward.
+ */
+export function segmentAttributes(segment: string): {
+  attributes: Map<string, string | null>;
+  unclosedValue: string | null;
+} {
+  const attributes = new Map<string, string | null>();
+  const n = segment.length;
+  let i = 1;
+  // The element name runs to whitespace, `/` or `>`.
+  while (i < n && segment[i] !== "/" && segment[i] !== ">" && !HTML_SPACE.has(segment[i])) i++;
+  for (;;) {
+    while (i < n && (segment[i] === "/" || HTML_SPACE.has(segment[i]))) i++;
+    if (i >= n || segment[i] === ">") return { attributes, unclosedValue: null };
+    const nameStart = i;
+    // A leading `=` is part of the name, as in HTML.
+    i++;
+    while (
+      i < n &&
+      segment[i] !== "/" &&
+      segment[i] !== ">" &&
+      segment[i] !== "=" &&
+      !HTML_SPACE.has(segment[i])
+    ) {
+      i++;
+    }
+    const name = segment.slice(nameStart, i).toLowerCase();
+    while (i < n && HTML_SPACE.has(segment[i])) i++;
+    let value: string | null = null;
+    if (segment[i] === "=") {
+      i++;
+      while (i < n && HTML_SPACE.has(segment[i])) i++;
+      const q = segment[i];
+      if (q === '"' || q === "'") {
+        const close = segment.indexOf(q, i + 1);
+        if (close === -1) {
+          if (!attributes.has(name)) attributes.set(name, segment.slice(i + 1));
+          return { attributes, unclosedValue: segment.slice(i + 1) };
+        }
+        value = segment.slice(i + 1, close);
+        i = close + 1;
+      } else {
+        const start = i;
+        while (i < n && segment[i] !== ">" && !HTML_SPACE.has(segment[i])) i++;
+        value = segment.slice(start, i);
+      }
+    }
+    if (!attributes.has(name)) attributes.set(name, value);
+  }
+}
+
 /** The first listed malicious domain named by URL in `text`, with its offset. */
 function listedDomainIn(text: string): { domain: string; at: number } | null {
   for (const host of urlHostsOnLine(text)) {
     const entry = matchMaliciousDomain(host);
-    if (entry) return { domain: entry.domain, at: Math.max(0, indexOfIgnoreCase(text, host)) };
+    if (entry) {
+      // indexOfIgnoreCase wants a lower-case needle (audit fix).
+      return { domain: entry.domain, at: Math.max(0, indexOfIgnoreCase(text, host.toLowerCase())) };
+    }
   }
   return null;
 }
@@ -203,24 +262,34 @@ export function matchMenuItem(
   if (script !== -1) return { rule: "script", field: "title", at: script };
 
   // Both splits (see plainTagSegments): at most twice the title, still linear.
-  const segments = [...tagSegments(title), ...plainTagSegments(title)];
+  const segments = [...tagSegments(title), ...plainTagSegments(title)].map((seg) => ({
+    ...seg,
+    ...segmentAttributes(seg.text),
+  }));
   for (const seg of segments) {
-    if (HANDLER_ATTR_RE.test(seg.text)) return { rule: "handler", field: "title", at: seg.at };
+    for (const [name, value] of seg.attributes) {
+      if (value !== null && HANDLER_NAME_RE.test(name)) {
+        return { rule: "handler", field: "title", at: seg.at };
+      }
+    }
+    if (seg.unclosedValue !== null && HANDLER_IN_TEXT_RE.test(seg.unclosedValue)) {
+      return { rule: "handler", field: "title", at: seg.at };
+    }
   }
   for (const seg of segments) {
-    if (FRAME_TAG_RE.test(seg.text) || SRCDOC_ATTR_RE.test(seg.text)) {
+    const hasValue = (name: string) => (seg.attributes.get(name) ?? null) !== null;
+    if (FRAME_TAG_RE.test(seg.text) || hasValue("srcdoc")) {
       return { rule: "frame", field: "title", at: seg.at };
     }
-    if (META_REFRESH_RE.test(seg.text)) return { rule: "frame", field: "title", at: seg.at };
+    if (META_TAG_RE.test(seg.text) && hasValue("http-equiv")) {
+      return { rule: "frame", field: "title", at: seg.at };
+    }
   }
 
   if (isScriptUrl(url)) return { rule: "script_url", field: "url", at: 0 };
   for (const seg of segments) {
-    ATTR_VALUE_RE.lastIndex = 0;
-    let value: RegExpExecArray | null;
-    while ((value = ATTR_VALUE_RE.exec(seg.text)) !== null) {
-      const raw = value[1] ?? value[2] ?? value[3] ?? "";
-      if (isScriptUrl(decodeAttributeValue(raw))) {
+    for (const value of seg.attributes.values()) {
+      if (value !== null && isScriptUrl(decodeAttributeValue(value))) {
         return { rule: "script_url", field: "title", at: seg.at };
       }
     }

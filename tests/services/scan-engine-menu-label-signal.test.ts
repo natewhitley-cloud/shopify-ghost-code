@@ -89,6 +89,19 @@ describe("scanThemeFiles unescaped menu-label signal", () => {
     expect(menuLabel.detectUnescapedMenuLabels).toHaveBeenCalledTimes(4);
   });
 
+  it("counts two prints on one line as two outputs and skips a raw block (audit fix)", () => {
+    vi.stubEnv(FLAG, "true");
+    const content =
+      "{% for link in menu.links %}\n{{ link.title }} {{ link.title }}\n" +
+      "{% raw %}{{ link.title }}{% endraw %}\n{% endfor %}";
+    const result = scanThemeFiles([{ filename: "snippets/nav.liquid", content }]);
+    expect(result.menuLabels).toEqual({
+      fileCount: 1,
+      outputCount: 2,
+      files: [{ path: "snippets/nav.liquid", lines: [2] }],
+    });
+  });
+
   it("Dawn: an empty summary with the flag on", () => {
     vi.stubEnv(FLAG, "true");
     expect(scanThemeFiles(DAWN).menuLabels).toEqual({ fileCount: 0, outputCount: 0, files: [] });

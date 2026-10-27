@@ -89,8 +89,18 @@ describe("matchMenuItem: the rules", () => {
     '<a href="javascript&colon;alert(1)">Shop</a>',
     '<a href="&#106;avascript:alert(1)">Shop</a>',
     "<a href='java&#x09;script:alert(1)'>Shop</a>",
+    // Zero-padded references (audit fix, M1): browsers accept any zeros.
+    '<a href="&#00000000106;avascript:alert(1)">Shop</a>',
+    '<a href="&#x0000006a;avascript:alert(1)">Shop</a>',
   ])("flags a script URL in an attribute inside a label (references decoded): %j", (title) => {
     expect(matchMenuItem(item(title))).toMatchObject({ rule: "script_url", field: "title" });
+  });
+
+  it("points the excerpt at a listed domain written in mixed case (audit fix)", () => {
+    const title = `${"x".repeat(100)} <a href="https://CartAssure.TOP/x">Shop</a>`;
+    const match = matchMenuItem(item(title));
+    expect(match).toMatchObject({ rule: "domain", field: "title", domain: "cartassure.top" });
+    expect(title.slice(match!.at).startsWith("CartAssure.TOP")).toBe(true);
   });
 
   it("flags a listed malicious domain in a label or in the link", () => {
@@ -205,6 +215,24 @@ describe("matchMenuItem: false positives (precision first)", () => {
   it("never flags a lookalike of a listed domain", () => {
     expect(matchMenuItem(item("Shop", "https://notcartassure.top/x"))).toBeNull();
     expect(matchMenuItem(item("Shop", "https://cartassure.top.example.com/x"))).toBeNull();
+  });
+
+  // Audit fix: only real attribute names count, read by the attribute walk.
+  it.each([
+    '<a title="see onboarding=1">Shop</a>',
+    "<a title='x onclick=y'>Shop</a>",
+    '<span data-x="a/onload=b">New</span>',
+    '<a title="x srcdoc=y">Shop</a>',
+    '<meta name="x http-equiv=refresh">',
+  ])("never flags on*=, srcdoc= or http-equiv= written inside a quoted value: %j", (title) => {
+    expect(matchMenuItem(item(title))).toBeNull();
+  });
+
+  it("a repeated attribute is ignored, as in a browser: the first one wins (audit fix)", () => {
+    expect(matchMenuItem(item('<a href="/ok" href="javascript:alert(1)">Shop</a>'))).toBeNull();
+    expect(matchMenuItem(item('<a href="javascript:alert(1)" href="/ok">Shop</a>'))?.rule).toBe(
+      "script_url",
+    );
   });
 
   it("an attribute value that merely mentions javascript: later in the value is not a script URL", () => {

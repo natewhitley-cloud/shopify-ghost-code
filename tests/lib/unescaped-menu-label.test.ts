@@ -15,12 +15,13 @@ import {
   MENU_LABEL_LINES_CAP,
   summarizeUnescapedMenuLabels,
 } from "../../app/lib/unescaped-menu-label";
-import { blankLiquidComments } from "../../app/services/scan-engine.server";
+import { blankNonExecutingLiquid } from "../../app/services/liquid-error-detector.server";
 
 const FIXTURES = join(__dirname, "..", "fixtures", "menu-labels");
 const read = (theme: string, path: string) => readFileSync(join(FIXTURES, theme, path), "utf8");
-/** As the scan engine calls it: Liquid comments blanked first. */
-const detect = (content: string) => detectUnescapedMenuLabels(blankLiquidComments(content)).lines;
+/** As the scan engine calls it: non-executing Liquid blanked first, lines kept. */
+const blank = (content: string) => blankNonExecutingLiquid(content, { keepLength: true });
+const detect = (content: string) => detectUnescapedMenuLabels(blank(content)).lines;
 
 const loop = (body: string, menu = "section.settings.menu") =>
   `{% for link in ${menu}.links %}\n${body}\n{% endfor %}`;
@@ -60,7 +61,7 @@ describe("golden fixtures", () => {
       "blocks/menu.liquid",
       "snippets/header-drawer.liquid",
     ]
-      .map((path) => ({ path, lines: detect(read("horizon", path)) }))
+      .map((path) => ({ path, ...detectUnescapedMenuLabels(blank(read("horizon", path))) }))
       .filter((h) => h.lines.length > 0);
     expect(summarizeUnescapedMenuLabels(hits)).toEqual({
       fileCount: 3,
@@ -172,8 +173,15 @@ describe("what counts as an unescaped print", () => {
     expect(detect("{% for link in menu.links")).toEqual([]);
   });
 
-  it("one line with two prints is reported once", () => {
-    expect(detect(loop("{{ link.title }} {{ link.title }}"))).toEqual([2]);
+  it("one line with two prints is reported once, but counted as two outputs (audit fix)", () => {
+    expect(detectUnescapedMenuLabels(blank(loop("{{ link.title }} {{ link.title }}")))).toEqual({
+      lines: [2],
+      outputCount: 2,
+    });
+  });
+
+  it("a print inside {% raw %} is text, not a print (audit fix)", () => {
+    expect(detect(loop("{% raw %}{{ link.title }}{% endraw %}\n{{ link.title }}"))).toEqual([3]);
   });
 });
 
@@ -182,6 +190,7 @@ describe("summarizeUnescapedMenuLabels", () => {
     const hits = Array.from({ length: MENU_LABEL_FILES_CAP + 5 }, (_, i) => ({
       path: `snippets/menu-${String(i).padStart(2, "0")}.liquid`,
       lines: Array.from({ length: MENU_LABEL_LINES_CAP + 3 }, (_, j) => j + 1),
+      outputCount: MENU_LABEL_LINES_CAP + 3,
     })).reverse();
     const summary = summarizeUnescapedMenuLabels(hits);
     expect(summary.fileCount).toBe(MENU_LABEL_FILES_CAP + 5);

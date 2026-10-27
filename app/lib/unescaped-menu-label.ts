@@ -33,12 +33,16 @@
  * Pure and linear: one forward walk over the tokens (each `{{`/`{%` finds its
  * close once; an unclosed one ends the walk), and per-token regexes with
  * bounded or disjoint quantifiers. The caller passes content with Liquid
- * comments already blanked (blankLiquidComments), so a commented-out print
- * does not count.
+ * that never executes already blanked, line breaks kept
+ * (blankNonExecutingLiquid with keepLength), so a print inside a comment or a
+ * `{% raw %}` block (printed as text) does not count (audit fix).
  */
 
-/** Per-file result: the 1-based lines of each unescaped print. */
-export type UnescapedMenuLabelResult = { lines: number[] };
+/**
+ * Per-file result: the distinct 1-based lines holding an unescaped print, and
+ * how many prints there are (two on one line count twice; audit fix).
+ */
+export type UnescapedMenuLabelResult = { lines: number[]; outputCount: number };
 
 /** Per-scan aggregate written to scan_signal metadata (`menuLabels`). */
 export type UnescapedMenuLabelSummary = {
@@ -150,7 +154,7 @@ function linesOf(content: string, offsets: number[]): number[] {
  * content. See the module doc for what counts.
  */
 export function detectUnescapedMenuLabels(content: string): UnescapedMenuLabelResult {
-  if (!content.includes(".links")) return { lines: [] };
+  if (!content.includes(".links")) return { lines: [], outputCount: 0 };
   const all = statements(content);
 
   // Pass 1: menu loops anywhere in the file.
@@ -165,7 +169,7 @@ export function detectUnescapedMenuLabels(content: string): UnescapedMenuLabelRe
     linkVars.add(loop[1]);
     menuPaths.add(loop[2]);
   }
-  if (linkVars.size === 0) return { lines: [] };
+  if (linkVars.size === 0) return { lines: [], outputCount: 0 };
 
   // Pass 2: aliases and prints, in order.
   const aliases = new Set<string>();
@@ -190,12 +194,12 @@ export function detectUnescapedMenuLabels(content: string): UnescapedMenuLabelRe
     const echo = ECHO_RE.exec(s.text);
     if (echo && printsLabelRaw(echo[1] ?? "", isLabel)) offsets.push(s.at);
   }
-  return { lines: [...new Set(linesOf(content, offsets))] };
+  return { lines: [...new Set(linesOf(content, offsets))], outputCount: offsets.length };
 }
 
 /** Roll per-file hits up into the scan_signal shape (files sorted by path, capped). */
 export function summarizeUnescapedMenuLabels(
-  hits: Array<{ path: string; lines: number[] }>,
+  hits: Array<{ path: string; lines: number[]; outputCount: number }>,
 ): UnescapedMenuLabelSummary {
   const files = [...hits]
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
@@ -203,7 +207,7 @@ export function summarizeUnescapedMenuLabels(
     .map((h) => ({ path: h.path, lines: h.lines.slice(0, MENU_LABEL_LINES_CAP) }));
   return {
     fileCount: hits.length,
-    outputCount: hits.reduce((n, h) => n + h.lines.length, 0),
+    outputCount: hits.reduce((n, h) => n + h.outputCount, 0),
     files,
   };
 }

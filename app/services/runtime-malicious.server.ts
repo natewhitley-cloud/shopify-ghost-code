@@ -196,8 +196,12 @@ const NAMED_CHAR_REFS: Readonly<Record<string, string>> = {
 };
 
 // A numeric reference (`;` optional, as browsers decode it) or a named one
-// with its `;`. Bounded quantifiers, one pass: linear.
-const CHAR_REF_RE = /&(?:#(\d{1,8})|#[xX]([0-9a-fA-F]{1,7})|([A-Za-z]{2,8}));?/g;
+// with its `;`. Browsers accept any number of leading zeros (`&#0000106;`,
+// `&#x0006a;`), so the zero run is unbounded (audit fix); the significant
+// digits stay bounded and the value is range-checked after. `0*` and the
+// digit run can only trade zeros at one start, and `;?` never fails, so the
+// scan stays linear.
+const CHAR_REF_RE = /&(?:#0*(\d{1,8})|#[xX]0*([0-9a-fA-F]{1,7})|([A-Za-z]{2,8}));?/g;
 
 /**
  * An attribute value as the browser hands it to the handler: numeric and the

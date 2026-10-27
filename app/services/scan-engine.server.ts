@@ -5982,9 +5982,8 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
   const suspiciousHits: Array<{ path: string; reasons: SuspiciousCodeReason[] }> | null =
     isSuspiciousCodeSignalEnabled() ? [] : null;
   // Unescaped menu-label signal (gc-7gjj.2 Phase 0): null while the flag is off.
-  const menuLabelHits: Array<{ path: string; lines: number[] }> | null = isMenuLabelSignalEnabled()
-    ? []
-    : null;
+  const menuLabelHits: Array<{ path: string; lines: number[]; outputCount: number }> | null =
+    isMenuLabelSignalEnabled() ? [] : null;
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -6024,8 +6023,12 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     if (!scannable) continue;
 
     if (menuLabelHits) {
-      const { lines } = detectUnescapedMenuLabels(blankLiquidComments(file.content));
-      if (lines.length > 0) menuLabelHits.push({ path: file.filename, lines });
+      // Comments AND `{% raw %}` blanked (a raw block prints its Liquid as
+      // text), line breaks kept so lines stay true (audit fix).
+      const { lines, outputCount } = detectUnescapedMenuLabels(
+        blankNonExecutingLiquid(file.content, { keepLength: true }),
+      );
+      if (lines.length > 0) menuLabelHits.push({ path: file.filename, lines, outputCount });
     }
 
     findings.push(...capped(detectGhostScripts(file)));

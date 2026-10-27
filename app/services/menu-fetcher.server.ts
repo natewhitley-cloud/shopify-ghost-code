@@ -110,7 +110,7 @@ export interface MenuFetchResult {
 
 /**
  * Every menu item of the store, up to the caps. Throws on a GraphQL error
- * (paginateConnection), so the Inngest step retries rather than reading a
+ * (paginateConnection) or a response without `menus`, so the Inngest step retries rather than reading a
  * failed fetch as "no menus".
  */
 export async function fetchMenuItems(
@@ -125,8 +125,15 @@ export async function fetchMenuItems(
     pageSize: MENU_PAGE_SIZE,
     maxNodes: MENU_CAP,
     errorContext: "[menu-fetcher] Failed to fetch menus",
-    getConnection: (data) =>
-      (data as { menus?: GraphQLConnection<MenuNode> } | null | undefined)?.menus,
+    // A response with no `menus` connection is a failed read, never "no
+    // menus": throw so the step records the audit as not run and no prior
+    // finding resolves (audit fix).
+    getConnection: (data) => {
+      const menus = (data as { menus?: GraphQLConnection<MenuNode> | null } | null | undefined)
+        ?.menus;
+      if (!menus) throw new Error("[menu-fetcher] Failed to fetch menus: no menus connection");
+      return menus;
+    },
     // Items past the cap are dropped as they arrive, so memory stays bounded
     // by one page of menus whatever the store holds.
     mapNode: (menu) => {

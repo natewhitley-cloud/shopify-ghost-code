@@ -366,6 +366,9 @@ describe("findMaliciousInHomepage: on*= event handlers (gc-7gjj.4)", () => {
       "https&colon;&sol;&sol;cartassure&period;top/l.js",
       "&#104;&#116;&#116;&#112;&#115;://cartassure.top/l.js",
       "&#x68;ttps://cartassure&#46top/l.js",
+      // Zero-padded references (audit fix, M1).
+      "https://cartassure&#00000000046;top/l.js",
+      "https://cartassure&#x000000002e;top/l.js",
     ]) {
       const html = page("", `<img src=x onerror="s.src=&quot;${encoded}&quot;">`);
       expect(
@@ -495,6 +498,23 @@ describe("decodeAttributeValue", () => {
     expect(decodeAttributeValue("&bogus; &amp &#0; &#xD800; &#99999999;")).toBe(
       "&bogus; &amp &#0; &#xD800; &#99999999;",
     );
+  });
+
+  // Audit fix (M1): browsers accept any number of leading zeros.
+  it("decodes zero-padded numeric references, however many zeros", () => {
+    expect(decodeAttributeValue("&#0000000111;")).toBe("o");
+    expect(decodeAttributeValue("&#x0000006a;")).toBe("j");
+    expect(decodeAttributeValue("&#00000000106;avascript:")).toBe("javascript:");
+    expect(decodeAttributeValue(`&#${"0".repeat(50)}47&#X${"0".repeat(50)}2f`)).toBe("//");
+    // The value is still range-checked after the zeros.
+    expect(decodeAttributeValue("&#0000;&#0099999999;")).toBe("&#0000;&#0099999999;");
+  });
+
+  it("decodes 1 MB of zero padding in linear time", () => {
+    const started = Date.now();
+    expect(decodeAttributeValue(`&#${"0".repeat(1_000_000)}106;`)).toBe("j");
+    decodeAttributeValue(`&#${"0".repeat(1_000_000)}`);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it("returns the value unchanged when there is nothing to decode", () => {

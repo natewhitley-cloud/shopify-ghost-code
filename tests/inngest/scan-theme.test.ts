@@ -1584,7 +1584,10 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
       expect(typeof meta.phaseMs[key]).toBe("number");
     }
     // Consolidated walk cost is surfaced; redirects contributed nothing here.
-    expect(meta.pageCounts).toEqual({ products: 4, redirects: 0, menus: 0 });
+    // gc-7gjj.1 audit fix: the menu audit is dark here, so no menu fields.
+    expect(meta.pageCounts).toEqual({ products: 4, redirects: 0 });
+    expect(meta.phaseMs).not.toHaveProperty("menus");
+    expect(meta).not.toHaveProperty("menuItemCount");
     expect(meta.throttleSleepMs).toBe(250);
     expect(meta.truncatedWalks).toEqual([]);
   });
@@ -7240,8 +7243,7 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
       products: { requestedMax: 603, requestedAvg: 600, actualSum: 600 },
       // Redirects: 2 steps x 20 pages at 52 (the simulated stats count 30 pages).
       redirects: { requestedMax: 52, requestedAvg: Math.round(2080 / 30), actualSum: 60 },
-      // gc-7gjj.1: the menu walk did not run (dark).
-      menus: { requestedMax: 0, requestedAvg: 0, actualSum: 0 },
+      // gc-7gjj.1: the menu walk did not run (dark), so no menus key.
     });
     expect(signal.metadata.walkThrottleSleepMs).toEqual({ products: 6000, redirects: 14 });
     // The existing combined field is unchanged.
