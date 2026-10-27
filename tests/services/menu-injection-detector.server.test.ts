@@ -118,6 +118,19 @@ describe("matchMenuItem: the rules", () => {
     expect(matchMenuItem(item(title))?.rule).toBe("handler");
   });
 
+  // Each split pinned on its own (third audit round): the quote-aware split
+  // alone sees a handler after a quoted `>`; the plain split alone sees a tag
+  // the quote-aware split reads as part of a value.
+  it("the quote-aware split alone catches a handler after a quoted >", () => {
+    // Plain split: `<img alt=">` ends early and `" onerror=1>` is text.
+    expect(matchMenuItem(item('<img alt=">" onerror=1>'))?.rule).toBe("handler");
+  });
+
+  it("the HTML = rule: an unquoted value after a stray = does not swallow the next tag", () => {
+    expect(matchMenuItem(item('<img src=x ="><iframe src=y>'))?.rule).toBe("frame");
+    expect(matchMenuItem(item("<b a=b><iframe src=y>"))?.rule).toBe("frame");
+  });
+
   // Re-audit HIGH: a quote not directly after `=` (or after an NBSP) does not
   // open a value, and no split may hide an anchored frame or meta tag.
   it.each([
@@ -341,6 +354,10 @@ describe("detectMenuInjection: linear time", () => {
     ["1 MB of unclosed quoted values", '<a x="'.repeat(200_000)],
     ["1 MB of whitespace after a handler name", `<a onerror${" ".repeat(1_000_000)}`],
     ["1 MB of handler names and spaces", `<a ${"onx    ".repeat(140_000)}>`],
+    ['1 MB of stray =" pairs', `<a ${'="'.repeat(500_000)}`],
+    ["1 MB of unclosed quoted values after =", '<a b=" '.repeat(140_000)],
+    ["1 MB of = runs", `<a ${"=".repeat(1_000_000)}>`],
+    ["1 MB of empty tags", "<a >".repeat(250_000)],
   ])("%s stays fast", (_label, title) => {
     const started = Date.now();
     detectMenuInjection([item(title, title)]);

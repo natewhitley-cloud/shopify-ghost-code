@@ -441,11 +441,18 @@ async function runMenuAudit(opts: {
   } catch (err) {
     const { logger } = await import("../../app/lib/logger.server");
     const { safeErrorFields } = await import("../../app/lib/safe-error");
-    logger.warn("menu audit failed; menu labels recorded as not checked", {
+    // error, not warn: with the flag on this silently turns the check off
+    // for the scan, so it must be visible (it can also be a code fault).
+    logger.error("menu audit failed; menu labels recorded as not checked", {
       function: "scan-theme",
       stepName: "menu-audit",
       shopId: opts.shopId,
       ...safeErrorFields(err),
+    });
+    // An earlier attempt of this step may have persisted rows before failing:
+    // the type is recorded as not live now, so leave none behind.
+    await db.finding.deleteMany({
+      where: { scanId: opts.scanId, findingType: FindingType.MENU_INJECTION },
     });
     return none;
   }

@@ -7863,6 +7863,11 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
       cappedCategories: string[];
       liveFindingTypes: string[];
     };
+  const menuDeletes = () =>
+    mockDb.finding.deleteMany.mock.calls.filter(
+      ([arg]) =>
+        (arg as { where?: { findingType?: string } }).where?.findingType === "MENU_INJECTION",
+    );
   const menuCreates = () =>
     mockCreateFindings.mock.calls.filter(([, findings]) =>
       (findings as Array<{ findingType: string }>).some((f) => f.findingType === "MENU_INJECTION"),
@@ -7877,6 +7882,7 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     expect(menuCreates()).toEqual([]);
     expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
     expect(finalizeArg().cappedCategories).not.toContain("MENU_INJECTION");
+    expect(menuDeletes()).toEqual([]);
     expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
   });
 
@@ -7927,6 +7933,8 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
 
     expect(mockFetchMenuItems).not.toHaveBeenCalled();
     expect(finalizeArg().skippedCategories).toContain("MENU_INJECTION");
+    // A scope skip keeps earlier rows: nothing of this type is deleted.
+    expect(menuDeletes()).toEqual([]);
     // The redirect audit shares the scope and is skipped with it.
     expect(finalizeArg().skippedCategories).toContain("GHOST_REDIRECT");
     // MALICIOUS_SCRIPT is never made un-audited by a missing scope.
@@ -7952,6 +7960,10 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
 
     expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
     expect(menuCreates()).toEqual([]);
+    // Rows an earlier attempt may have written are cleared.
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: "MENU_INJECTION" },
+    });
     expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
     expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
   });
