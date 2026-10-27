@@ -496,6 +496,15 @@ describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
     await expect(post(body)).resolves.toEqual({ noticeClaimed: false });
   });
 
+  it("claimed elsewhere is final; only a failed write asks the page to retry (wave 4)", async () => {
+    live();
+    const body = { intent: "guard-email-notice-shown", email: "owner@example.com" };
+    mock(claimGuardEmailNoticeShown).mockResolvedValueOnce(false);
+    await expect(post(body)).resolves.toEqual({ noticeClaimed: false });
+    mock(claimGuardEmailNoticeShown).mockRejectedValueOnce(new Error("db down"));
+    await expect(post(body)).resolves.toEqual({ noticeClaimed: false, retry: true });
+  });
+
   it("an address other than the one the notice names now is never claimed", async () => {
     live();
     await expect(

@@ -23,6 +23,7 @@ import { refreshShopAlertEmail } from "./shop-alert-email.server";
 import { isStorefrontGuardEmailLive } from "./soft-launch-flags.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
+import type { NoticeClaim } from "../lib/notice-claim";
 import { safeErrorFields } from "../lib/safe-error";
 import {
   claimGuardEmailNoticeShown,
@@ -100,24 +101,26 @@ function sameAddress(a: string | null, b: string | null): boolean {
  * `shownEmail` (what the page displayed; null for the generic wording) is the
  * address the notice names now, so consent never covers an address the
  * merchant did not see (the next load shows the current one). Atomic: of any
- * number of posts exactly one returns true. Never throws.
+ * number of posts exactly one returns "claimed"; "failed" only when a read or
+ * the write failed (the client may retry). Never throws.
  */
 export async function claimGuardEmailNoticeRendered(
   shop: GuardEmailNoticeShop,
   shownEmail: string | null,
   admin: AdminApiContext | null,
-): Promise<boolean> {
-  if (!noticeOwed(shop)) return false;
+): Promise<NoticeClaim> {
+  if (!noticeOwed(shop)) return "not_claimed";
   try {
     const email = await noticeEmail(shop, admin);
-    if (!sameAddress(email, shownEmail)) return false;
-    return await claimGuardEmailNoticeShown(shop.domain, email ? guardConsentHash(email) : null);
+    if (!sameAddress(email, shownEmail)) return "not_claimed";
+    const hash = email ? guardConsentHash(email) : null;
+    return (await claimGuardEmailNoticeShown(shop.domain, hash)) ? "claimed" : "not_claimed";
   } catch (err) {
     logger.warn("guard-email-notice-claim-failed", {
       shop: shop.domain,
       ...safeErrorFields(err),
     });
-    return false;
+    return "failed";
   }
 }
 

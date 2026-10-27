@@ -337,9 +337,9 @@ describe("Home action: summary-notice-shown (gc-1q1s.11)", () => {
     expect(claimSummaryNoticeShown).not.toHaveBeenCalled();
   });
 
-  it("a failed claim reports false and never throws", async () => {
+  it("a failed claim asks the page to retry and never throws (wave 4)", async () => {
     mock(claimSummaryNoticeShown).mockRejectedValue(new Error("db down"));
-    await expect(shown()).resolves.toEqual({ noticeClaimed: false });
+    await expect(shown()).resolves.toEqual({ noticeClaimed: false, retry: true });
   });
 });
 

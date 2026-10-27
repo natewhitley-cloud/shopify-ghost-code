@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFetcher } from "react-router";
+
+import type { NoticeClaimResponse } from "./notice-claim";
 
 /** At most this many claim posts per page view: the first, and one retry. */
 export const MAX_CLAIM_POSTS = 2;
@@ -12,41 +14,55 @@ export const MAX_CLAIM_POSTS = 2;
  * mounts stamps nothing. Used by both of Home's consent notices (checkout
  * guard email, summary email) so the pattern stays one.
  *
- * A post that settles without a successful claim (a network error, or the
- * server's `noticeClaimed: false` after a failed write) is retried ONCE
- * (wave 3 U6): a lost post used to leave a merchant who saw the notice
- * without consent for the rest of the page view. The server's atomic claim
- * keeps it to at most one successful claim however many posts land.
+ * A post that settles without an answer (a network error, no response) or
+ * with the server's `retry` (its write failed) is retried ONCE (wave 3 U6).
+ * An answer that the notice is not owed (claimed in another tab, not owed,
+ * a different address) is final: no retry (wave 4).
+ *
+ * Settling is read from the submit's own promise (wave 4), never from
+ * watching the fetcher pass through a busy state: a post that settles
+ * between two renders is never lost. A response is told from the data that
+ * was there before the post by identity (each response is a new object).
  */
 export function useClaimRenderedNotice(notice: unknown, form: Record<string, string>): void {
-  const fetcher = useFetcher<{ noticeClaimed?: boolean }>();
-  // attempts: posts sent; inFlight: a post not yet settled; sawBusy: that
-  // post has been seen in flight (so an idle fetcher means it settled).
-  const claim = useRef({ attempts: 0, inFlight: false, sawBusy: false });
+  const fetcher = useFetcher<NoticeClaimResponse>();
+  // attempts: posts sent; handled: settles already acted on; before: the
+  // fetcher's data when the latest post went out.
+  const claim = useRef<{ attempts: number; handled: number; before: unknown }>({
+    attempts: 0,
+    handled: 0,
+    before: undefined,
+  });
+  // Bumped when a post settles, so the effect below runs after it.
+  const [settled, setSettled] = useState(0);
   const shown = notice !== null && notice !== undefined;
   // A stable dependency for the form's values (a new object every render).
   const body = JSON.stringify(form);
-  const busy = fetcher.state !== "idle";
-  const claimed = fetcher.data?.noticeClaimed === true;
   useEffect(() => {
     const c = claim.current;
     if (!shown) return;
-    if (c.inFlight) {
-      if (busy) {
-        c.sawBusy = true;
-        return;
-      }
-      if (!c.sawBusy) return; // submitted, not started yet
-      c.inFlight = false;
-      if (claimed || c.attempts >= MAX_CLAIM_POSTS) return;
-    } else if (c.attempts > 0) {
+    const post = () => {
+      c.attempts += 1;
+      c.before = fetcher.data;
+      Promise.resolve(
+        fetcher.submit(JSON.parse(body) as Record<string, string>, { method: "POST" }),
+      )
+        .catch(() => undefined)
+        .finally(() => setSettled((n) => n + 1));
+    };
+    if (c.attempts === 0) {
+      post();
       return;
     }
-    c.attempts += 1;
-    c.inFlight = true;
-    c.sawBusy = false;
-    fetcher.submit(JSON.parse(body) as Record<string, string>, { method: "POST" });
+    // Nothing new settled (a re-render, or the post is still in flight).
+    if (settled === c.handled) return;
+    c.handled = settled;
+    const data = fetcher.data;
+    const answered = data !== undefined && data !== c.before;
+    if (answered && !data.retry) return; // claimed, or final: not owed
+    if (c.attempts >= MAX_CLAIM_POSTS) return;
+    post();
     // `fetcher` is stable for the component.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shown, body, busy, claimed]);
+  }, [shown, body, settled]);
 }

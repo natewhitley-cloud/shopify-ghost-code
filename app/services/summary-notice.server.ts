@@ -23,6 +23,7 @@ import { getMerchantAlertConfigStatus } from "./merchant-alert.server";
 import { refreshShopAlertEmail } from "./shop-alert-email.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
+import type { NoticeClaim } from "../lib/notice-claim";
 import type { SummaryCadence } from "../lib/summary-email-copy";
 import { claimSummaryNoticeShown } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -65,18 +66,18 @@ export async function summaryNoticeForHome(
 /**
  * Home's action, posted by the client once the notice is on screen (and by
  * Dismiss, which proves it was shown): stamp summaryNoticeShownAt. Re-checks
- * the gates on the session shop's row. True IFF this call stamped it. Never
- * throws.
+ * the gates on the session shop's row. "claimed" IFF this call stamped it;
+ * "failed" only when the write failed (the client may retry). Never throws.
  */
-export async function claimSummaryNoticeRendered(shop: SummaryNoticeShop): Promise<boolean> {
-  if (!owedCadence(shop)) return false;
+export async function claimSummaryNoticeRendered(shop: SummaryNoticeShop): Promise<NoticeClaim> {
+  if (!owedCadence(shop)) return "not_claimed";
   try {
-    return await claimSummaryNoticeShown(shop.domain);
+    return (await claimSummaryNoticeShown(shop.domain)) ? "claimed" : "not_claimed";
   } catch (err) {
     logger.warn("summary-notice-claim-failed", {
       shop: shop.domain,
       error: err instanceof Error ? err.message : String(err),
     });
-    return false;
+    return "failed";
   }
 }

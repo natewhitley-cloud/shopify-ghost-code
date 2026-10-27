@@ -1,25 +1,46 @@
 /**
  * useClaimRenderedNotice (gc-1q1s.11): Home's consent notices are stamped by
  * a post from an effect after render, once per page view, retried once when
- * the post settles without a claim (wave 3 U6). React's hooks are stubbed (no
- * DOM environment in this suite): useEffect runs its callback the way React
- * does after a commit (only when a dependency changed), useRef keeps one box
- * per "component", and the fetcher's state and data are set by the test.
+ * the post settles without an answer or with the server's `retry` (wave 3
+ * U6), never when the server says the notice is not owed (wave 4). React's
+ * hooks are stubbed (no DOM environment in this suite): useEffect runs its
+ * callback the way React does after a commit (only when a dependency
+ * changed), useRef and useState keep one box per "component", and each
+ * submit returns a promise the test settles.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const submit = vi.fn();
+/** Each post's promise, settled by the test. */
+let pending: Array<() => void> = [];
+const submit = vi.fn<(form: Record<string, string>, opts: { method: string }) => Promise<void>>(
+  () =>
+    new Promise<void>((resolve) => {
+      pending.push(resolve);
+    }),
+);
 const fetcher: { state: string; data: unknown; submit: typeof submit } = {
   state: "idle",
   data: undefined,
   submit,
 };
 let ref: { current: unknown } | null = null;
+let stateBox: { value: unknown } | null = null;
 let lastDeps: unknown[] | null = null;
 const effects: Array<() => void> = [];
 
 vi.mock("react", () => ({
   useRef: (init: unknown) => (ref ??= { current: init }),
+  useState: (init: unknown) => {
+    stateBox ??= { value: init };
+    const box = stateBox;
+    return [
+      box.value,
+      (next: unknown) => {
+        box.value =
+          typeof next === "function" ? (next as (v: unknown) => unknown)(box.value) : next;
+      },
+    ];
+  },
   useEffect: (fn: () => void, deps: unknown[]) => {
     // React re-runs an effect only when a dependency changed.
     if (lastDeps && deps.every((d, i) => Object.is(d, lastDeps![i]))) return;
@@ -43,20 +64,25 @@ const render = (...args: [notice?: unknown, form?: Record<string, string>]) => {
   useClaimRenderedNotice(notice, args[1] ?? FORM);
   commit();
 };
-/** The post goes out, then settles with `data` (undefined: no response). */
-const settle = (data: unknown) => {
-  fetcher.state = "submitting";
-  render();
-  fetcher.state = "idle";
-  fetcher.data = data;
+/**
+ * The oldest post settles with `data` (undefined: no response) WITHOUT any
+ * render seeing the fetcher busy, then the page re-renders (the settle's
+ * state update).
+ */
+const settle = async (data: unknown) => {
+  if (data !== undefined) fetcher.data = data;
+  pending.shift()!();
+  await new Promise((r) => setTimeout(r, 0));
   render();
 };
 
 beforeEach(() => {
-  submit.mockReset();
+  submit.mockClear();
+  pending = [];
   fetcher.state = "idle";
   fetcher.data = undefined;
   ref = null;
+  stateBox = null;
   lastDeps = null;
   effects.length = 0;
 });
@@ -89,35 +115,69 @@ describe("useClaimRenderedNotice", () => {
     );
   });
 
-  it("a successful claim is never posted again", () => {
+  it("a successful claim is never posted again", async () => {
     render();
-    settle({ noticeClaimed: true });
+    await settle({ noticeClaimed: true });
     render();
     render();
     expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it("a failed post (no response) is retried once, and only once (wave 3 U6)", () => {
+  it("a failed post (no response) is retried once, and only once (wave 3 U6)", async () => {
     expect(MAX_CLAIM_POSTS).toBe(2);
     render();
-    settle(undefined);
+    await settle(undefined);
     expect(submit).toHaveBeenCalledTimes(2);
     expect(submit.mock.calls[1]).toEqual([FORM, { method: "POST" }]);
-    settle(undefined);
+    await settle(undefined);
     render();
     expect(submit).toHaveBeenCalledTimes(2);
   });
 
-  it("a post the server answered without a claim is retried once; the retry's success ends it", () => {
+  it("a post the server's write failed is retried once; the retry's success ends it", async () => {
     render();
-    settle({ noticeClaimed: false });
+    await settle({ noticeClaimed: false, retry: true });
     expect(submit).toHaveBeenCalledTimes(2);
-    settle({ noticeClaimed: true });
+    await settle({ noticeClaimed: true });
     render();
     expect(submit).toHaveBeenCalledTimes(2);
   });
 
-  it("an idle fetcher before the post starts is not read as a failure", () => {
+  it("a retry whose answer is the same failure as before still counts as answered", async () => {
+    render();
+    await settle({ noticeClaimed: false, retry: true });
+    // A new response object with the same values: the second post's answer.
+    await settle({ noticeClaimed: false, retry: true });
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("claimed elsewhere (the server says not owed) is final: no retry (wave 4)", async () => {
+    render();
+    // Even when a render did see the post in flight.
+    fetcher.state = "submitting";
+    render();
+    fetcher.state = "idle";
+    await settle({ noticeClaimed: false });
+    render();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a post that settles between renders, never seen busy, is still retried (wave 4)", async () => {
+    render();
+    // The fetcher never reports a busy state to any render.
+    expect(fetcher.state).toBe("idle");
+    await settle(undefined);
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("stale data from before the post is not read as its answer", async () => {
+    fetcher.data = { noticeClaimed: false };
+    render();
+    await settle(undefined); // no new response: the old data is not an answer
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("an idle fetcher before the post settles is not read as a failure", () => {
     render();
     render();
     render();

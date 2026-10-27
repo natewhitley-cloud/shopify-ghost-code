@@ -14,6 +14,7 @@ const mockDb = vi.hoisted(() => ({
     count: vi.fn(),
     deleteMany: vi.fn(),
   },
+  $transaction: vi.fn(async (ops: unknown[]) => Promise.all(ops)),
 }));
 
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
@@ -189,8 +190,18 @@ describe("shop preference helpers", () => {
     await setSummaryEmailsEnabled("s1", false, { sendingLive: true, noticeShown: false });
     expect(mockDb.shop.update).toHaveBeenCalledWith({
       where: { id: "s1" },
-      data: { alertsEnabled: false, guardEmailOffAt: expect.any(Date) },
+      data: { alertsEnabled: false },
     });
+    // Wave 4: the turn-off time is set only when none is stored (an earlier
+    // turn-off keeps its time), in the same transaction as the mail switch.
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { id: "s1", guardEmailOffAt: null },
+      data: { guardEmailOffAt: expect.any(Date) },
+    });
+    expect(mockDb.$transaction).toHaveBeenCalledTimes(1);
+    for (const call of mockDb.shop.update.mock.calls) {
+      expect(call[0].data).not.toHaveProperty("guardEmailOffAt");
+    }
   });
 
   it("turning summaries back on never turns guard email back on (wave 3 U1)", async () => {

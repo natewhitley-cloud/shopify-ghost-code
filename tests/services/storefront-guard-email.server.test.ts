@@ -141,7 +141,9 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
   });
 
   it("the rendered claim stamps the hash of the address shown (audit fix)", async () => {
-    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(true);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(
+      "claimed",
+    );
     expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledExactlyOnceWith(
       SHOP.domain,
       guardConsentHash("owner@example.com"),
@@ -149,26 +151,34 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
   });
 
   it("the address shown is compared trimmed and in any case", async () => {
-    expect(await claimGuardEmailNoticeRendered(noticeShop, " Owner@Example.COM ", null)).toBe(true);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, " Owner@Example.COM ", null)).toBe(
+      "claimed",
+    );
   });
 
   it("a claim for an address other than the one the notice names now stamps nothing", async () => {
-    expect(await claimGuardEmailNoticeRendered(noticeShop, "old@example.com", null)).toBe(false);
-    expect(await claimGuardEmailNoticeRendered(noticeShop, null, null)).toBe(false);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "old@example.com", null)).toBe(
+      "not_claimed",
+    );
+    expect(await claimGuardEmailNoticeRendered(noticeShop, null, null)).toBe("not_claimed");
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
   it("the generic notice (no address known) stamps no hash", async () => {
     const generic = { ...noticeShop, alertEmail: null };
     expect(await guardEmailNoticeForHome(generic, null)).toEqual({ email: null });
-    expect(await claimGuardEmailNoticeRendered(generic, null, null)).toBe(true);
+    expect(await claimGuardEmailNoticeRendered(generic, null, null)).toBe("claimed");
     expect(ledger.claimGuardEmailNoticeShown).toHaveBeenCalledWith(SHOP.domain, null);
   });
 
   it("a double post: the atomic claim stamps once, the repeat reports false", async () => {
     ledger.claimGuardEmailNoticeShown.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(true);
-    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(false);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(
+      "claimed",
+    );
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(
+      "not_claimed",
+    );
   });
 
   it("guardConsentHash ignores case and surrounding spaces, and is not the address", () => {
@@ -186,7 +196,7 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
     expect(await guardEmailNoticeForHome({ ...noticeShop, ...over }, null)).toBeNull();
     expect(
       await claimGuardEmailNoticeRendered({ ...noticeShop, ...over }, "owner@example.com", null),
-    ).toBe(false);
+    ).toBe("not_claimed");
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
@@ -196,19 +206,21 @@ describe("guard email notice: offered by the loader, claimed after render (gc-1q
       await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null),
     ];
     delete process.env.STOREFRONT_GUARD_EMAIL_ENABLED;
-    expect(await both()).toEqual([null, false]);
+    expect(await both()).toEqual([null, "not_claimed"]);
     process.env.STOREFRONT_GUARD_EMAIL_ENABLED = "true";
     delete process.env.STOREFRONT_GUARD_LIVE_ENABLED;
-    expect(await both()).toEqual([null, false]);
+    expect(await both()).toEqual([null, "not_claimed"]);
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";
     alerts.getMerchantAlertConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
-    expect(await both()).toEqual([null, false]);
+    expect(await both()).toEqual([null, "not_claimed"]);
     expect(ledger.claimGuardEmailNoticeShown).not.toHaveBeenCalled();
   });
 
-  it("a failed claim reports false and never throws", async () => {
+  it("a failed claim reports failed (worth a retry) and never throws", async () => {
     ledger.claimGuardEmailNoticeShown.mockRejectedValueOnce(new Error("db"));
-    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(false);
+    expect(await claimGuardEmailNoticeRendered(noticeShop, "owner@example.com", null)).toBe(
+      "failed",
+    );
   });
 
   it("reads the owner email when none is cached; generic copy when unknown", async () => {

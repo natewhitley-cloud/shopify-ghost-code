@@ -42,6 +42,7 @@ import { buildFindingsTile, type FindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
+import { noticeClaimResponse } from "../lib/notice-claim";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
   canStartScan,
@@ -964,10 +965,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "guard-email-notice-shown") {
     const shown = formData.get("email");
     const email = typeof shown === "string" && shown !== "" ? shown : null;
-    return { noticeClaimed: await claimGuardEmailNoticeRendered(shop, email, admin) };
+    return noticeClaimResponse(await claimGuardEmailNoticeRendered(shop, email, admin));
   }
   if (intent === "summary-notice-shown") {
-    return { noticeClaimed: await claimSummaryNoticeRendered(shop) };
+    return noticeClaimResponse(await claimSummaryNoticeRendered(shop));
   }
 
   // Checkout guard email notice "Turn off" (gc-1q1s.7): no guard email after this.

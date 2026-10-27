@@ -250,11 +250,16 @@ export async function setSummaryEmailsEnabled(
   if (!enabled) {
     // Mail off also withdraws guard email consent (wave 3 U1), so turning
     // summaries back on never turns guard email back on with them; only the
-    // guard toggle can.
-    await db.shop.update({
-      where: { id: shopId },
-      data: { alertsEnabled: false, guardEmailOffAt: new Date() },
-    });
+    // guard toggle can. An existing turn-off time is kept (wave 4): it records
+    // when the merchant first said no. One transaction, so mail is never off
+    // with the consent still standing.
+    await db.$transaction([
+      db.shop.update({ where: { id: shopId }, data: { alertsEnabled: false } }),
+      db.shop.updateMany({
+        where: { id: shopId, guardEmailOffAt: null },
+        data: { guardEmailOffAt: new Date() },
+      }),
+    ]);
     return;
   }
   const now = new Date();
