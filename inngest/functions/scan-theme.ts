@@ -381,6 +381,9 @@ type MenuAuditStepResult = CappableAuditStepResult & {
   cost: QueryCostStats;
 };
 
+/** Wait before the menu audit's one retry of a transient scope probe (gc-7gjj.1). */
+const MENU_SCOPE_RETRY_MS = 250;
+
 /**
  * The menu-label injection audit (gc-7gjj.1, spike §2.5): read every menu
  * item's title and URL (Admin `menus`, read_online_store_navigation, the
@@ -426,7 +429,16 @@ async function runMenuAudit(opts: {
     const { unauthenticated } = await import("../../app/shopify.server");
     const { admin } = await unauthenticated.admin(shop.domain);
     const { hasNavigationScope } = await import("../../app/services/redirect-fetcher.server");
-    if (!(await hasNavigationScope(admin, opts.grantedOptionalScopes))) {
+    const { TransientScopeCheckError } = await import("../../app/lib/scope-check.server");
+    // A transient probe failure (THROTTLED, network, 5xx) is retried once
+    // before the check is recorded as not run (deferred LOW, gc-7gjj.1).
+    const probe = () => hasNavigationScope(admin, opts.grantedOptionalScopes);
+    const granted = await probe().catch(async (err: unknown) => {
+      if (!(err instanceof TransientScopeCheckError)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, MENU_SCOPE_RETRY_MS));
+      return probe();
+    });
+    if (!granted) {
       const { logger } = await import("../../app/lib/logger.server");
       logger.info("scope not available — skipping audit step", {
         function: "scan-theme",

@@ -7984,6 +7984,45 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
   });
 
+  // Deferred LOW (gc-7gjj.1): a transient probe error is retried once before
+  // the menu check is recorded as not run.
+  it("a transient scope-probe error is retried once, then the audit runs", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    mockFetchMenuItems.mockResolvedValue({ items: [payloadItem], capped: false });
+    // Call 1 is the redirect audit's probe, call 2 the menu audit's (fails).
+    // An implementation, not once-values: the suite retries a failed test, and
+    // a leftover once-value would let it pass on the retry.
+    let calls = 0;
+    mockHasNavigationScope.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) throw new TransientScopeCheckError("read_online_store_navigation", "x");
+      return true;
+    });
+
+    await runScanTheme();
+
+    expect(mockFetchMenuItems).toHaveBeenCalledTimes(1);
+    expect(menuCreates()).toHaveLength(1);
+    expect(finalizeArg().liveFindingTypes).toContain("MENU_INJECTION");
+  });
+
+  it("a transient scope-probe error twice: recorded as not run (one retry only)", async () => {
+    process.env.MENU_INJECTION_LIVE_ENABLED = "true";
+    let calls = 0;
+    mockHasNavigationScope.mockImplementation(async () => {
+      calls += 1;
+      if (calls >= 2) throw new TransientScopeCheckError("read_online_store_navigation", "x");
+      return true;
+    });
+
+    await runScanTheme();
+
+    expect(mockHasNavigationScope).toHaveBeenCalledTimes(3);
+    expect(mockFetchMenuItems).not.toHaveBeenCalled();
+    expect(finalizeArg().liveFindingTypes).not.toContain("MENU_INJECTION");
+    expect(finalizeArg().skippedCategories).not.toContain("MENU_INJECTION");
+  });
+
   it("more matches than the detector keeps: capped (the cut items never resolve)", async () => {
     process.env.MENU_INJECTION_LIVE_ENABLED = "true";
     mockFetchMenuItems.mockResolvedValue({

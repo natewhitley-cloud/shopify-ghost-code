@@ -160,6 +160,43 @@ describe("fetchMenuItems", () => {
     expect(result.capped).toBe(true);
   });
 
+  // Deferred LOW (gc-7gjj.1): once MENU_ITEM_CAP items are kept, no further
+  // page is requested (it used to keep paging up to MENU_CAP menus).
+  it("requests no further page once MENU_ITEM_CAP items are kept", async () => {
+    const items = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `gid://shopify/MenuItem/${i}`,
+        title: `Item ${i}`,
+        url: "/x",
+      }));
+    const admin = mockAdmin([
+      page(
+        [{ id: "gid://shopify/Menu/1", title: "Huge", items: items(MENU_ITEM_CAP) }],
+        true,
+        "c1",
+      ),
+      page([MAIN_MENU], true, "c2"),
+      page([MAIN_MENU]),
+    ]);
+    const result = await fetchMenuItems(admin as never);
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+    expect(result.items).toHaveLength(MENU_ITEM_CAP);
+    // Exactly at the cap with menus left unread: still capped.
+    expect(result.capped).toBe(true);
+  });
+
+  it("at exactly MENU_ITEM_CAP items with no more menus, is not capped", async () => {
+    const items = Array.from({ length: MENU_ITEM_CAP }, (_, i) => ({
+      id: `gid://shopify/MenuItem/${i}`,
+      title: `Item ${i}`,
+      url: "/x",
+    }));
+    const admin = mockAdmin([page([{ id: "gid://shopify/Menu/1", title: "Huge", items }])]);
+    const result = await fetchMenuItems(admin as never);
+    expect(result.items).toHaveLength(MENU_ITEM_CAP);
+    expect(result.capped).toBe(false);
+  });
+
   it("stops at MENU_CAP menus and reports capped", async () => {
     const menus = (from: number) =>
       Array.from({ length: MENU_PAGE_SIZE }, (_, i) => ({

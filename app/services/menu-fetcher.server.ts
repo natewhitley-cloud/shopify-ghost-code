@@ -144,6 +144,10 @@ export async function fetchMenuItems(
       kept += keep.length;
       return keep;
     },
+    // Once MENU_ITEM_CAP items are kept, request no further page: every item
+    // on it would be dropped (deferred LOW, gc-7gjj.1). Stopping with menus
+    // left marks the walk truncated, so it reads as capped.
+    stopWhen: () => kept >= MENU_ITEM_CAP,
     stats,
   });
   return { items, capped: stats.truncated || itemsCapped };

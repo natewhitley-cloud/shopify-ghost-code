@@ -72,6 +72,21 @@ describe("matchMenuItem: the rules", () => {
     expect(matchMenuItem(item(title))?.rule).toBe("frame");
   });
 
+  // Deferred LOW (gc-7gjj.1): <base> re-points every relative URL on the page,
+  // <frame>/<applet> load a document or code, <link> loads a stylesheet,
+  // module or import.
+  it.each([
+    '<base href="https://evil.example/">Shop',
+    "<BASE href=//evil.example/>",
+    '<frame src="https://evil.example/x">',
+    "<applet code=x.class></applet>",
+    '<link rel="stylesheet" href="https://evil.example/x.css">',
+    "<link/rel=modulepreload href=//evil.example/x.js>",
+    "Shop<link>",
+  ])("flags a base, frame, applet or link tag: %j", (title) => {
+    expect(matchMenuItem(item(title))?.rule).toBe("frame");
+  });
+
   it.each([
     "javascript:alert(1)",
     "  JavaScript:alert(1)",
@@ -186,6 +201,15 @@ describe("matchMenuItem: false positives (precision first)", () => {
     "a < b and c > d",
     "On sale = yes",
     "Contact: info@example.com",
+    "Link in bio",
+    "Base layers",
+    "Frame shop",
+    "Applet store",
+    "<linkedin>",
+    "<baseball> caps",
+    "<frameset> sale",
+    "&lt;link href=x&gt;",
+    "&lt;base href=x&gt;",
     "",
   ])("never flags plain text or ordinary markup: %j", (title) => {
     expect(matchMenuItem(item(title))).toBeNull();

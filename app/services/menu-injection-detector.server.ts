@@ -13,8 +13,11 @@
  *   script     `<script` anywhere in the title.
  *   handler    an `on<letters>=` attribute inside a tag in the title
  *              (`<img onerror=`, `<svg/onload=`, `<body onpageshow=`).
- *   frame      `<iframe`, `<object`, `<embed`, a `srcdoc=` attribute, or a
- *              `<meta http-equiv` tag in the title.
+ *   frame      `<iframe`, `<frame`, `<object`, `<embed`, `<applet`, `<base`
+ *              (re-points every relative URL on the page), `<link` (loads a
+ *              stylesheet, module or import), a `srcdoc=` attribute, or a
+ *              `<meta http-equiv` tag in the title. Only a real tag counts:
+ *              "Link in bio" or `<linkedin>` is text (gc-7gjj.1 deferred LOW).
  *   script_url a `javascript:` / `vbscript:` / `data:text/html` URL: the item's
  *              URL (after removing whitespace and control characters, which
  *              browsers ignore inside a scheme), or an attribute value inside a
@@ -35,6 +38,12 @@
  * Linear time: one pass over each title's tags (each tag segment is read once,
  * segments do not overlap) plus bounded regexes with disjoint quantifiers.
  *
+ * Not findScriptPayload (script-payload.server.ts, the checkout guard's
+ * matcher, gc-7gjj.7): that one flags a handler only when its value builds or
+ * loads code, because served pages are full of harmless handlers. A menu label
+ * is plain text, so any handler or loading tag in it is flagged here. See
+ * that module's comment for why the two rule sets stay separate.
+ *
  * Pure: no I/O, no logging.
  */
 import { createHash } from "node:crypto";
@@ -42,7 +51,7 @@ import { createHash } from "node:crypto";
 import { FindingType, Severity } from "@prisma/client";
 
 import { decodeAttributeValue } from "./runtime-malicious.server";
-import { indexOfIgnoreCase, urlHostsOnLine } from "./scan-engine.server";
+import { indexOfIgnoreCase, isHtmlSpace, urlHostsOnLine } from "./scan-engine.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
@@ -81,8 +90,8 @@ export const MENU_EXCERPT_MAX = 200;
 /** Each title in the stored menu path is cut to this length. */
 const PATH_TITLE_MAX = 80;
 
-/** HTML's ASCII whitespace (NBSP is not whitespace to the tokenizer). */
-const HTML_SPACE: ReadonlySet<string> = new Set([" ", "\t", "\n", "\f", "\r"]);
+/** HTML's ASCII whitespace at `i` (NBSP is not whitespace to the tokenizer); false past the end. */
+const spaceAt = (text: string, i: number): boolean => isHtmlSpace(text.charCodeAt(i));
 
 /** A tag start in a title: `<` and a letter (an element name). */
 const TAG_START_RE = /<[a-z]/gi;
@@ -94,8 +103,8 @@ const HANDLER_NAME_RE = /^on[a-z]+$/;
  * theme markup after the label, so doubt reads it as attributes.
  */
 const HANDLER_IN_TEXT_RE = /[\s/"']on[a-z]{1,40}\s*=/i;
-/** Frame-like elements that load or run a document. */
-const FRAME_TAG_RE = /^<(?:iframe|object|embed)(?=[\s/>]|$)/i;
+/** Elements that load or run a document, code or a resource, or re-point the page's URLs. */
+const FRAME_TAG_RE = /^<(?:iframe|frame|object|embed|applet|base|link)(?=[\s/>]|$)/i;
 /** A `<meta` tag. */
 const META_TAG_RE = /^<meta(?=[\s/>]|$)/i;
 /** Schemes that run code or render HTML when a link is followed. */
@@ -127,7 +136,7 @@ function tagEnd(title: string, start: number): { end: number; closed: boolean } 
       // unquoted value, which runs to whitespace or `>` (so `b=="` is the
       // unquoted value `="`, re-audit fix).
       i++;
-      while (i < n && HTML_SPACE.has(title[i])) i++;
+      while (i < n && spaceAt(title, i)) i++;
       const q = title[i];
       if (q === '"' || q === "'") {
         const close = title.indexOf(q, i + 1);
@@ -135,7 +144,7 @@ function tagEnd(title: string, start: number): { end: number; closed: boolean } 
         i = close + 1;
         continue;
       }
-      while (i < n && title[i] !== ">" && !HTML_SPACE.has(title[i])) i++;
+      while (i < n && title[i] !== ">" && !spaceAt(title, i)) i++;
       continue;
     }
     i++;
@@ -198,9 +207,9 @@ export function segmentAttributes(segment: string): {
   const n = segment.length;
   let i = 1;
   // The element name runs to whitespace, `/` or `>`.
-  while (i < n && segment[i] !== "/" && segment[i] !== ">" && !HTML_SPACE.has(segment[i])) i++;
+  while (i < n && segment[i] !== "/" && segment[i] !== ">" && !spaceAt(segment, i)) i++;
   for (;;) {
-    while (i < n && (segment[i] === "/" || HTML_SPACE.has(segment[i]))) i++;
+    while (i < n && (segment[i] === "/" || spaceAt(segment, i))) i++;
     if (i >= n || segment[i] === ">") return { attributes, unclosedValue: null };
     const nameStart = i;
     // A leading `=` is part of the name, as in HTML.
@@ -210,16 +219,16 @@ export function segmentAttributes(segment: string): {
       segment[i] !== "/" &&
       segment[i] !== ">" &&
       segment[i] !== "=" &&
-      !HTML_SPACE.has(segment[i])
+      !spaceAt(segment, i)
     ) {
       i++;
     }
     const name = segment.slice(nameStart, i).toLowerCase();
-    while (i < n && HTML_SPACE.has(segment[i])) i++;
+    while (i < n && spaceAt(segment, i)) i++;
     let value: string | null = null;
     if (segment[i] === "=") {
       i++;
-      while (i < n && HTML_SPACE.has(segment[i])) i++;
+      while (i < n && spaceAt(segment, i)) i++;
       const q = segment[i];
       if (q === '"' || q === "'") {
         const close = segment.indexOf(q, i + 1);
@@ -231,7 +240,7 @@ export function segmentAttributes(segment: string): {
         i = close + 1;
       } else {
         const start = i;
-        while (i < n && segment[i] !== ">" && !HTML_SPACE.has(segment[i])) i++;
+        while (i < n && segment[i] !== ">" && !spaceAt(segment, i)) i++;
         value = segment.slice(start, i);
       }
     }
@@ -325,7 +334,7 @@ function excerpt(text: string, at: number): string {
 const RULE_WORDS: Record<MenuInjectionRule, string> = {
   script: "a script tag",
   handler: "code that runs when the label is shown",
-  frame: "an embedded frame or page redirect",
+  frame: "an embedded frame, page redirect or external resource",
   script_url: "a link that runs code when it is clicked",
   domain: "a link to a known malicious domain",
 };

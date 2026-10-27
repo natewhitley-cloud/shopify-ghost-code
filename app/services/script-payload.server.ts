@@ -1,9 +1,21 @@
 /**
  * Loader-payload matcher (gc-1q1s.2): does a piece of text build or load
- * code? ONE pure function meant to be shared: the checkout guard runs it over
- * served `on*=` handler values and scripts inside menu or checkout-button
- * markup; the menu-label scan (gc-7gjj) can run it over menu titles from the
- * Admin navigation API.
+ * code? The checkout guard runs it over served `on*=` handler values and
+ * scripts inside menu or checkout-button markup.
+ *
+ * NOT shared with the menu-label scan (gc-7gjj.7, decided 2026-10-27): the
+ * two answer different questions, so they keep two rule sets.
+ *   - Here (served pages): handlers are everywhere in real themes
+ *     (`onload="this.media='all'"`, `onerror="this.style.display='none'"`),
+ *     so a handler counts only when its VALUE builds or loads code.
+ *   - menu-injection-detector.server.ts (menu titles from the Admin API): a
+ *     menu label is plain text, so ANY tag that can run or load something
+ *     (`<script`, any `on*=` attribute, frames, `<base>`, `<link>`, script
+ *     URLs, listed domains) is flagged, whatever its value. Feeding labels
+ *     through this matcher would miss `<img onerror=alert(1)>`; feeding pages
+ *     through the menu rules would flag every theme's async-CSS idiom.
+ * Shared pieces stay shared: both use urlHostsOnLine (scan-engine) and the
+ * curated malicious-domain list.
  *
  * Precision first (a hit can email a merchant):
  *   - Code construction: `createElement('script')`, `import(`, `eval(`,

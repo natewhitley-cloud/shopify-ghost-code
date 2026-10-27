@@ -180,6 +180,12 @@ export type PaginateOptions<TNode, TResult> = {
    */
   initialThrottle?: ThrottleSnapshot | null;
   /**
+   * Checked after each mapped page that has a next page (gc-7gjj.1): true
+   * stops the walk without requesting it, and marks `stats.truncated` (the
+   * rest was not read). For caps on what mapNode KEEPS rather than on nodes.
+   */
+  stopWhen?: () => boolean;
+  /**
    * Optional walk-observability out-parameter (gc-1bd). When provided, the
    * helper mutates it with page/node counts, cap truncation, and accumulated
    * throttle-backoff sleep. See {@link PaginateStats}. Omit it and pagination
@@ -213,6 +219,7 @@ export async function paginateConnection<TNode, TResult>(
     after = null,
     deadline,
     initialThrottle,
+    stopWhen,
   } = options;
 
   const results: TResult[] = [];
@@ -352,6 +359,10 @@ export async function paginateConnection<TNode, TResult>(
       break;
     }
     if (!pageInfo.hasNextPage) break;
+    if (stopWhen?.()) {
+      if (stats) stats.truncated = true;
+      break;
+    }
 
     cursor = pageInfo.endCursor ?? null;
 

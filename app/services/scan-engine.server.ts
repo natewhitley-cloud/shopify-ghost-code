@@ -1772,7 +1772,9 @@ const isAsciiSpace = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
 const isAsciiAlpha = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 const isAsciiAlnum = (c: number): boolean => (c >= 48 && c <= 57) || isAsciiAlpha(c);
 // HTML's own whitespace set (no vertical tab) and JS's line terminators.
-const isHtmlSpace = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+// isHtmlSpace is shared with the menu-label detector (gc-7gjj.8).
+export const isHtmlSpace = (c: number): boolean =>
+  c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
 const isLineTerminator = (c: number): boolean =>
   c === CC_NEWLINE || c === CC_RETURN || c === 0x2028 || c === 0x2029;
 // Hostname label chars as URL_HOST_RE accepts them: [a-z0-9_-].

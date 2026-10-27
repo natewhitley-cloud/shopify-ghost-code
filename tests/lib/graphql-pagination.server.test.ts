@@ -330,6 +330,40 @@ describe("paginateConnection stats out-param", () => {
   });
 });
 
+describe("paginateConnection stopWhen (gc-7gjj.1)", () => {
+  it("stops before requesting the next page once stopWhen is true, and marks truncated", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockResolvedValueOnce(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    const out = await paginateConnection({ ...baseOptions(graphql), stopWhen: () => true, stats });
+    expect(out).toEqual([{ id: "a" }]);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it("is not consulted on the last page (nothing left unread, not truncated)", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: false, endCursor: null }));
+    const stopWhen = vi.fn(() => true);
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    await paginateConnection({ ...baseOptions(graphql), stopWhen, stats });
+    expect(stopWhen).not.toHaveBeenCalled();
+    expect(stats.truncated).toBe(false);
+  });
+
+  it("keeps walking while stopWhen is false", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockResolvedValueOnce(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+    const out = await paginateConnection({ ...baseOptions(graphql), stopWhen: () => false });
+    expect(out).toEqual([{ id: "a" }, { id: "b" }]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // PRF-3: THROTTLED mid-pagination resume
 // ---------------------------------------------------------------------------
