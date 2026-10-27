@@ -12,7 +12,7 @@ const tx = vi.hoisted(() => ({
 const mockDb = vi.hoisted(() => ({
   storefrontGuardState: { findUnique: vi.fn() },
   storefrontIncident: { findMany: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn() },
-  shop: { findUnique: vi.fn() },
+  shop: { findUnique: vi.fn(), findMany: vi.fn() },
   $transaction: vi.fn(),
 }));
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
@@ -21,6 +21,7 @@ import { EMPTY_GUARD_STATE, type GuardIncident } from "../../app/lib/storefront-
 import {
   acknowledgeGuardIncident,
   getGuardEmailShop,
+  listGuardCandidateShops,
   loadIncidentsToEmail,
   loadGuard,
   loadGuardForHome,
@@ -370,6 +371,19 @@ describe("loadIncidentsToEmail (gc-1q1s.7)", () => {
       guardEmailNoticeShownAt: true,
       guardEmailOffAt: true,
       alertsEnabled: true,
+    });
+    expect(select).not.toHaveProperty("accessToken");
+  });
+
+  it("listGuardCandidateShops selects the consent hash the cron pre-filter needs (gc-1q1s.12)", async () => {
+    mockDb.shop.findMany.mockResolvedValue([]);
+    await listGuardCandidateShops();
+    const select = mockDb.shop.findMany.mock.calls[0][0].select;
+    expect(select).toMatchObject({
+      alertsEnabled: true,
+      guardEmailNoticeShownAt: true,
+      guardEmailOffAt: true,
+      guardEmailConsentHash: true,
     });
     expect(select).not.toHaveProperty("accessToken");
   });

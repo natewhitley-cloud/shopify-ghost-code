@@ -136,8 +136,11 @@ export async function fetchMenuItems(
       if (!menus) throw new Error("[menu-fetcher] Failed to fetch menus: no menus connection");
       return menus;
     },
-    // Items past the cap are dropped as they arrive, so memory stays bounded
-    // by one page of menus whatever the store holds.
+    // Items past the cap are dropped as they arrive, so what is KEPT stays
+    // bounded by MENU_ITEM_CAP. One response can still carry up to 50 menus'
+    // full item lists (Shopify allows 10,000 items per menu); the measured
+    // cost (gc-7gjj.9) came from a small store, so a huge store's payload size
+    // is unmeasured.
     mapNode: (menu) => {
       const flat = flattenMenu(menu);
       const room = MENU_ITEM_CAP - kept;

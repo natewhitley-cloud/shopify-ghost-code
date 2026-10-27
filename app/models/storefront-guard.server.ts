@@ -441,6 +441,7 @@ export function listGuardCandidateShops() {
       alertsEnabled: true,
       guardEmailNoticeShownAt: true,
       guardEmailOffAt: true,
+      guardEmailConsentHash: true,
       storefrontGuardState: { select: { lastCheckedAt: true, backoffUntil: true } },
     },
     orderBy: { id: "asc" },

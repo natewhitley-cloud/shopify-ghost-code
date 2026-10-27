@@ -161,8 +161,12 @@ export function guardEmailConsentAt(shop: {
   alertsEnabled: boolean;
   guardEmailNoticeShownAt: Date | null;
   guardEmailOffAt: Date | null;
+  guardEmailConsentHash: string | null;
 }): Date | null {
   if (!shop.alertsEnabled || shop.guardEmailOffAt) return null;
+  // A stamp without the consented address's hash is no consent (gc-1q1s.12):
+  // the sender would skip it, so spend no notify step on it.
+  if (!shop.guardEmailConsentHash) return null;
   return shop.guardEmailNoticeShownAt;
 }
 

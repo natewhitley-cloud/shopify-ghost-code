@@ -576,6 +576,7 @@ describe("guardEmailConsentAt (gc-1q1s.10)", () => {
     alertsEnabled: true,
     guardEmailNoticeShownAt: ago(DAY),
     guardEmailOffAt: null as Date | null,
+    guardEmailConsentHash: "abc123" as string | null,
   };
   it("is the consent stamp while email may be sent", () => {
     expect(guardEmailConsentAt(base)).toEqual(ago(DAY));
@@ -584,6 +585,9 @@ describe("guardEmailConsentAt (gc-1q1s.10)", () => {
     expect(guardEmailConsentAt({ ...base, guardEmailNoticeShownAt: null })).toBeNull();
     expect(guardEmailConsentAt({ ...base, guardEmailOffAt: ago(HOUR) })).toBeNull();
     expect(guardEmailConsentAt({ ...base, alertsEnabled: false })).toBeNull();
+  });
+  it("is null for a legacy stamp with no consented-address hash (gc-1q1s.12)", () => {
+    expect(guardEmailConsentAt({ ...base, guardEmailConsentHash: null })).toBeNull();
   });
 });
 
