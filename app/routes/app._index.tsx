@@ -19,7 +19,11 @@ import {
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
-import { GuardStatusLine, StorefrontIncidentBanner } from "../components/StorefrontIncidentBanner";
+import {
+  GuardStatusLine,
+  StorefrontIncidentBanner,
+  useGuardIncidentBanners,
+} from "../components/StorefrontIncidentBanner";
 import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
@@ -66,7 +70,6 @@ import {
   GUARD_NOTICE_OK,
   GUARD_NOTICE_TURN_OFF,
   guardNoticeLead,
-  mergeGuardWithScanRisks,
   type GuardHomeView,
 } from "../lib/storefront-guard-copy";
 import {
@@ -116,7 +119,7 @@ import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.serve
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
-import { areStoredAdvisoriesShown } from "../services/soft-launch-flags.server";
+import { hiddenStoredFindingTypes } from "../services/soft-launch-flags.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
 import { claimGuardEmailNoticeForHome } from "../services/storefront-guard-notice.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
@@ -347,13 +350,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     string,
     Awaited<ReturnType<typeof getFilteredFindingSummaryAndKept>>
   > | null = null;
-  // The advisory kill switch (gc-5nok): with the flag off a stored advisory
-  // is shown nowhere. The lean groupBys above cannot leave it out, so its scan
-  // takes the same filtered path as a shop with ignores (only while such a
-  // row is stored: the operator's DELETE ends it).
-  const hiddenAdvisoryStored =
-    !areStoredAdvisoriesShown() && (typeCounts?.APP_INCIDENT_ADVISORY ?? 0) > 0;
-  if (hasIgnores || hiddenAdvisoryStored) {
+  // The read-time kill switches (gc-5nok advisory, gc-7gjj.1 menu): with a
+  // flag off that type's stored findings are shown nowhere. The lean groupBys
+  // above cannot leave them out, so the scan takes the same filtered path as a
+  // shop with ignores (only while such a row is stored).
+  const hiddenTypeStored = hiddenStoredFindingTypes().some((t) => (typeCounts?.[t] ?? 0) > 0);
+  if (hasIgnores || hiddenTypeStored) {
     const summaries = await Promise.all(
       severityScanIds.map(
         async (id) => [id, await getFilteredFindingSummaryAndKept(id, ignores)] as const,
@@ -498,15 +500,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let securityRiskSource: SecurityRiskSource | null = null;
   // The fallback scan's inputs to loadHomeSecurityRisks, or null when it has
   // no security finding to show (the poll then reads nothing more). Malicious
-  // code counts ignored or not; an advisory counts only when shown (gc-5nok)
-  // and not ignored, which for a shop with ignores needs its filtered summary
-  // (already read when the scan is in severityScanIds).
+  // code counts ignored or not; an advisory or menu finding counts only when
+  // shown (gc-5nok, gc-7gjj.1) and not ignored, which for a shop with ignores
+  // needs its filtered summary (already read when the scan is in
+  // severityScanIds).
   const fallbackSecurityCounts = async (scanId: string) => {
     const read = filteredSummaryByScanId?.get(scanId);
     if (!read) {
       const found = await getTypeCountsForScan(scanId, HOME_SECURITY_TYPES);
-      const advisories = areStoredAdvisoriesShown() ? found.APP_INCIDENT_ADVISORY : 0;
-      const menu = found.MENU_INJECTION;
+      const hidden = hiddenStoredFindingTypes();
+      const advisories = hidden.includes(FindingType.APP_INCIDENT_ADVISORY)
+        ? 0
+        : found.APP_INCIDENT_ADVISORY;
+      const menu = hidden.includes(FindingType.MENU_INJECTION) ? 0 : found.MENU_INJECTION;
       if (found.MALICIOUS_SCRIPT === 0 && advisories === 0 && menu === 0) return null;
       if (!hasIgnores || advisories + menu === 0) {
         return {
@@ -937,7 +943,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "guard-acknowledge") {
     const incidentId = formData.get("incidentId");
     if (typeof incidentId !== "string" || incidentId === "") return { ignored: true };
-    return { acknowledged: await acknowledgeGuardIncident(shop.id, incidentId, new Date()) };
+    return {
+      acknowledged: await acknowledgeGuardIncident(shop.id, incidentId, new Date()),
+      incidentId,
+    };
   }
 
   // Checkout guard email notice "Turn off" (gc-1q1s.7): no guard email after this.
@@ -1387,20 +1396,14 @@ export default function Dashboard() {
   // Checkout guard (gc-1q1s.6): a KNOWN_MALICIOUS incident on a domain a scan
   // banner already names is folded into that banner (one banner per domain);
   // "This is expected" hides a new-host incident at once (optimistic).
-  const guardFetcher = useFetcher<typeof action>();
-  const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
-  const scanRiskDomains = new Set(
-    // Older test fixtures render without securityRisks: treat it as none.
-    (securityRisks ?? []).flatMap((r) => (r.kind === "malicious" && r.domain ? [r.domain] : [])),
+  const guardMerge = useGuardIncidentBanners(
+    guard?.incidents ?? [],
+    new Set(
+      // Older test fixtures render without securityRisks: treat it as none.
+      (securityRisks ?? []).flatMap((r) => (r.kind === "malicious" && r.domain ? [r.domain] : [])),
+    ),
   );
-  const guardMerge = mergeGuardWithScanRisks(
-    (guard?.incidents ?? []).filter((i) => !acknowledgedIds.has(i.id)),
-    scanRiskDomains,
-  );
-  const handleGuardAcknowledge = (incidentId: string) => {
-    setAcknowledgedIds((prev) => new Set([...prev, incidentId]));
-    guardFetcher.submit({ intent: "guard-acknowledge", incidentId }, { method: "POST" });
-  };
+  const handleGuardAcknowledge = guardMerge.acknowledge;
 
   // Checkout guard email notice (gc-1q1s.7): returned only on the load that
   // claimed it, so latch it for this page view until answered.
@@ -2142,10 +2145,14 @@ export default function Dashboard() {
               malicious code (ignored or not): Theme health below says so. It
               is also left out when the only findings have no lane (an
               affected-app advisory): "You're all clear" would be false, and
-              "Start here" above already shows it. */}
+              "Start here" above already shows it. Likewise while a checkout
+              guard incident has its own banner at the top (audit fix). */}
             {hasResults &&
               latestScan &&
-              !(laneSummary.length === 0 && (maliciousHealth || currentTotal > 0)) && (
+              !(
+                laneSummary.length === 0 &&
+                (maliciousHealth || currentTotal > 0 || guardMerge.standalone.length > 0)
+              ) && (
                 <div style={{ ...sectionCard, marginBottom: 0 }}>
                   <s-stack direction="block" gap="base">
                     <div>

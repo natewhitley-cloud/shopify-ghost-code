@@ -684,10 +684,13 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     "%s: the REAL checklist, with findings in every category, shows no score of any kind",
     async (plan) => {
       setPlan(plan);
-      // The advisory is shown only while its flag is on (gc-5nok kill switch).
+      // The advisory and menu findings are shown only while their flags are
+      // on (read-time kill switches, gc-5nok and gc-7gjj.1).
       process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      process.env.MENU_INJECTION_LIVE_ENABLED = "true";
       onTestFinished(() => {
         delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
+        delete process.env.MENU_INJECTION_LIVE_ENABLED;
       });
       // A finding of every type, a vintage theme and unpublished themes: every
       // row and every piece of cost copy is on the page.
@@ -1760,6 +1763,99 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
       expect(html).toContain("1 app security advisory, 2 leftover items.");
       // No ignores and the flag on: the lean path, no full read for counts.
       expect(mockFiltered).not.toHaveBeenCalled();
+    });
+  });
+
+  // gc-7gjj.1 audit fix: MENU_INJECTION_LIVE_ENABLED is the read-time kill
+  // switch for stored menu findings, like the advisory flag above. Runs the
+  // REAL ignore-aggregation choke point.
+  describe("kill switch: flag off hides a stored menu finding everywhere on Home (gc-7gjj.1)", () => {
+    const MENU_FLAG = "MENU_INJECTION_LIVE_ENABLED";
+    const base = {
+      scanId: "scan-1",
+      severity: "HIGH",
+      lineNumber: 0,
+      createdAt: new Date("2026-10-11T10:00:00Z"),
+    };
+    const ROWS = [
+      {
+        ...base,
+        id: "menu-1",
+        findingType: "MENU_INJECTION",
+        filename: "menus/1/items/2/0badc0de",
+        appName: null,
+        codeSnippet: "Main menu > Shop\nLabel: Shop<img src=x onerror=alert(1)>",
+        description: "A menu item's label contains code that runs when the label is shown.",
+      },
+      ...[1, 2].map((i) => ({
+        ...base,
+        id: `s${i}`,
+        findingType: "GHOST_SCRIPT",
+        filename: `snippets/s${i}.liquid`,
+        appName: "OldApp",
+        codeSnippet: `<script src="https://old.example/${i}.js"></script>`,
+        description: "Leftover script",
+      })),
+    ];
+
+    beforeEach(async () => {
+      scan({ MENU_INJECTION: 1, GHOST_SCRIPT: 2 });
+      const real = await vi.importActual<
+        typeof import("../../app/services/finding-aggregation.server")
+      >("../../app/services/finding-aggregation.server");
+      mockFiltered.mockImplementation(real.getFilteredFindingSummaryAndKept as never);
+      (getFindingSummary as ReturnType<typeof vi.fn>).mockResolvedValue({
+        total: 3,
+        bySeverity: { HIGH: 3, MEDIUM: 0, LOW: 0 },
+        byType: { MENU_INJECTION: 1, GHOST_SCRIPT: 2 },
+      });
+      (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_id: string, f?: { findingType?: string }) =>
+          ROWS.filter((r) => !f?.findingType || r.findingType === f.findingType),
+      );
+    });
+    afterEach(() => {
+      delete process.env[MENU_FLAG];
+    });
+
+    type KillData = {
+      securityRisks: unknown[];
+      findingsTile: { total: number; tone: string; securityRisks: number };
+    };
+
+    it.each(["free", "Standard", "Professional"])(
+      "%s, flag off: no menu banner, tile not counting it, not in Start here",
+      async (plan) => {
+        setPlan(plan);
+        delete process.env[MENU_FLAG];
+
+        const data = (await runLoader()) as unknown as KillData;
+        const html = renderDashboard(data);
+
+        expect(data.securityRisks).toEqual([]);
+        expect(html).not.toContain("onerror");
+        expect(html).not.toContain("Main menu &gt; Shop");
+        expect(data.findingsTile.total).toBe(2);
+        expect(data.findingsTile.securityRisks).toBe(0);
+        expect(data.findingsTile.tone).not.toBe("critical");
+        const topCalls = [
+          ...(getFullListTopFindings as ReturnType<typeof vi.fn>).mock.calls,
+          ...(getFreeTopFindings as ReturnType<typeof vi.fn>).mock.calls,
+        ];
+        expect(topCalls).toHaveLength(1);
+        const kept = topCalls[0].find(Array.isArray) as Array<{ id: string }>;
+        expect(kept.map((r) => r.id)).toEqual(["s1", "s2"]);
+      },
+    );
+
+    it("flag on: the same stored row is a security risk", async () => {
+      process.env[MENU_FLAG] = "true";
+      const data = (await runLoader()) as unknown as KillData;
+
+      expect(data.securityRisks).toEqual([
+        expect.objectContaining({ kind: "menu", menuPath: "Main menu > Shop" }),
+      ]);
+      expect(data.findingsTile).toEqual({ total: 3, tone: "critical", securityRisks: 1 });
     });
   });
 

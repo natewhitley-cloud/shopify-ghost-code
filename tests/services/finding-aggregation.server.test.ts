@@ -54,7 +54,7 @@ import {
   getFilteredFindingSummary,
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
-  withoutHiddenAdvisories,
+  withoutHiddenFindings,
 } from "../../app/services/finding-aggregation.server";
 import { diffScans, fingerprintFinding } from "../../app/services/scan-differ.server";
 import type { DiffableFinding } from "../../app/services/scan-differ.server";
@@ -601,7 +601,7 @@ describe("hidden advisories (APP_INCIDENT_ADVISORY_LIVE_ENABLED off)", () => {
   };
 
   it("flag off: every entry point drops the advisory, with or without ignores; malicious stays", () => {
-    expect(withoutHiddenAdvisories(ALL)).toEqual([mal, ghost]);
+    expect(withoutHiddenFindings(ALL)).toEqual([mal, ghost]);
     expect(filterIgnoredFindings(ALL, NO_IGNORES)).toEqual({ kept: [mal, ghost], ignored: [] });
     // Not a merchant ignore: in neither partition.
     expect(filterIgnoredFindings(ALL, IGNORE_GHOST)).toEqual({ kept: [mal], ignored: [ghost] });
@@ -611,14 +611,14 @@ describe("hidden advisories (APP_INCIDENT_ADVISORY_LIVE_ENABLED off)", () => {
 
   it("flag on: nothing changes (the same array back when nothing is dropped)", () => {
     process.env[FLAG] = "true";
-    expect(withoutHiddenAdvisories(ALL)).toBe(ALL);
+    expect(withoutHiddenFindings(ALL)).toBe(ALL);
     expect(filterIgnoredFindings(ALL, NO_IGNORES).kept).toBe(ALL);
     expect(filterIgnoredExceptMalicious(ALL, NO_IGNORES).shown).toBe(ALL);
   });
 
   it("flag off and no advisory: the same array back", () => {
     const rows = [mal, ghost];
-    expect(withoutHiddenAdvisories(rows)).toBe(rows);
+    expect(withoutHiddenFindings(rows)).toBe(rows);
   });
 
   it("summary, no ignores, flag off, an advisory stored: rolled up from the rows without it", async () => {
@@ -645,6 +645,69 @@ describe("hidden advisories (APP_INCIDENT_ADVISORY_LIVE_ENABLED off)", () => {
   ])("summary, no ignores, %s: the lean fast path, no full read", async (_l, on, byType) => {
     if (on) process.env[FLAG] = "true";
     const summary = { total: 2, bySeverity: { HIGH: 2, MEDIUM: 0, LOW: 0 }, byType };
+    mockGetFindingSummary.mockResolvedValue(summary);
+
+    const r = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);
+
+    expect(r).toEqual({ summary, keptFindings: null, ignoredMalicious: 0 });
+    expect(mockGetFindingsForScan).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-7gjj.1 audit fix: MENU_INJECTION_LIVE_ENABLED is a read-time kill switch
+// for stored menu findings, exactly like the advisory flag above.
+// ---------------------------------------------------------------------------
+
+describe("hidden menu findings (MENU_INJECTION_LIVE_ENABLED off)", () => {
+  const FLAG = "MENU_INJECTION_LIVE_ENABLED";
+  afterEach(() => {
+    delete process.env[FLAG];
+  });
+
+  const menu = makeFinding({
+    findingType: "MENU_INJECTION",
+    filename: "menus/1/items/2/0badc0de",
+    codeSnippet: "Main menu > Shop\nLabel: <img onerror=x>",
+  });
+  const mal = makeFinding({ findingType: "MALICIOUS_SCRIPT", codeSnippet: "mal" });
+  const ghost = makeFinding({ codeSnippet: "ghost" });
+  const ALL = [menu, mal, ghost];
+
+  it("flag off: every entry point drops the menu finding; malicious stays", () => {
+    expect(withoutHiddenFindings(ALL)).toEqual([mal, ghost]);
+    expect(filterIgnoredFindings(ALL, NO_IGNORES)).toEqual({ kept: [mal, ghost], ignored: [] });
+    expect(filterIgnoredExceptMalicious(ALL, NO_IGNORES).shown).toEqual([mal, ghost]);
+  });
+
+  it("flag on: the menu finding is kept (the same array back)", () => {
+    process.env[FLAG] = "true";
+    expect(withoutHiddenFindings(ALL)).toBe(ALL);
+    expect(filterIgnoredFindings(ALL, NO_IGNORES).kept).toBe(ALL);
+  });
+
+  it("summary, no ignores, flag off, a menu finding stored: rolled up from the rows without it", async () => {
+    mockGetFindingSummary.mockResolvedValue({
+      total: 3,
+      bySeverity: { HIGH: 3, MEDIUM: 0, LOW: 0 },
+      byType: { MENU_INJECTION: 1, MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 1 },
+    });
+    mockGetFindingsForScan.mockResolvedValue(ALL);
+
+    const r = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);
+
+    expect(r.summary.total).toBe(2);
+    expect(r.summary.byType.MENU_INJECTION).toBe(0);
+    expect(r.keptFindings).toEqual([mal, ghost]);
+  });
+
+  it("summary, no ignores, flag on, a menu finding stored: the lean fast path", async () => {
+    process.env[FLAG] = "true";
+    const summary = {
+      total: 2,
+      bySeverity: { HIGH: 2, MEDIUM: 0, LOW: 0 },
+      byType: { MENU_INJECTION: 1, GHOST_SCRIPT: 1 },
+    };
     mockGetFindingSummary.mockResolvedValue(summary);
 
     const r = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);

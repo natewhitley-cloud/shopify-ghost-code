@@ -23,6 +23,10 @@
  *     + groupHealthRows + themeHealthVerdict): the same verdict sentence, the
  *     clean checks and the checks that did not fully run. Counts and fixed
  *     copy only, the same on every plan. No score.
+ *   - Checkout guard incidents (gc-1q1s.6, audit fix): open KNOWN_MALICIOUS
+ *     and SCRIPT_LOADER incidents, while the guard is live, as Home's fixed
+ *     banner sentences (never "hacked" or "hijacked"; new script hosts are
+ *     left out: most are app installs). Every plan.
  *   - Allow-listed fields only: never codeSnippet (merchant theme source, and
  *     it would blow Sidekick's 4,000-token response limit), never ids beyond
  *     the scan link, never hrefs.
@@ -31,6 +35,8 @@ import type { FindingType } from "@prisma/client";
 
 import { getFilteredFindingSummaryAndKept } from "./finding-aggregation.server";
 import { advisoryStartHereCopy } from "./security-risk.server";
+import { isStorefrontGuardLive } from "./soft-launch-flags.server";
+import { loadGuardHome } from "./storefront-guard-home.server";
 import { getCachedAllThemes, getCachedMainTheme } from "./theme-cache.server";
 import { loadThemeHealth } from "./theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "./top-findings.server";
@@ -41,6 +47,12 @@ import { FINDING_TYPE_LABELS } from "../lib/finding-type-labels";
 import { buildFindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
+import {
+  guardIncidentBody,
+  guardIncidentTitle,
+  guardPagesLabel,
+  type GuardIncidentView,
+} from "../lib/storefront-guard-copy";
 import {
   groupGapsByReason,
   groupHealthRows,
@@ -77,6 +89,19 @@ export type SidekickMaliciousFinding = {
   description: string;
 };
 
+/** One open checkout guard incident on the live store (KNOWN_MALICIOUS or SCRIPT_LOADER). */
+export type SidekickLiveStoreAlert = {
+  kind: "Known malicious code" | "Script loader";
+  /** Home's banner heading for the incident (fixed wording). */
+  summary: string;
+  /** Home's banner sentence: what was seen, where, and what to do. */
+  description: string;
+  /** "your homepage", "your cart page" or "your homepage and cart page". */
+  seenOn: string;
+  firstSeen: string;
+  lastSeen: string;
+};
+
 export type SidekickThemeHealth = {
   /** Home's one-sentence verdict. Never a score. */
   verdict: string;
@@ -110,6 +135,11 @@ export type SidekickScanSummary =
         /** True when more were found than are listed here. */
         moreNotListed: boolean;
       };
+      /**
+       * Open checkout guard security incidents on the live store (empty while
+       * the guard is off). At most MAX_LIVE_STORE_ALERTS.
+       */
+      liveStoreAlerts: SidekickLiveStoreAlert[];
       /** Null when the checklist could not be built for this scan. */
       themeHealth: SidekickThemeHealth | null;
       /** True when a newer scan is running and this summary is from the one before it. */
@@ -120,6 +150,45 @@ export type SidekickScanSummary =
 
 /** Malicious findings listed in one response (keeps it far below 4,000 tokens). */
 export const MAX_MALICIOUS_LISTED = 10;
+/** Checkout guard incidents listed in one response (same budget reason). */
+export const MAX_LIVE_STORE_ALERTS = 5;
+
+const LIVE_STORE_ALERT_KIND: Partial<
+  Record<GuardIncidentView["kind"], SidekickLiveStoreAlert["kind"]>
+> = {
+  KNOWN_MALICIOUS: "Known malicious code",
+  SCRIPT_LOADER: "Script loader",
+};
+
+/**
+ * The shop's open checkout guard security incidents, as Sidekick lists them:
+ * nothing while the guard is dark, never a new script host. Home's view and
+ * order (known malicious first); loadGuardHome never throws.
+ */
+async function readLiveStoreAlerts(shop: {
+  id: string;
+  plan: string;
+}): Promise<SidekickLiveStoreAlert[]> {
+  if (!isStorefrontGuardLive()) return [];
+  const { incidents } = await loadGuardHome(shop, new Date());
+  return incidents
+    .flatMap((i) => {
+      const kind = LIVE_STORE_ALERT_KIND[i.kind];
+      return kind
+        ? [
+            {
+              kind,
+              summary: guardIncidentTitle(i),
+              description: guardIncidentBody(i),
+              seenOn: guardPagesLabel(i.pages),
+              firstSeen: i.openedAt,
+              lastSeen: i.lastSeenAt,
+            },
+          ]
+        : [];
+    })
+    .slice(0, MAX_LIVE_STORE_ALERTS);
+}
 
 export const NO_SCANS_MESSAGE = "No GhostCode scan has been run for this store yet.";
 export const FIRST_SCAN_RUNNING_MESSAGE =
@@ -204,6 +273,8 @@ export async function getSidekickScanSummary(
   // own wording. A stored advisory has no appName, so the entry supplies it.
   const advisoryCopy = advisoryStartHereCopy(topFindingRows);
 
+  const liveStoreAlerts = await readLiveStoreAlerts(shop);
+
   const themeHealth = await readThemeHealth(
     admin,
     shopDomain,
@@ -246,6 +317,7 @@ export async function getSidekickScanSummary(
       })),
       moreNotListed: maliciousFound > maliciousRows.length,
     },
+    liveStoreAlerts,
     themeHealth,
     newerScanInProgress: latestIsRunning && latestScan.id !== scan.id,
     url: `app://app/scans/${scan.id}`,

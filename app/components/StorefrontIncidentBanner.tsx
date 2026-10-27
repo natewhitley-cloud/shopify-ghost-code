@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { useFetcher } from "react-router";
+
 import { FormattedDate } from "./FormattedDate";
 import { securityRiskStyles as s } from "./SecurityRiskBanner";
 import {
@@ -8,9 +11,11 @@ import {
   GUARD_PLAN_NOTE,
   GUARD_RISK_LABEL,
   guardIncidentBody,
+  guardIncidentsToShow,
   guardIncidentTitle,
   guardSightingsLead,
   guardStatusWords,
+  mergeGuardWithScanRisks,
   type GuardIncidentView,
   type GuardStatusView,
 } from "../lib/storefront-guard-copy";
@@ -125,4 +130,39 @@ export function GuardStatusLine({ status }: { status: GuardStatusView }) {
       )}
     </div>
   );
+}
+
+/** What the Home route's `guard-acknowledge` intent answers. */
+type GuardAcknowledgeResult = { acknowledged?: boolean; incidentId?: string };
+
+/**
+ * The guard banners a page renders beside its scan banners (Home and the scan
+ * page, gc-1q1s.6): incidents merged with the scan's malicious-code banners by
+ * domain (mergeGuardWithScanRisks), and "This is expected", which hides a
+ * new-host incident at once (optimistic) and posts to the Home route's action.
+ * When the server answers false (not this shop's open new-host incident, or
+ * a lost race), the incident shows again (audit fix: it stayed hidden).
+ */
+export function useGuardIncidentBanners(
+  incidents: readonly GuardIncidentView[],
+  scanRiskDomains: ReadonlySet<string>,
+) {
+  const fetcher = useFetcher<GuardAcknowledgeResult>();
+  const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
+  const merged = mergeGuardWithScanRisks(
+    guardIncidentsToShow(
+      incidents,
+      acknowledgedIds,
+      fetcher.state === "idle" ? fetcher.data : null,
+    ),
+    scanRiskDomains,
+  );
+  const acknowledge = (incidentId: string) => {
+    setAcknowledgedIds((prev) => new Set([...prev, incidentId]));
+    fetcher.submit(
+      { intent: "guard-acknowledge", incidentId },
+      { method: "POST", action: "/app?index" },
+    );
+  };
+  return { ...merged, acknowledge };
 }

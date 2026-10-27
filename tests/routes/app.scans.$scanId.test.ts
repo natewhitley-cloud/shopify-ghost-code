@@ -35,6 +35,11 @@ vi.mock("../../app/db.server", () => ({
   default: {},
 }));
 
+// Checkout guard incidents (gc-1q1s.6): none unless a test sets them.
+vi.mock("../../app/services/storefront-guard-home.server", () => ({
+  loadGuardHome: vi.fn(),
+}));
+
 // claimShopStamp is mocked at the model boundary so the REAL journey-milestone
 // service (gc-dpm.1) runs, including its never-throw guard.
 vi.mock("../../app/models/shop.server", () => ({
@@ -221,6 +226,7 @@ import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { PREVIEW_READ_BUCKETS } from "../../app/services/free-preview.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import { detectAppIncidentAdvisories } from "../../app/services/scan-engine.server";
+import { loadGuardHome } from "../../app/services/storefront-guard-home.server";
 import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
 import { authenticate } from "../../app/shopify.server";
 import { styles } from "../../app/styles/shared";
@@ -416,6 +422,7 @@ beforeEach(() => {
   mockGetFindingsForScan.mockResolvedValue([]);
   mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [], status: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -6650,5 +6657,77 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         '<div class="scan-tile__subtitle">findings detected</div>',
       );
     });
+  });
+});
+
+// Audit fix (M4): the checkout guard's incident banners on the scan page, as
+// on Home: every plan, after the scan's own security banners.
+describe("checkout guard incidents on the scan page (gc-1q1s.6)", () => {
+  const T = "2026-10-27T03:17:00.000Z";
+  const incident = (over: Record<string, unknown> = {}) => ({
+    id: "inc-1",
+    kind: "SCRIPT_LOADER" as const,
+    host: "pay-check.example",
+    domain: null,
+    note: null,
+    pages: "cart" as const,
+    sourceLabel: "Code in an onerror attribute in the checkout button",
+    openedAt: T,
+    lastSeenAt: T,
+    seenCount: 1,
+    ...over,
+  });
+
+  async function renderPage(): Promise<string> {
+    const data = await loader(makeLoaderArgs("scan-1"));
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/scans/scan-1"],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: a script-loader incident shows as a security risk with its steps",
+    async (plan) => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+      mockCanViewFindingDetails.mockReturnValue(plan !== "free");
+      vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [incident()], status: null });
+
+      const html = await renderPage();
+
+      expect(loadGuardHome).toHaveBeenCalledWith({ id: SHOP.id, plan }, expect.any(Date));
+      expect(html).toContain(
+        "Code on your live store loads a script from pay-check.example in an unusual way",
+      );
+      expect(html).toContain("What to check");
+      expect(html).toContain("shown on every plan");
+      expect(html).not.toMatch(/hijack|hacked/i);
+    },
+  );
+
+  it("a new script host shows as a warning with This is expected", async () => {
+    vi.mocked(loadGuardHome).mockResolvedValue({
+      incidents: [incident({ id: "inc-2", kind: "NEW_SCRIPT_HOST", host: "widgets.newapp.io" })],
+      status: null,
+    });
+    const html = await renderPage();
+    expect(html).toContain("A new script source started loading on your store: widgets.newapp.io");
+    expect(html).toContain(">This is expected</s-button>");
+  });
+
+  it("is not read on the in-progress poll", async () => {
+    mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS", completedAt: null });
+    await loader(makeLoaderArgs("scan-1"));
+    expect(loadGuardHome).not.toHaveBeenCalled();
   });
 });

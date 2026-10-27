@@ -350,6 +350,35 @@ describe("Home: checkout guard incidents (gc-1q1s.6)", () => {
     expect(html).toContain("Checkout guard is paused while your store is password-protected.");
   });
 
+  // Audit fix (M3): a clean scan beside a guard incident is not "all clear".
+  describe("a clean latest scan", () => {
+    beforeEach(() => {
+      mock(getSeverityCountsForScans).mockResolvedValue(
+        new Map([["scan-2", { HIGH: 0, MEDIUM: 0, LOW: 0 }]]),
+      );
+      mock(getTypeCountsForScan).mockResolvedValue({});
+    });
+
+    it("without a guard incident: You're all clear", async () => {
+      const html = renderDashboard(await load());
+      expect(html).toContain("You&#x27;re all clear");
+      expect(html).toContain("Your theme is clean.");
+    });
+
+    it.each(["KNOWN_MALICIOUS", "SCRIPT_LOADER", "NEW_SCRIPT_HOST"])(
+      "with a standalone %s incident: never all clear",
+      async (kind) => {
+        mock(loadGuardForHome).mockResolvedValue({
+          state: null,
+          incidents: [incident({ kind, fingerprint: `${kind}:cartassure.top` })],
+        });
+        const html = renderDashboard(await load());
+        expect(html).not.toContain("all clear");
+        expect(html).not.toContain("Your theme is clean.");
+      },
+    );
+  });
+
   it("a guard read failure renders Home without the guard", async () => {
     mock(loadGuardForHome).mockRejectedValue(new Error("db down"));
     const data = await load();
@@ -374,7 +403,7 @@ describe("Home action: guard-acknowledge (gc-1q1s.6)", () => {
 
   it("acknowledges for the SESSION shop only and starts no scan", async () => {
     mock(acknowledgeGuardIncident).mockResolvedValue(true);
-    await expect(ack("inc-2")).resolves.toEqual({ acknowledged: true });
+    await expect(ack("inc-2")).resolves.toEqual({ acknowledged: true, incidentId: "inc-2" });
     expect(acknowledgeGuardIncident).toHaveBeenCalledWith(SHOP.id, "inc-2", expect.any(Date));
     expect(dispatchScan).not.toHaveBeenCalled();
     expect(canStartScan).not.toHaveBeenCalled();
@@ -388,7 +417,11 @@ describe("Home action: guard-acknowledge (gc-1q1s.6)", () => {
 
   it("reports false when the incident is not this shop's open new-host incident", async () => {
     mock(acknowledgeGuardIncident).mockResolvedValue(false);
-    await expect(ack("someone-elses")).resolves.toEqual({ acknowledged: false });
+    // The id comes back so the page can show the incident again (audit fix).
+    await expect(ack("someone-elses")).resolves.toEqual({
+      acknowledged: false,
+      incidentId: "someone-elses",
+    });
   });
 });
 

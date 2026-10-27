@@ -34,6 +34,7 @@ vi.mock("../../app/models/scan.server", () => ({
 }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
 vi.mock("../../app/models/ignored-finding.server", () => ({ getIgnoredFindingsForShop: vi.fn() }));
+vi.mock("../../app/services/storefront-guard-home.server", () => ({ loadGuardHome: vi.fn() }));
 vi.mock("../../app/services/theme-cache.server", () => ({
   getCachedMainTheme: vi.fn(),
   getCachedAllThemes: vi.fn(),
@@ -58,6 +59,7 @@ import {
   FIRST_SCAN_RUNNING_MESSAGE,
   getSidekickScanSummary,
   MALICIOUS_HOMEPAGE_VERDICT,
+  MAX_LIVE_STORE_ALERTS,
   MALICIOUS_VERDICT,
   MAX_MALICIOUS_LISTED,
   NO_COMPLETED_SCAN_MESSAGE,
@@ -66,6 +68,7 @@ import {
   SIDEKICK_ADVISORY_IMPACT,
   sidekickTopFindingImpact,
 } from "../../app/services/sidekick-scan-summary.server";
+import { loadGuardHome } from "../../app/services/storefront-guard-home.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../../app/services/theme-cache.server";
 
 const mockShop = vi.mocked(getShopMetadata);
@@ -253,6 +256,7 @@ beforeEach(() => {
   vi.mocked(getLatestScanFindingCountsByTheme).mockResolvedValue(
     new Map([["gid://shopify/OnlineStoreTheme/2", 7]]),
   );
+  vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [], status: null });
 });
 
 async function okSummary() {
@@ -316,6 +320,7 @@ describe("getSidekickScanSummary: full-list plans (Standard, Professional)", () 
     expect(Object.keys(r).sort()).toEqual([
       "appSecurityAdvisories",
       "byImpact",
+      "liveStoreAlerts",
       "maliciousCode",
       "newerScanInProgress",
       "scanDate",
@@ -714,5 +719,84 @@ describe("sidekickTopFindingImpact: the extension's impact contract", () => {
   it("only known malicious code and code in a menu (gc-7gjj.1) are a security risk", () => {
     const risky = allImpacts().filter(([, impact]) => impact === "Security risk");
     expect(risky.map(([type]) => type)).toEqual(["MALICIOUS_SCRIPT", "MENU_INJECTION"]);
+  });
+});
+
+// Audit fix (M4): open checkout guard security incidents reach Sidekick, as
+// Home's fixed sentences, only while the guard is live.
+describe("getSidekickScanSummary: checkout guard incidents (gc-1q1s.6)", () => {
+  const FLAG = "STOREFRONT_GUARD_LIVE_ENABLED";
+  const T = "2026-10-27T03:17:00.000Z";
+  const incident = (over: Record<string, unknown> = {}) => ({
+    id: "inc-1",
+    kind: "KNOWN_MALICIOUS" as const,
+    host: "cdn.cartassure.top",
+    domain: "cartassure.top",
+    note: "checkout-phishing domain",
+    pages: "both" as const,
+    sourceLabel: "Loaded by a script tag in the page",
+    openedAt: T,
+    lastSeenAt: T,
+    seenCount: 2,
+    ...over,
+  });
+  afterEach(() => {
+    delete process.env[FLAG];
+  });
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: lists known-malicious and script-loader incidents, never a new host",
+    async (plan) => {
+      process.env[FLAG] = "true";
+      setShop(plan);
+      serveScan([f("a1", "GHOST_SCRIPT", "HIGH")]);
+      vi.mocked(loadGuardHome).mockResolvedValue({
+        incidents: [
+          incident(),
+          incident({ id: "inc-2", kind: "SCRIPT_LOADER", host: "pay.example", domain: null }),
+          incident({ id: "inc-3", kind: "NEW_SCRIPT_HOST", host: "new.example", domain: null }),
+        ],
+        status: null,
+      });
+
+      const r = await okSummary();
+
+      expect(r.liveStoreAlerts.map((a) => a.kind)).toEqual([
+        "Known malicious code",
+        "Script loader",
+      ]);
+      expect(r.liveStoreAlerts[0]).toEqual({
+        kind: "Known malicious code",
+        summary:
+          "Your live store loads code from cartassure.top, a domain linked to malicious code",
+        description: expect.stringContaining("GhostCode's checkout guard saw it"),
+        seenOn: "your homepage and cart page",
+        firstSeen: T,
+        lastSeen: T,
+      });
+      const json = JSON.stringify(r.liveStoreAlerts);
+      expect(json).not.toMatch(/hack|hijack|breach/i);
+      expect(json).not.toContain("new.example");
+      expect(json).not.toMatch(/"id"/);
+    },
+  );
+
+  it("guard dark: no alerts and no guard read", async () => {
+    serveScan([f("a1", "GHOST_SCRIPT", "HIGH")]);
+    vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [incident()], status: null });
+    expect((await okSummary()).liveStoreAlerts).toEqual([]);
+    expect(loadGuardHome).not.toHaveBeenCalled();
+  });
+
+  it("caps the list for the response budget", async () => {
+    process.env[FLAG] = "true";
+    serveScan([f("a1", "GHOST_SCRIPT", "HIGH")]);
+    vi.mocked(loadGuardHome).mockResolvedValue({
+      incidents: Array.from({ length: 12 }, (_, i) => incident({ id: `inc-${i}` })),
+      status: null,
+    });
+    const r = await okSummary();
+    expect(r.liveStoreAlerts).toHaveLength(MAX_LIVE_STORE_ALERTS);
+    expect(Math.ceil(JSON.stringify(r).length / 4)).toBeLessThan(2500);
   });
 });

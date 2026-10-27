@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   guardIncidentBody,
+  guardIncidentsToShow,
   guardIncidentTitle,
   guardPagesLabel,
   guardSightingsLead,
@@ -119,5 +120,27 @@ describe("mergeGuardWithScanRisks", () => {
   });
   it("empty in, empty out", () => {
     expect(mergeGuardWithScanRisks([], new Set())).toEqual({ standalone: [], seenByGuard: {} });
+  });
+});
+
+describe("guardIncidentsToShow (This is expected, optimistic)", () => {
+  const a = { ...base, id: "a" };
+  const b = { ...base, id: "b" };
+
+  it("hides incidents acknowledged on this page", () => {
+    expect(guardIncidentsToShow([a, b], new Set(["a"]), null)).toEqual([b]);
+    expect(
+      guardIncidentsToShow([a, b], new Set(["a"]), { acknowledged: true, incidentId: "a" }),
+    ).toEqual([b]);
+  });
+
+  it("shows an incident again when the server refused to acknowledge it (audit fix)", () => {
+    expect(
+      guardIncidentsToShow([a, b], new Set(["a", "b"]), { acknowledged: false, incidentId: "a" }),
+    ).toEqual([a]);
+  });
+
+  it("an unrelated reply changes nothing", () => {
+    expect(guardIncidentsToShow([a, b], new Set(), { ignored: true } as never)).toEqual([a, b]);
   });
 });

@@ -8,6 +8,10 @@ import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
+import {
+  StorefrontIncidentBanner,
+  useGuardIncidentBanners,
+} from "../components/StorefrontIncidentBanner";
 import { TopFindings } from "../components/TopFindings";
 import {
   adminResourceLinkLabel,
@@ -71,6 +75,7 @@ import {
   type MenuRisk,
 } from "../lib/security-risk";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
+import { GUARD_ALSO_SEEN_LEAD } from "../lib/storefront-guard-copy";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
 import { upgradeCtaLabel } from "../lib/trial-cta";
@@ -134,6 +139,7 @@ import type { ScanCoverage, ScanDiff } from "../services/scan-differ.server";
 import { advisoryStartHereCopy, buildSecurityRisks } from "../services/security-risk.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
+import { loadGuardHome } from "../services/storefront-guard-home.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
@@ -1503,6 +1509,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         now,
       })
     : [];
+  // Checkout guard incidents (gc-1q1s.6, audit fix): the same banners as
+  // Home, on every plan, beside a successful scan's security banners (never
+  // on the in-progress poll). Shop-level facts about the live store, so any
+  // successful scan's page shows them. Never throws (a failed read: none).
+  const guardIncidents = scanSuccessful
+    ? (await loadGuardHome({ id: shop.id, plan: shop.plan }, now)).incidents
+    : [];
   // gc-frda: apps found no longer active on THIS scan, for the block's
   // "New · {App}" badge. Read only when a top row has an app at all.
   const newlyInactiveApps = topFindingRows.some((f) => f.appName !== null)
@@ -1713,6 +1726,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     alwaysShownFindings,
     // gc-q5z8: the Security risk banners (malicious first), every plan.
     securityRisks,
+    guardIncidents,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -1986,6 +2000,7 @@ export default function ScanDetail() {
     maliciousFindings,
     alwaysShownFindings,
     securityRisks,
+    guardIncidents,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -1998,6 +2013,13 @@ export default function ScanDetail() {
     laneLabel,
     laneSoWhat,
   } = useLoaderData<typeof loader>();
+
+  // Checkout guard (gc-1q1s.6), as on Home: a KNOWN_MALICIOUS incident on a
+  // domain a scan banner names is folded into that banner.
+  const guardMerge = useGuardIncidentBanners(
+    guardIncidents ?? [],
+    new Set(securityRisks.flatMap((r) => (r.kind === "malicious" && r.domain ? [r.domain] : []))),
+  );
 
   const [, setSearchParams] = useFilterSearchParams();
 
@@ -2407,6 +2429,12 @@ export default function ScanDetail() {
               scanDate={scan.completedAt ?? scan.createdAt}
               anchor
             >
+              {risk.domain && guardMerge.seenByGuard[risk.domain] && (
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: "21px" }}>
+                  {GUARD_ALSO_SEEN_LEAD}{" "}
+                  <FormattedDate value={guardMerge.seenByGuard[risk.domain]} />.
+                </p>
+              )}
               <FindingsTable>
                 {maliciousFindings
                   .filter((f) => risk.findings.some((r) => r.id === f.id))
@@ -2431,6 +2459,16 @@ export default function ScanDetail() {
             />
           ),
         )}
+
+        {/* Checkout guard (gc-1q1s.6): incidents the scan banners above do not
+          already name, on EVERY plan, in Home's order. */}
+        {guardMerge.standalone.map((incident) => (
+          <StorefrontIncidentBanner
+            key={incident.id}
+            incident={incident}
+            onAcknowledge={guardMerge.acknowledge}
+          />
+        ))}
 
         {/* Stale-results banner (gc-mgi): the theme changed after this scan.
             Below only the security alert (safety outranks everything). */}

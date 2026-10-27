@@ -175,6 +175,21 @@ export function mergeGuardWithScanRisks(
   return { standalone, seenByGuard };
 }
 
+/**
+ * The incidents to show after "This is expected" clicks (optimistic): every
+ * incident not acknowledged on this page, plus the one the server last
+ * REFUSED to acknowledge (`answer` is the action's reply once the request
+ * settled), so a refused click never leaves an incident hidden (audit fix).
+ */
+export function guardIncidentsToShow<T extends { id: string }>(
+  incidents: readonly T[],
+  acknowledgedIds: ReadonlySet<string>,
+  answer: { acknowledged?: boolean; incidentId?: string } | null | undefined,
+): T[] {
+  const refused = answer?.acknowledged === false ? (answer.incidentId ?? null) : null;
+  return incidents.filter((i) => i.id === refused || !acknowledgedIds.has(i.id));
+}
+
 /** The line added to a scan banner the guard also saw: "{lead} {date}." */
 export const GUARD_ALSO_SEEN_LEAD =
   "GhostCode's checkout guard also saw it on your live store, last on";

@@ -6,7 +6,7 @@
  * produce the row, so each guard is proven non-vacuous.
  */
 import { FindingType } from "@prisma/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // The orchestrator's models import the db client; the pure code needs none.
 vi.mock("../../app/db.server", () => ({ default: {} }));
@@ -894,6 +894,11 @@ describe("diffFindingLists (shared with the summary email)", () => {
   });
 
   it("code in a menu is a security row in the change log but stays out of the email (gc-7gjj.1)", () => {
+    // Shown only while its flag is on (read-time kill switch, audit fix).
+    vi.stubEnv("MENU_INJECTION_LIVE_ENABLED", "true");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     const menu = finding({
       filename: "menus/1/items/2/0badc0de",
       findingType: FindingType.MENU_INJECTION,

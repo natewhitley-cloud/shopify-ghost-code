@@ -71,6 +71,30 @@ export function areStoredAdvisoriesShown(): boolean {
 }
 
 /**
+ * The read-time kill switch for menu-label injection (gc-7gjj.1, audit fix):
+ * whether STORED MENU_INJECTION findings may be shown anywhere. Mirrors
+ * areStoredAdvisoriesShown: with MENU_INJECTION_LIVE_ENABLED off, every read
+ * path drops them (finding-aggregation.server's choke point), whatever is
+ * stored, so turning the flag off hides the red menu banner at once.
+ */
+export function areStoredMenuFindingsShown(): boolean {
+  const flag = SOFT_LAUNCH_FLAGS[FindingType.MENU_INJECTION];
+  return process.env[flag!] === "true";
+}
+
+/**
+ * The finding types whose STORED rows are hidden right now by their read-time
+ * kill switch (areStoredAdvisoriesShown, areStoredMenuFindingsShown). Empty
+ * while both flags are on.
+ */
+export function hiddenStoredFindingTypes(): FindingType[] {
+  return [
+    ...(areStoredAdvisoriesShown() ? [] : [FindingType.APP_INCIDENT_ADVISORY]),
+    ...(areStoredMenuFindingsShown() ? [] : [FindingType.MENU_INJECTION]),
+  ];
+}
+
+/**
  * Whether the menu-label injection audit may run (gc-7gjj.1). Gates the Admin
  * `menus` request itself, not just persistence: the scanner never reads a
  * store's menus while this is false.
