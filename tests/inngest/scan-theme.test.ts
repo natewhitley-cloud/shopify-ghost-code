@@ -1591,6 +1591,64 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     expect(meta.throttleSleepMs).toBe(250);
     expect(meta.truncatedWalks).toEqual([]);
   });
+
+  it("suppresses product-audit findings for apps with an active theme embed (gc-k71c)", async () => {
+    // Regression: a merchant with a live Judge.me installation got 60 false-
+    // positive GHOST_METAFIELD findings. The product-audit step must drop
+    // findings whose appName matches an app in enabledEmbedApps.
+    const judgeMeMetafield = makeAuditFinding(FindingType.GHOST_METAFIELD, {
+      appName: "Judge.me",
+    });
+    const removedAppMetafield = makeAuditFinding(FindingType.GHOST_METAFIELD, {
+      appName: "Removed App",
+    });
+    const removedAppTag = makeAuditFinding(FindingType.GHOST_TAG, { appName: "Removed App" });
+    const judgeMeTag = makeAuditFinding(FindingType.GHOST_TAG, { appName: "Judge.me" });
+
+    // fetch-and-scan sees Judge.me's embed block enabled in settings_data.json.
+    (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set(["Judge.me"]));
+
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: ["judgeme-x"] }],
+        metafields: [{ id: "gid://shopify/Product/1" }],
+      }),
+    );
+    mockDetectOrphanedProductTags.mockReturnValue([removedAppTag, judgeMeTag]);
+    mockDetectOrphanedMetafields.mockReturnValue([judgeMeMetafield, removedAppMetafield]);
+
+    await runScanTheme();
+
+    // Only the "Removed App" findings should be persisted — Judge.me has an
+    // active embed so its product data is intentional, not orphaned.
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [removedAppTag]);
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [removedAppMetafield]);
+    // Judge.me findings must NOT appear in any createFindings call.
+    for (const call of mockCreateFindings.mock.calls) {
+      const findings = call[1] as Array<{ appName?: string }>;
+      expect(findings.some((f) => f.appName === "Judge.me")).toBe(false);
+    }
+  });
+
+  it("passes through all product-audit findings when no embeds are active (gc-k71c baseline)", async () => {
+    // When enabledEmbedApps is empty, no suppression occurs — all findings persist.
+    const metafieldFinding = makeAuditFinding(FindingType.GHOST_METAFIELD, {
+      appName: "Removed App",
+    });
+
+    (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set<string>());
+
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        metafields: [{ id: "gid://shopify/Product/1" }],
+      }),
+    );
+    mockDetectOrphanedMetafields.mockReturnValue([metafieldFinding]);
+
+    await runScanTheme();
+
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [metafieldFinding]);
+  });
 });
 
 // ---------------------------------------------------------------------------

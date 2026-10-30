@@ -647,6 +647,11 @@ async function runProductAuditChunk(opts: {
   throttle: ThrottleSnapshot | null;
   walkDeadline: number | null;
   lastIdSoFar: string | null;
+  /** App names with an enabled theme embed (gc-k71c). Null means
+   * settings_data.json was not observed this scan — suppress nothing (same as
+   * no active embeds). Undefined on a step memoized before this field was
+   * added — also treated as no suppression. */
+  appsWithEnabledEmbed: string[] | null | undefined;
 }): Promise<ProductChunkResult> {
   const deadlines = walkStepDeadlines(opts.walkDeadline, PRODUCT_WALK_TIME_BUDGET_MS);
   const empty = (scopeAbsent: boolean): ProductChunkResult => ({
@@ -765,6 +770,20 @@ async function runProductAuditChunk(opts: {
   const priceOut = runDetector(() => detectPersistentDiscounts(prices), "GHOST_PRICE");
   const metafieldOut = runDetector(() => detectOrphanedMetafields(metafields), "GHOST_METAFIELD");
 
+  // Drop findings for apps with an enabled theme embed (gc-k71c). GhostCode's
+  // promise is code from UNINSTALLED apps — an active embed means the app is
+  // still installed, so its product metafields/tags/prices are intentional.
+  // null = settings_data.json not observed (no suppression, safe default).
+  // undefined = step memoized before this field was added (no suppression).
+  const activeApps = new Set(opts.appsWithEnabledEmbed ?? []);
+  const dropActive = (findings: CreateFindingInput[]) =>
+    activeApps.size === 0
+      ? findings
+      : findings.filter((f) => !f.appName || !activeApps.has(f.appName));
+  const filteredTagFindings = dropActive(tagOut.findings);
+  const filteredPriceFindings = dropActive(priceOut.findings);
+  const filteredMetafieldFindings = dropActive(metafieldOut.findings);
+
   // Later chunks own only their own products' rows (see the doc comment).
   // `tags` holds every product in the chunk, unfiltered.
   const deleteScope: Prisma.FindingWhereInput | undefined =
@@ -786,7 +805,7 @@ async function runProductAuditChunk(opts: {
     scanId: opts.scanId,
     shopId: opts.shopId,
     findingType: FindingType.GHOST_TAG,
-    findings: tagOut.findings,
+    findings: filteredTagFindings,
     event: "product_tag_findings",
     logMessage: "product tag findings persisted",
     deleteScope,
@@ -795,7 +814,7 @@ async function runProductAuditChunk(opts: {
     scanId: opts.scanId,
     shopId: opts.shopId,
     findingType: FindingType.GHOST_PRICE,
-    findings: priceOut.findings,
+    findings: filteredPriceFindings,
     event: "product_price_findings",
     logMessage: "product price findings persisted",
     deleteScope,
@@ -804,16 +823,16 @@ async function runProductAuditChunk(opts: {
     scanId: opts.scanId,
     shopId: opts.shopId,
     findingType: FindingType.GHOST_METAFIELD,
-    findings: metafieldOut.findings,
+    findings: filteredMetafieldFindings,
     event: "product_metafield_findings",
     logMessage: "product metafield findings persisted",
     deleteScope,
   });
 
   return {
-    tagCount: tagOut.findings.length,
-    priceCount: priceOut.findings.length,
-    metafieldCount: metafieldOut.findings.length,
+    tagCount: filteredTagFindings.length,
+    priceCount: filteredPriceFindings.length,
+    metafieldCount: filteredMetafieldFindings.length,
     scopeAbsent: false,
     truncated,
     tagGap: tagOut.gap,
@@ -1814,6 +1833,7 @@ export const scanTheme = inngest.createFunction(
           throttle: null,
           walkDeadline: null,
           lastIdSoFar: null,
+          appsWithEnabledEmbed,
         }),
       );
       productChunks.push(productChunk);
@@ -1835,6 +1855,7 @@ export const scanTheme = inngest.createFunction(
             // memoized before it, which then starts the budget here.
             walkDeadline: prev.walkDeadline ?? null,
             lastIdSoFar: prev.lastId ?? null,
+            appsWithEnabledEmbed,
           }),
         );
         productChunks.push(productChunk);
