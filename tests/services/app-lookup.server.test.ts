@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { APP_SIGNATURES } from "../../app/data/app-signatures.server";
 import {
+  appsFromExtensionHandles,
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
@@ -969,6 +970,30 @@ describe("cdnDomains validation (gc-5v9)", () => {
         '<img src="https://s3.amazonaws.com/downloads.mailchimp.com/assets/logo.png">',
       ),
     ).toBe("Mailchimp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appsFromExtensionHandles (gc-3ate)
+// ---------------------------------------------------------------------------
+
+describe("appsFromExtensionHandles", () => {
+  it("names PushOwl and Rise.ai from the handles seen on pawnaturals.com", () => {
+    expect(appsFromExtensionHandles(["giftwizard", "pushowl"])).toEqual(
+      new Set(["PushOwl", "Rise.ai"]),
+    );
+  });
+
+  it("matches whole handles only, case-insensitive", () => {
+    expect(appsFromExtensionHandles(["PushOwl"])).toEqual(new Set(["PushOwl"]));
+    expect(appsFromExtensionHandles(["pushowl-350", "push", "pushowl2", "gift"])).toEqual(
+      new Set(),
+    );
+  });
+
+  it("returns an empty set for unknowns and an empty list", () => {
+    expect(appsFromExtensionHandles(["totally-unknown-app"])).toEqual(new Set());
+    expect(appsFromExtensionHandles([])).toEqual(new Set());
   });
 });
 

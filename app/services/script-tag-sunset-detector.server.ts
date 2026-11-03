@@ -130,12 +130,16 @@ interface ScriptTagGroup {
  *                        (scan-engine `enabledAppEmbedApps`). Disabled embeds
  *                        must not be in this set.
  * @param now             Clock seam for the date-aware copy.
+ * @param extensionApps   Signature app names whose theme app extension
+ *                        scripts loaded on the same storefront page
+ *                        (appsFromExtensionHandles, gc-3ate).
  * @returns One finding per app (or host), in a stable order.
  */
 export function detectScriptTagSunset(
   scriptTagUrls: readonly string[],
   enabledEmbedApps: ReadonlySet<string>,
   now: Date = new Date(),
+  extensionApps: ReadonlySet<string> = new Set(),
 ): CreateFindingInput[] {
   const groups = new Map<string, ScriptTagGroup>();
   for (const raw of scriptTagUrls.slice(0, MAX_SCRIPT_TAG_URLS)) {
@@ -159,6 +163,7 @@ export function detectScriptTagSunset(
     .slice(0, MAX_SCRIPT_TAG_GROUPS)
     .map(([, group]) => {
       const embedOn = group.appName !== null && enabledEmbedApps.has(group.appName);
+      const extensionOn = group.appName !== null && extensionApps.has(group.appName);
       return {
         filename: SCRIPT_TAG_FINDING_FILENAME,
         lineNumber: 1,
@@ -170,21 +175,30 @@ export function detectScriptTagSunset(
           .join("\n")
           .slice(0, MAX_SNIPPET_CHARS),
         findingType: FindingType.SCRIPT_TAG_SUNSET,
-        severity: embedOn ? Severity.LOW : Severity.HIGH,
+        severity: embedOn || extensionOn ? Severity.LOW : Severity.HIGH,
         appName: group.appName ?? undefined,
-        description: describe(group, embedOn, afterSunset),
+        description: describe(group, embedOn, extensionOn, afterSunset),
       };
     });
 }
 
 /** Merchant copy for one group. No em dashes anywhere (house style). */
-function describe(group: ScriptTagGroup, embedOn: boolean, afterSunset: boolean): string {
+function describe(
+  group: ScriptTagGroup,
+  embedOn: boolean,
+  extensionOn: boolean,
+  afterSunset: boolean,
+): string {
   if (!group.appName) return describeUnmatchedHost(group.host, afterSunset);
   const name = group.appName;
-  if (embedOn) {
-    return afterSunset
-      ? `${name} loads on your storefront through a script tag, which Shopify stopped running on March 1, 2027. ${name} also has an app embed turned on in your theme, so it has probably moved already. Worth confirming with ${name}'s support.`
-      : `${name} loads on your storefront through a script tag, which Shopify will stop running on March 1, 2027. ${name} also has an app embed turned on in your theme, so it has probably moved already. Worth confirming with ${name}'s support.`;
+  if (embedOn || extensionOn) {
+    const opening = afterSunset
+      ? `${name} loads on your storefront through a script tag, which Shopify stopped running on March 1, 2027.`
+      : `${name} loads on your storefront through a script tag, which Shopify will stop running on March 1, 2027.`;
+    const signal = embedOn
+      ? `${name} also has an app embed turned on in your theme`
+      : `${name} also loads through a Shopify app extension on your storefront`;
+    return `${opening} ${signal}, so it has probably moved already. Worth confirming with ${name}'s support.`;
   }
   return afterSunset
     ? `${name} loads on your storefront through a script tag. Shopify stopped running script tags on March 1, 2027, so the parts of ${name} that rely on it have stopped working on your store unless ${name} has moved to an app embed. Ask ${name}'s support whether they have migrated.`

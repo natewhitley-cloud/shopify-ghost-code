@@ -14,6 +14,8 @@ import {
   isPasswordPageHtml,
   isShopifyStorefrontHtml,
   MAX_ASYNC_LOAD_CANDIDATES,
+  MAX_EXTENSION_HANDLES,
+  parseExtensionAssetHandles,
   parseScriptTagUrls,
   STOREFRONT_MAX_BODY_BYTES,
   type StorefrontFetch,
@@ -412,6 +414,7 @@ describe("fetchStorefrontScriptTags", () => {
       host: PRIMARY,
       urls: parseScriptTagUrls(page(REAL_BLOCK)),
       liquidErrors: [],
+      extensionHandles: [],
     });
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -486,7 +489,13 @@ describe("fetchStorefrontScriptTags", () => {
 
   it("returns ok with zero URLs for a Shopify page with no asyncLoad block", async () => {
     fetchImpl.mockResolvedValue(html(page("")));
-    expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [], liquidErrors: [] });
+    expect(await run()).toEqual({
+      status: "ok",
+      host: PRIMARY,
+      urls: [],
+      liquidErrors: [],
+      extensionHandles: [],
+    });
   });
 
   describe("rendered Liquid errors (gc-i6du): same request, in memory only", () => {
@@ -506,6 +515,7 @@ describe("fetchStorefrontScriptTags", () => {
         urls: parseScriptTagUrls(page(REAL_BLOCK)),
         // Parsed parts only: candidates until the theme confirms them.
         liquidErrors: [{ template: "layout/theme", line: 309, snippet: "klaviyo-form" }],
+        extensionHandles: [],
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(admin.graphql).toHaveBeenCalledTimes(1);
@@ -517,6 +527,19 @@ describe("fetchStorefrontScriptTags", () => {
       );
       const serialized = JSON.stringify(await run());
       for (const leak of ["Jane", "1042", "<div", "<main", "template-index"]) {
+        expect(serialized).not.toContain(leak);
+      }
+    });
+
+    it("returns extension handles from the same request, handles only (gc-3ate)", async () => {
+      const ext =
+        "https://cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/pushowl-350/assets/pushowl-shopify.js";
+      fetchImpl.mockResolvedValue(html(pageWithBody(`<script src="${ext}" defer></script>`)));
+      const result = await run();
+      expect(result).toMatchObject({ status: "ok", extensionHandles: ["pushowl"] });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const serialized = JSON.stringify(result);
+      for (const leak of ["01a18327", "pushowl-350", "assets/", "<script"]) {
         expect(serialized).not.toContain(leak);
       }
     });
@@ -578,6 +601,7 @@ describe("fetchStorefrontScriptTags", () => {
         host: PRIMARY,
         urls: parseScriptTagUrls(page(REAL_BLOCK)),
         liquidErrors: null,
+        extensionHandles: [],
       });
       expect(logger.warn).toHaveBeenCalledWith("storefront liquid error read failed", {
         function: "storefront-fetcher",
@@ -796,7 +820,13 @@ describe("fetchStorefrontScriptTags", () => {
         .mockResolvedValueOnce(redirect(`https://${PRIMARY}/b`))
         .mockResolvedValueOnce(redirect(`https://${MYSHOPIFY}/`))
         .mockResolvedValueOnce(html(page("")));
-      expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [], liquidErrors: [] });
+      expect(await run()).toEqual({
+        status: "ok",
+        host: PRIMARY,
+        urls: [],
+        liquidErrors: [],
+        extensionHandles: [],
+      });
     });
   });
 
@@ -1012,6 +1042,7 @@ describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0ht
         host: PRIMARY,
         urls: ["https://cdn.checkout-guard.top/s.js"],
         liquidErrors: [],
+        extensionHandles: [],
       });
       expect(mockFindMalicious).not.toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith(
@@ -1055,6 +1086,7 @@ describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0ht
       host: PRIMARY,
       urls: ["https://cdn.checkout-guard.top/s.js"],
       liquidErrors: [],
+      extensionHandles: [],
       maliciousHits: null,
     });
     expect(logger.warn).toHaveBeenCalledWith(
@@ -1072,5 +1104,90 @@ describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0ht
     );
     expect(await run()).toEqual({ status: "unreachable", reason: "password" });
     expect(mockFindMalicious).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseExtensionAssetHandles (gc-3ate)", () => {
+  // pawnaturals.com 2026-11-01: PushOwl and Rise.ai load these with no app
+  // embed block on the page.
+  const PUSHOWL =
+    "https://cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/pushowl-350/assets/pushowl-shopify.js";
+  const RISE_BANNER =
+    "https://cdn.shopify.com/extensions/01a1773f-785e-7cb8-a9f2-37664a3bd3b1/giftwizard-139/assets/rise-store-credit-banner-theme-extension.js";
+  const RISE_WIDGET =
+    "https://cdn.shopify.com/extensions/01a1773f-785e-7cb8-a9f2-37664a3bd3b1/giftwizard-139/assets/rise-rewards-widget-extension.js";
+
+  it("reads the extension handle (version suffix dropped), sorted and unique", () => {
+    const html = `<script src="${RISE_BANNER}" defer></script><script src="${PUSHOWL}"></script><script src="${RISE_WIDGET}"></script>`;
+    expect(parseExtensionAssetHandles(html)).toEqual(["giftwizard", "pushowl"]);
+  });
+
+  it("accepts protocol-relative URLs, single quotes, unquoted values and link href", () => {
+    const rel = PUSHOWL.replace("https:", "");
+    expect(parseExtensionAssetHandles(`<script src='${rel}'></script>`)).toEqual(["pushowl"]);
+    expect(parseExtensionAssetHandles(`<script src=${PUSHOWL}></script>`)).toEqual(["pushowl"]);
+    expect(
+      parseExtensionAssetHandles(`<link rel="preload" as="script" href="${RISE_BANNER}">`),
+    ).toEqual(["giftwizard"]);
+  });
+
+  it("keeps a hyphenated handle whole and drops only the trailing version", () => {
+    const url = PUSHOWL.replace("pushowl-350", "rise-store-credit-12");
+    expect(parseExtensionAssetHandles(`<script src="${url}"></script>`)).toEqual([
+      "rise-store-credit",
+    ]);
+  });
+
+  it.each([
+    ["prose, not an attribute", `<p>${PUSHOWL}</p>`],
+    ["data attribute", `<div data-src="${PUSHOWL}"></div>`],
+    [
+      "lookalike host suffix",
+      `<script src="${PUSHOWL.replace("cdn.shopify.com", "cdn.shopify.com.evil.io")}"></script>`,
+    ],
+    [
+      "lookalike host prefix",
+      `<script src="${PUSHOWL.replace("cdn.shopify.com", "evilcdn.shopify.com")}"></script>`,
+    ],
+    [
+      "path on another host",
+      `<script src="https://evil.io/cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/pushowl-350/assets/x.js"></script>`,
+    ],
+    ["no version suffix", `<script src="${PUSHOWL.replace("pushowl-350", "pushowl")}"></script>`],
+    [
+      "id not a UUID",
+      `<script src="${PUSHOWL.replace("01a18327-8dd3-7834-86e1-13c3e6677561", "abc")}"></script>`,
+    ],
+    ["not under assets/", `<script src="${PUSHOWL.replace("/assets/", "/blocks/")}"></script>`],
+    [
+      "full-width letters",
+      `<script src="${PUSHOWL.replace("pushowl-350", "ｐushowl-350")}"></script>`,
+    ],
+    ["JSON-escaped slashes", `<script>var s = "${PUSHOWL.replaceAll("/", "\\/")}";</script>`],
+  ])("ignores %s", (_label, html) => {
+    expect(parseExtensionAssetHandles(html)).toEqual([]);
+  });
+
+  it("lower-cases the host match and the handle", () => {
+    const url = PUSHOWL.replace("cdn.shopify.com", "CDN.Shopify.com").replace("pushowl", "PushOwl");
+    expect(parseExtensionAssetHandles(`<SCRIPT SRC="${url}"></SCRIPT>`)).toEqual(["pushowl"]);
+  });
+
+  it("caps distinct handles and stays fast on a huge page", () => {
+    const tags = Array.from(
+      { length: 20_000 },
+      (_, i) => `<script src="${PUSHOWL.replace("pushowl-350", `app${i}-1`)}"></script>`,
+    ).join("");
+    const started = performance.now();
+    const handles = parseExtensionAssetHandles(tags);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(handles).toHaveLength(MAX_EXTENSION_HANDLES);
+  });
+
+  it("is linear on adversarial near-misses", () => {
+    const junk = `src="//cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/${"a-".repeat(200_000)}`;
+    const started = performance.now();
+    expect(parseExtensionAssetHandles(junk)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

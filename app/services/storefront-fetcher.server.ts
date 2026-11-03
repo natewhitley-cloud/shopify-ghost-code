@@ -102,6 +102,12 @@ export type StorefrontScriptTagResult =
       urls: string[];
       liquidErrors: RenderedLiquidError[] | null;
       /**
+       * Theme app extension handles whose Shopify-hosted scripts the page
+       * loads (parseExtensionAssetHandles, gc-3ate). Handles only, never URLs
+       * or HTML. null = that read failed and was not checked.
+       */
+      extensionHandles: string[] | null;
+      /**
        * Known-malicious domains the page uses (gc-0htk). Absent while
        * RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is off (nothing was matched);
        * null = the match failed and was not checked; [] = checked, none.
@@ -228,6 +234,36 @@ export function parseScriptTagUrls(html: string): string[] | null {
 }
 
 /** A real Shopify storefront always sets `Shopify.shop = "x.myshopify.com";`. */
+/** At most this many distinct extension handles are returned per page. */
+export const MAX_EXTENSION_HANDLES = 50;
+
+/**
+ * A `src`/`href` attribute whose value is a Shopify-hosted theme app extension
+ * asset: `//cdn.shopify.com/extensions/<uuid>/<handle>-<version>/assets/`.
+ * The attribute name must follow whitespace (so `data-src` is not read), the
+ * host is exact, and the path segment is bounded, so the scan stays linear.
+ */
+const EXTENSION_ASSET_RE =
+  /(?<=\s)(?:src|href)\s*=\s*["']?(?:https?:)?\/\/cdn\.shopify\.com\/extensions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/([a-z0-9-]{1,100})\/assets\//gi;
+/** `<handle>-<version>`: the handle is everything before the last `-<digits>`. */
+const EXTENSION_SEGMENT_RE = /^([a-z0-9]+(?:-[a-z0-9]+)*)-\d+$/;
+
+/**
+ * Theme app extension handles whose scripts or preloads the storefront page
+ * loads (gc-3ate), lower-cased, unique, sorted, at most MAX_EXTENSION_HANDLES.
+ * Only attribute values count: a URL in page text or inline JS does not.
+ */
+export function parseExtensionAssetHandles(html: string): string[] {
+  const handles = new Set<string>();
+  for (const match of html.matchAll(EXTENSION_ASSET_RE)) {
+    const handle = EXTENSION_SEGMENT_RE.exec(match[1].toLowerCase())?.[1];
+    if (!handle) continue;
+    handles.add(handle);
+    if (handles.size >= MAX_EXTENSION_HANDLES) break;
+  }
+  return [...handles].sort();
+}
+
 export function isShopifyStorefrontHtml(html: string): boolean {
   return SHOPIFY_SHOP_RE.test(html);
 }
@@ -839,6 +875,21 @@ export async function fetchStorefrontScriptTags(
     });
   }
 
+  // Same page (gc-3ate), isolated the same way. null = not checked.
+  let extensionHandles: string[] | null;
+  try {
+    extensionHandles = parseExtensionAssetHandles(html);
+  } catch (err) {
+    extensionHandles = null;
+    logger.warn("storefront extension handle read failed", {
+      function: "storefront-fetcher",
+      event: "storefront_extension_handles_failed",
+      shopId,
+      host: domains.primaryHost,
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+  }
+
   // Same page again (gc-0htk), only while the runtime check is live, and
   // isolated the same way: a failure here never affects the other checks.
   let maliciousHits: HomepageMaliciousHit[] | null | undefined;
@@ -865,6 +916,7 @@ export async function fetchStorefrontScriptTags(
     scriptTagCount: urls.length,
     // Candidates only (not yet confirmed against the theme); -1 = not checked.
     liquidErrorCandidates: liquidErrors === null ? -1 : liquidErrors.length,
+    extensionHandleCount: extensionHandles === null ? -1 : extensionHandles.length,
     // Only while the runtime check is live; -1 = not checked (failed).
     ...(maliciousHits !== undefined
       ? { maliciousDomainHits: maliciousHits === null ? -1 : maliciousHits.length }
@@ -875,6 +927,7 @@ export async function fetchStorefrontScriptTags(
     host: domains.primaryHost,
     urls,
     liquidErrors,
+    extensionHandles,
     ...(maliciousHits !== undefined ? { maliciousHits } : {}),
   };
 }

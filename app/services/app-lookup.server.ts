@@ -181,6 +181,20 @@ export function findCorroboratedApps(files: ReadonlyArray<{ content: string }>):
 }
 
 /**
+ * Signature app names whose theme app extension scripts loaded on the
+ * storefront (gc-3ate), from handles parsed by parseExtensionAssetHandles.
+ * Exact, case-insensitive match against each signature's extensionHandles.
+ */
+export function appsFromExtensionHandles(handles: readonly string[]): Set<string> {
+  const seen = new Set(handles.map((h) => h.toLowerCase()));
+  const apps = new Set<string>();
+  for (const sig of APP_SIGNATURES) {
+    if (sig.extensionHandles?.some((h) => seen.has(h.toLowerCase()))) apps.add(sig.appName);
+  }
+  return apps;
+}
+
+/**
  * Identify an app from a theme app embed handle (the `<handle>` in a
  * `shopify://apps/<handle>/blocks/...` settings_data.json block type), case-
  * insensitive. Checks each signature's embedHandles list for an exact match.

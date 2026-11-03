@@ -39,6 +39,14 @@ export type AppSignature = {
    */
   embedHandles?: string[];
   /**
+   * Theme app extension handles as they appear in the app's Shopify-hosted
+   * extension scripts on the storefront: the `<handle>` in
+   * `cdn.shopify.com/extensions/<id>/<handle>-<version>/assets/...` (gc-3ate).
+   * A loaded extension script means the app no longer depends on its
+   * ScriptTag. Only seed handles seen on a real storefront.
+   */
+  extensionHandles?: string[];
+  /**
    * Snippet / section names generic enough that themes ship their own file by
    * that name (e.g. a theme's built-in `back-in-stock` block). They name this
    * app only when some theme file also matches `corroborationPatterns`; without
@@ -352,6 +360,8 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/rise\.ai/, /Rise\.init/],
     snippetNames: ["rise-gift-card", "rise-ai-wallet"],
     cssPatterns: [/rise-ai/],
+    // pawnaturals.com 2026-11-01: giftwizard-139/assets/rise-*-extension.js.
+    extensionHandles: ["giftwizard"],
   },
 
   // -------------------------------------------------------------------------
@@ -1024,6 +1034,8 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/pushowl\.com/, /PushOwl/],
     snippetNames: ["pushowl"],
     cssPatterns: [],
+    // pawnaturals.com 2026-11-01: pushowl-350/assets/pushowl-shopify.js.
+    extensionHandles: ["pushowl"],
   },
   {
     appName: "Recart",

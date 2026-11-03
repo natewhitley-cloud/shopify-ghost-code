@@ -470,6 +470,74 @@ describe("detectScriptTagSunset", () => {
       expect(findings.filter((f) => f.appName === undefined)).toHaveLength(1);
     });
 
+    describe("app extension scripts on the storefront (gc-3ate)", () => {
+      // pawnaturals.com 2026-11-01: PushOwl and Rise.ai load Shopify-hosted
+      // extension scripts but have no app embed block, so they read HIGH.
+      const EXT = new Set(["PushOwl", "Rise.ai"]);
+
+      it("PushOwl and Rise.ai are LOW with their extension scripts loading; Magisto stays HIGH", () => {
+        const findings = detectScriptTagSunset(
+          PAW_URLS,
+          new Set(["Klaviyo", "Selly"]),
+          BEFORE,
+          EXT,
+        );
+        const sev = (app: string | undefined) => findings.find((f) => f.appName === app)?.severity;
+        expect(sev("PushOwl")).toBe(Severity.LOW);
+        expect(sev("Rise.ai")).toBe(Severity.LOW);
+        expect(sev(undefined)).toBe(Severity.HIGH);
+        const pushowl = findings.find((f) => f.appName === "PushOwl");
+        expect(pushowl?.description).toContain(
+          "PushOwl also loads through a Shopify app extension on your storefront, so it has probably moved already.",
+        );
+        expect(pushowl?.description).not.toContain("app embed turned on");
+      });
+
+      it("after the sunset the extension copy says it stopped", () => {
+        const [f] = detectScriptTagSunset([PAW_URLS[4]], NO_EMBEDS, AFTER, EXT);
+        expect(f.severity).toBe(Severity.LOW);
+        expect(f.description).toContain("which Shopify stopped running on March 1, 2027");
+        expect(f.description).toContain("also loads through a Shopify app extension");
+      });
+
+      it("an enabled embed wins the copy when both signals are present", () => {
+        const [f] = detectScriptTagSunset([PAW_URLS[4]], new Set(["PushOwl"]), BEFORE, EXT);
+        expect(f.severity).toBe(Severity.LOW);
+        expect(f.description).toContain("PushOwl also has an app embed turned on in your theme");
+      });
+
+      it("never lowers an unmatched host, even if a same-named app is in the set", () => {
+        const [f] = detectScriptTagSunset(
+          ["https://widgets.unknown-vendor.io/w.js"],
+          NO_EMBEDS,
+          BEFORE,
+          new Set(["unknown-vendor", "widgets.unknown-vendor.io"]),
+        );
+        expect(f.appName).toBeUndefined();
+        expect(f.severity).toBe(Severity.HIGH);
+      });
+
+      it("an extension for a different app changes nothing", () => {
+        const [f] = detectScriptTagSunset([PAW_URLS[4]], NO_EMBEDS, BEFORE, new Set(["Rise.ai"]));
+        expect(f.appName).toBe("PushOwl");
+        expect(f.severity).toBe(Severity.HIGH);
+      });
+
+      it("keeps the same fingerprint whether or not the extension is seen", () => {
+        const fp = (ext: Set<string>) =>
+          detectScriptTagSunset(PAW_URLS, NO_EMBEDS, BEFORE, ext).map((f) =>
+            fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber),
+          );
+        expect(fp(EXT)).toEqual(fp(new Set()));
+      });
+
+      it("defaults to no extension apps (existing callers unchanged)", () => {
+        expect(detectScriptTagSunset(PAW_URLS, NO_EMBEDS, BEFORE)).toEqual(
+          detectScriptTagSunset(PAW_URLS, NO_EMBEDS, BEFORE, new Set()),
+        );
+      });
+    });
+
     it("groups Rise.ai's two ScriptTag hosts into one Rise.ai finding", () => {
       const findings = detectScriptTagSunset(
         [`https://str.rise-ai.com/?shop=${SHOP}`, `https://strn.rise-ai.com/?shop=${SHOP}`],

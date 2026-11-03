@@ -2333,7 +2333,14 @@ export const scanTheme = inngest.createFunction(
 
             const { detectScriptTagSunset } =
               await import("../../app/services/script-tag-sunset-detector.server");
-            const groups = detectScriptTagSunset(storefront.urls, new Set(enabledEmbedApps));
+            const { appsFromExtensionHandles } =
+              await import("../../app/services/app-lookup.server");
+            const groups = detectScriptTagSunset(
+              storefront.urls,
+              new Set(enabledEmbedApps),
+              new Date(),
+              appsFromExtensionHandles(storefront.extensionHandles ?? []),
+            );
             // Same soft-launch filter as every other detector (gc-rvo0).
             const findings = groups.filter((f) => isSoftLaunchLive(f.findingType));
             // Live hooks come from every group (persisted or not): this set
