@@ -108,6 +108,12 @@ export type StorefrontScriptTagResult =
        */
       extensionHandles: string[] | null;
       /**
+       * App block handles from Shopify's `BEGIN app block` render comments on
+       * the page (parseStorefrontAppBlockHandles, gc-uczg): for the log-only
+       * embed check. null = that read failed and was not checked.
+       */
+      appBlockHandles: string[] | null;
+      /**
        * Known-malicious domains the page uses (gc-0htk). Absent while
        * RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED is off (nothing was matched);
        * null = the match failed and was not checked; [] = checked, none.
@@ -259,6 +265,23 @@ export function parseExtensionAssetHandles(html: string): string[] {
     const handle = EXTENSION_SEGMENT_RE.exec(match[1].toLowerCase())?.[1];
     if (!handle) continue;
     handles.add(handle);
+    if (handles.size >= MAX_EXTENSION_HANDLES) break;
+  }
+  return [...handles].sort();
+}
+
+/** Shopify's render comment for an app block or app embed on the page. */
+const APP_BLOCK_COMMENT_RE =
+  /<!--\s*BEGIN app block:\s*shopify:\/\/apps\/([a-z0-9][a-z0-9_-]{0,99})\/blocks\//gi;
+
+/**
+ * App block handles rendered on the page (gc-uczg, log only), lower-cased,
+ * unique, sorted, at most MAX_EXTENSION_HANDLES.
+ */
+export function parseStorefrontAppBlockHandles(html: string): string[] {
+  const handles = new Set<string>();
+  for (const match of html.matchAll(APP_BLOCK_COMMENT_RE)) {
+    handles.add(match[1].toLowerCase());
     if (handles.size >= MAX_EXTENSION_HANDLES) break;
   }
   return [...handles].sort();
@@ -890,6 +913,21 @@ export async function fetchStorefrontScriptTags(
     });
   }
 
+  // Same page (gc-uczg, log only), isolated the same way. null = not checked.
+  let appBlockHandles: string[] | null;
+  try {
+    appBlockHandles = parseStorefrontAppBlockHandles(html);
+  } catch (err) {
+    appBlockHandles = null;
+    logger.warn("storefront app block read failed", {
+      function: "storefront-fetcher",
+      event: "storefront_app_blocks_failed",
+      shopId,
+      host: domains.primaryHost,
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+  }
+
   // Same page again (gc-0htk), only while the runtime check is live, and
   // isolated the same way: a failure here never affects the other checks.
   let maliciousHits: HomepageMaliciousHit[] | null | undefined;
@@ -928,6 +966,7 @@ export async function fetchStorefrontScriptTags(
     urls,
     liquidErrors,
     extensionHandles,
+    appBlockHandles,
     ...(maliciousHits !== undefined ? { maliciousHits } : {}),
   };
 }

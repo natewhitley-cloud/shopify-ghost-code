@@ -16,6 +16,7 @@ import {
   detectGhostAppEmbeds,
   dropActiveAppOwnFileFindings,
   enabledAppEmbedApps,
+  enabledAppEmbedHandles,
   observedEmbedApps,
   ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
@@ -622,5 +623,25 @@ describe("observedEmbedApps (gc-frda)", () => {
   it("enabledAppEmbedApps keeps its behavior for its other callers (empty set, never null)", () => {
     expect([...enabledAppEmbedApps([raw("{ not json")])]).toEqual([]);
     expect([...enabledAppEmbedApps([])]).toEqual([]);
+  });
+});
+
+describe("enabledAppEmbedHandles (gc-uczg)", () => {
+  it("returns raw handles of ENABLED embeds, known or not, lower-cased and sorted", () => {
+    const settings = settingsWith({
+      "1": { type: "shopify://apps/Unknown-App/blocks/x/uuid", disabled: false },
+      "2": { type: PAGEFLY_TYPE },
+      "3": { type: "shopify://apps/klaviyo-email-marketing-sms/blocks/e/abc", disabled: true },
+      "4": { type: "header", disabled: false },
+    });
+    expect(enabledAppEmbedHandles([settings])).toEqual(["pagefly-page-builder", "unknown-app"]);
+  });
+
+  it("is null when settings_data.json was not observed", () => {
+    expect(enabledAppEmbedHandles([])).toBeNull();
+  });
+
+  it("is empty for an observed settings_data.json without blocks", () => {
+    expect(enabledAppEmbedHandles([settingsWith(undefined)])).toEqual([]);
   });
 });

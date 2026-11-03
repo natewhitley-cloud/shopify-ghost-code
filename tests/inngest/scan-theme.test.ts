@@ -63,6 +63,9 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   // observed). Defaults to the enabledAppEmbedApps mock's set, sorted (see the
   // global beforeEach); its parsing is covered in app-embed-detector tests.
   observedEmbedApps: vi.fn(),
+  // gc-uczg: raw enabled embed handles for the log-only embed check. null =
+  // settings_data.json not observed, so no embedCheck unless a test sets it.
+  enabledAppEmbedHandles: vi.fn(() => null),
   // Real-behaviour stub so the core step's scannableFileCount is meaningful.
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
@@ -386,7 +389,11 @@ import {
 } from "../../app/services/redirect-fetcher.server";
 import { findMaliciousInHomepage } from "../../app/services/runtime-malicious.server";
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
-import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
+import {
+  enabledAppEmbedApps,
+  enabledAppEmbedHandles,
+  observedEmbedApps,
+} from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { sendScanSummary } from "../../app/services/summary-email.server";
 import { loadSummarySpeed } from "../../app/services/summary-speed.server";
@@ -679,6 +686,7 @@ beforeEach(() => {
   fetchSpy.mockRejectedValue(new Error("network disabled in tests"));
   MOCK_ADMIN.graphql.mockReset();
   (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set<string>());
+  (enabledAppEmbedHandles as ReturnType<typeof vi.fn>).mockReturnValue(null);
   (observedEmbedApps as ReturnType<typeof vi.fn>).mockImplementation((files: unknown) =>
     [...(enabledAppEmbedApps as unknown as (f: unknown) => Set<string>)(files)].sort(),
   );
@@ -4840,6 +4848,80 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+  });
+
+  it("flag on: the embed check is logged on scan_signal only, never a finding (gc-uczg)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    const blocks = ["seo-king", "klaviyo-email-marketing-sms"]
+      .map(
+        (h) =>
+          `<!-- BEGIN app block: shopify://apps/${h}/blocks/embed/61ccd3b1-a9d2-4ec3-bfc0-8ab26cc0bd1b --><!-- END app block -->`,
+      )
+      .join("");
+    const ext = `<script src="https://cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/pushowl-350/assets/p.js"></script>`;
+    fetchSpy.mockResolvedValue(
+      new Response(
+        storefrontHtml([`https://cdn.pushowl.com/x.js?shop=${MYSHOPIFY}`], blocks + ext),
+        {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        },
+      ),
+    );
+    (enabledAppEmbedHandles as ReturnType<typeof vi.fn>).mockReturnValue([
+      "klaviyo-email-marketing-sms",
+      "judge-me-reviews",
+    ]);
+    const expected = {
+      storefrontBlocks: ["klaviyo-email-marketing-sms", "seo-king"],
+      settingsEmbeds: ["judge-me-reviews", "klaviyo-email-marketing-sms"],
+      extensions: ["pushowl"],
+      onlyOnStorefront: ["seo-king"],
+      onlyInSettings: ["judge-me-reviews"],
+    };
+
+    const { results } = await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(results["fetch-and-scan"]).toHaveProperty("enabledEmbedHandles", [
+      "klaviyo-email-marketing-sms",
+      "judge-me-reviews",
+    ]);
+    expect(results["storefront-script-tags"]).toHaveProperty("embedCheck", expected);
+    const signal = mockRecordOpsEvent.mock.calls.find(([e]) => e.eventType === "scan_signal")?.[0];
+    expect(signal?.key).toBe(SCAN_ID);
+    expect(signal?.metadata.embedCheck).toEqual(expected);
+    // Nothing merchant-facing: the only storefront findings are the ScriptTag
+    // one (PushOwl, LOW via its extension, gc-3ate); no handle reaches a finding.
+    const persisted = mockCreateFindings.mock.calls.flatMap(
+      (c) => c[1] as Array<{ findingType: string; codeSnippet: string; description: string }>,
+    );
+    for (const f of persisted) {
+      expect(`${f.codeSnippet} ${f.description}`).not.toMatch(/seo-king|judge-me-reviews/);
+    }
+    const sunset = persisted.filter((f) => f.findingType === FindingType.SCRIPT_TAG_SUNSET);
+    expect(sunset).toHaveLength(1);
+    expect(sunset[0]).toMatchObject({ appName: "PushOwl", severity: Severity.LOW });
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("embedCheck");
+  });
+
+  it("flag on, settings_data not observed: no embedCheck anywhere (gc-uczg)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockResolvedValue(new Response(storefrontHtml([]), { status: 200 }));
+    const { results } = await run();
+    expect(results["storefront-script-tags"]).not.toHaveProperty("embedCheck");
+    const signal = mockRecordOpsEvent.mock.calls.find(([e]) => e.eventType === "scan_signal")?.[0];
+    expect(signal?.metadata).not.toHaveProperty("embedCheck");
+  });
+
+  it("flag off: fetch-and-scan carries no embed handles (gc-uczg)", async () => {
+    (enabledAppEmbedHandles as ReturnType<typeof vi.fn>).mockReturnValue(["x"]);
+    const { results } = await run();
+    expect(results["fetch-and-scan"]).not.toHaveProperty("enabledEmbedHandles");
+    const signal = mockRecordOpsEvent.mock.calls.find(([e]) => e.eventType === "scan_signal")?.[0];
+    expect(signal?.metadata).not.toHaveProperty("embedCheck");
   });
 
   it("flag on + a storefront with no asyncLoad block: audited, zero findings, not unreachable", async () => {

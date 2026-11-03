@@ -16,6 +16,7 @@ import {
   MAX_ASYNC_LOAD_CANDIDATES,
   MAX_EXTENSION_HANDLES,
   parseExtensionAssetHandles,
+  parseStorefrontAppBlockHandles,
   parseScriptTagUrls,
   STOREFRONT_MAX_BODY_BYTES,
   type StorefrontFetch,
@@ -415,6 +416,7 @@ describe("fetchStorefrontScriptTags", () => {
       urls: parseScriptTagUrls(page(REAL_BLOCK)),
       liquidErrors: [],
       extensionHandles: [],
+      appBlockHandles: [],
     });
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -495,6 +497,7 @@ describe("fetchStorefrontScriptTags", () => {
       urls: [],
       liquidErrors: [],
       extensionHandles: [],
+      appBlockHandles: [],
     });
   });
 
@@ -516,6 +519,7 @@ describe("fetchStorefrontScriptTags", () => {
         // Parsed parts only: candidates until the theme confirms them.
         liquidErrors: [{ template: "layout/theme", line: 309, snippet: "klaviyo-form" }],
         extensionHandles: [],
+        appBlockHandles: [],
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(admin.graphql).toHaveBeenCalledTimes(1);
@@ -542,6 +546,14 @@ describe("fetchStorefrontScriptTags", () => {
       for (const leak of ["01a18327", "pushowl-350", "assets/", "<script"]) {
         expect(serialized).not.toContain(leak);
       }
+    });
+
+    it("returns app block handles from the same request (gc-uczg)", async () => {
+      const blk =
+        "<!-- BEGIN app block: shopify://apps/seo-king/blocks/embed/61ccd3b1-a9d2-4ec3-bfc0-8ab26cc0bd1b -->";
+      fetchImpl.mockResolvedValue(html(pageWithBody(blk)));
+      expect(await run()).toMatchObject({ status: "ok", appBlockHandles: ["seo-king"] });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
     it("a clean page: an empty list (audited, nothing found)", async () => {
@@ -602,6 +614,7 @@ describe("fetchStorefrontScriptTags", () => {
         urls: parseScriptTagUrls(page(REAL_BLOCK)),
         liquidErrors: null,
         extensionHandles: [],
+        appBlockHandles: [],
       });
       expect(logger.warn).toHaveBeenCalledWith("storefront liquid error read failed", {
         function: "storefront-fetcher",
@@ -826,6 +839,7 @@ describe("fetchStorefrontScriptTags", () => {
         urls: [],
         liquidErrors: [],
         extensionHandles: [],
+        appBlockHandles: [],
       });
     });
   });
@@ -1043,6 +1057,7 @@ describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0ht
         urls: ["https://cdn.checkout-guard.top/s.js"],
         liquidErrors: [],
         extensionHandles: [],
+        appBlockHandles: [],
       });
       expect(mockFindMalicious).not.toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith(
@@ -1087,6 +1102,7 @@ describe("fetchStorefrontScriptTags: known-malicious domains on the page (gc-0ht
       urls: ["https://cdn.checkout-guard.top/s.js"],
       liquidErrors: [],
       extensionHandles: [],
+      appBlockHandles: [],
       maliciousHits: null,
     });
     expect(logger.warn).toHaveBeenCalledWith(
@@ -1188,6 +1204,39 @@ describe("parseExtensionAssetHandles (gc-3ate)", () => {
     const junk = `src="//cdn.shopify.com/extensions/01a18327-8dd3-7834-86e1-13c3e6677561/${"a-".repeat(200_000)}`;
     const started = performance.now();
     expect(parseExtensionAssetHandles(junk)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("parseStorefrontAppBlockHandles (gc-uczg)", () => {
+  const block = (handle: string) =>
+    `<!-- BEGIN app block: shopify://apps/${handle}/blocks/embed/61ccd3b1-a9d2-4ec3-bfc0-8ab26cc0bd1b --><div></div><!-- END app block -->`;
+
+  it("reads app block handles from Shopify's render comments, sorted and unique", () => {
+    const html = block("seo-king") + block("bucks") + block("seo-king");
+    expect(parseStorefrontAppBlockHandles(html)).toEqual(["bucks", "seo-king"]);
+  });
+
+  it("accepts underscores and lower-cases", () => {
+    expect(parseStorefrontAppBlockHandles(block("AB_Google-Analytics"))).toEqual([
+      "ab_google-analytics",
+    ]);
+  });
+
+  it.each([
+    ["not in a comment", `<p>shopify://apps/seo-king/blocks/x/y</p>`],
+    ["a different comment", `<!-- shopify://apps/seo-king/blocks/x/y -->`],
+    ["END marker", `<!-- END app block: shopify://apps/seo-king/blocks/x/y -->`],
+    ["no blocks segment", `<!-- BEGIN app block: shopify://apps/seo-king/x/y -->`],
+    ["full-width letters", block("ｓeo-king")],
+  ])("ignores %s", (_label, html) => {
+    expect(parseStorefrontAppBlockHandles(html)).toEqual([]);
+  });
+
+  it("caps distinct handles and stays fast on a huge page", () => {
+    const html = Array.from({ length: 20_000 }, (_, i) => block(`app-${i}`)).join("");
+    const started = performance.now();
+    expect(parseStorefrontAppBlockHandles(html)).toHaveLength(MAX_EXTENSION_HANDLES);
     expect(performance.now() - started).toBeLessThan(500);
   });
 });

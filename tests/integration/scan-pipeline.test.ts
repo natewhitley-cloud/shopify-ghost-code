@@ -83,6 +83,7 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   enabledAppEmbedApps: () => new Set<string>(),
   // gc-frda: the embed live-hook observation (settings_data.json read, none on).
   observedEmbedApps: () => [] as string[],
+  enabledAppEmbedHandles: () => null,
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
     ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),

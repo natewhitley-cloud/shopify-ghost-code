@@ -45,6 +45,8 @@ import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
   aggregateClientErrors,
+  aggregateEmbedChecks,
+  formatEmbedCheckLine,
   aggregateFeedback,
   aggregateHelpMessages,
   aggregateInstallSources,
@@ -1699,6 +1701,65 @@ describe("buildDigestBody — webhook failures split (gc-4hk follow-up)", () => 
 // ---------------------------------------------------------------------------
 // gc-nn6: client (browser) errors
 // ---------------------------------------------------------------------------
+
+describe("aggregateEmbedChecks (gc-uczg)", () => {
+  const check = (onlyOnStorefront: string[], onlyInSettings: string[]) => ({
+    storefrontBlocks: onlyOnStorefront,
+    settingsEmbeds: onlyInSettings,
+    extensions: [],
+    onlyOnStorefront,
+    onlyInSettings,
+  });
+  const row = (shopId: string, embedCheck?: unknown) => ({
+    metadata: {
+      shopId,
+      scanId: `s-${shopId}`,
+      ...(embedCheck === undefined ? {} : { embedCheck }),
+    },
+  });
+
+  it("counts checked scans and each kind of mismatch, allowed shops only", () => {
+    const rows = [
+      row("a", check(["seo-king"], [])),
+      row("a", check([], ["klaviyo"])),
+      row("b", check(["x"], ["y"])),
+      row("c", check([], [])),
+      row("internal", check(["x"], ["y"])),
+      row("a"), // storefront not read: no embedCheck
+    ];
+    expect(aggregateEmbedChecks(rows, ["a", "b", "c"])).toEqual({
+      checked: 4,
+      storefrontOnly: 2,
+      settingsOnly: 2,
+      anyMismatch: 3,
+    });
+  });
+
+  it("ignores malformed metadata", () => {
+    const rows = [
+      { metadata: null },
+      { metadata: "x" },
+      { metadata: { shopId: "a", embedCheck: "nope" } },
+      { metadata: { shopId: "a", embedCheck: { onlyOnStorefront: "x", onlyInSettings: [] } } },
+      { metadata: { shopId: 5, embedCheck: check(["x"], []) } },
+    ];
+    expect(aggregateEmbedChecks(rows, ["a"])).toEqual({
+      checked: 0,
+      storefrontOnly: 0,
+      settingsOnly: 0,
+      anyMismatch: 0,
+    });
+  });
+
+  it("formats the line, including the empty case", () => {
+    expect(formatEmbedCheckLine(undefined)).toBe("  Embed check (24h, log only): no scans checked");
+    expect(
+      formatEmbedCheckLine({ checked: 4, storefrontOnly: 2, settingsOnly: 2, anyMismatch: 3 }),
+    ).toBe(
+      "  Embed check (24h, log only): 3 of 4 scans differ (storefront-only apps: 2, settings-only: 2)",
+    );
+  });
+});
 
 describe("aggregateClientErrors", () => {
   const NOW = new Date("2026-10-01T12:00:00.000Z");

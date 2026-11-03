@@ -4334,6 +4334,21 @@ export function enabledAppEmbedApps(files: ThemeFile[]): Set<string> {
 }
 
 /**
+ * Raw handles of the ENABLED theme app embeds in settings_data.json, known to a
+ * signature or not, lower-cased, unique, sorted (gc-uczg, log-only embed
+ * check). null when settings_data.json was not observed (observedEmbedApps'
+ * rule). Untrusted theme content: compareEmbedSignals filters and caps them.
+ */
+export function enabledAppEmbedHandles(files: ThemeFile[]): string[] | null {
+  if (observedEmbedApps(files) === null) return null;
+  const handles = new Set<string>();
+  for (const e of parseAppEmbedEntries(files)) {
+    if (!e.disabled) handles.add(e.handle.toLowerCase());
+  }
+  return [...handles].sort();
+}
+
+/**
  * The enabled-embed app set as an OBSERVATION for app-removal detection
  * (gc-frda), or null when the embed source was not observed this scan:
  * `config/settings_data.json` missing (the fetcher can drop a non-text body),

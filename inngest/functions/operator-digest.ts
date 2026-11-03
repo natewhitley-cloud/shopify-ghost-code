@@ -857,6 +857,52 @@ export function aggregateClientErrors(
   return { total, shops: shops.size, top };
 }
 
+/** Embed check rollup (gc-uczg, log only). */
+export interface EmbedCheckDigest {
+  /** In-window scans that recorded an embedCheck. */
+  checked: number;
+  /** ...with an app block on the homepage that is not an enabled embed. */
+  storefrontOnly: number;
+  /** ...with an enabled embed not rendered on the homepage. */
+  settingsOnly: number;
+  /** ...with either. */
+  anyMismatch: number;
+}
+
+/**
+ * Roll scan_signal embedCheck rows up into mismatch counts. Pure. A row counts
+ * only when metadata.shopId is in `allowedShopIds` (the handler's non-excluded
+ * shop ids: honours isInternal and the exclude list). Malformed rows are
+ * skipped.
+ */
+export function aggregateEmbedChecks(
+  events: Array<{ metadata: unknown }>,
+  allowedShopIds: Iterable<string>,
+): EmbedCheckDigest {
+  const allowed = new Set(allowedShopIds);
+  const out: EmbedCheckDigest = { checked: 0, storefrontOnly: 0, settingsOnly: 0, anyMismatch: 0 };
+  for (const e of events) {
+    const m = e.metadata;
+    if (!m || typeof m !== "object" || Array.isArray(m)) continue;
+    const { shopId, embedCheck } = m as { shopId?: unknown; embedCheck?: unknown };
+    if (typeof shopId !== "string" || !allowed.has(shopId)) continue;
+    if (!embedCheck || typeof embedCheck !== "object") continue;
+    const { onlyOnStorefront, onlyInSettings } = embedCheck as Record<string, unknown>;
+    if (!Array.isArray(onlyOnStorefront) || !Array.isArray(onlyInSettings)) continue;
+    out.checked += 1;
+    if (onlyOnStorefront.length > 0) out.storefrontOnly += 1;
+    if (onlyInSettings.length > 0) out.settingsOnly += 1;
+    if (onlyOnStorefront.length > 0 || onlyInSettings.length > 0) out.anyMismatch += 1;
+  }
+  return out;
+}
+
+/** The OPERATIONAL HEALTH embed-check line (gc-uczg). */
+export function formatEmbedCheckLine(d: EmbedCheckDigest | undefined): string {
+  if (!d || d.checked === 0) return "  Embed check (24h, log only): no scans checked";
+  return `  Embed check (24h, log only): ${d.anyMismatch} of ${d.checked} scans differ (storefront-only apps: ${d.storefrontOnly}, settings-only: ${d.settingsOnly})`;
+}
+
 /** The OPERATIONAL HEALTH client-errors line. */
 function formatClientErrorsLine(c: ClientErrorDigest | undefined): string {
   if (!c || c.total === 0 || !c.top) return "  Client errors: 0";
@@ -2257,6 +2303,8 @@ export interface OperatorDigestData {
     /** Browser-side errors in the embedded app (gc-nn6). Optional so callers/
      * tests that predate it still type-check; absent => rendered as zero. */
     clientErrors?: ClientErrorDigest;
+    /** Log-only embed check (gc-uczg). Optional: absent => "no scans checked". */
+    embedChecks?: EmbedCheckDigest;
     staleCrons: StaleCronSummary[];
     /** Crons with no heartbeat on record (gc-288). Optional: absent = none. */
     neverSeenCrons?: string[];
@@ -2682,6 +2730,10 @@ export function buildDigestBody(data: OperatorDigestData): string {
 
   lines.push("BROWSER (embedded app)");
   lines.push(formatClientErrorsLine(ops.clientErrors));
+  lines.push("");
+
+  lines.push("SCANNER SIGNALS");
+  lines.push(formatEmbedCheckLine(ops.embedChecks));
   lines.push("");
 
   lines.push(...formatSpeedReportLines(data.speedReports));
@@ -3482,6 +3534,21 @@ export const operatorDigest = inngest.createFunction(
       return aggregateClientErrors(events, Object.values(domainById), now);
     })) as ClientErrorDigest;
 
+    // Embed check (gc-uczg, log only): trailing-24h scan_signal rows, pinned to
+    // the non-excluded shop ids (domainById keys honour isInternal).
+    const embedChecks = (await step.run("get-embed-checks", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const events = await db.opsEvent.findMany({
+        where: {
+          eventType: OPS_EVENT_TYPES.SCAN_SIGNAL,
+          createdAt: { gte: new Date(Date.now() - DAY_MS) },
+        },
+        select: { metadata: true },
+      });
+      return aggregateEmbedChecks(events, Object.keys(domainById));
+    })) as EmbedCheckDigest;
+
     // Store speed reports (gc-wt3y): trailing-24h SpeedReport rows with the
     // shop's domain + isInternal (for the shared exclusion predicate), and
     // today's global PageSpeed call count.
@@ -3595,7 +3662,7 @@ export const operatorDigest = inngest.createFunction(
       installSource,
       journey,
       scanStartsViews,
-      ops: { ...ops, clientErrors },
+      ops: { ...ops, clientErrors, embedChecks },
       speedReports,
       anomalies: metricAnomalies.anomalies,
       reconciler,

@@ -128,12 +128,14 @@ import {
   compareByFileThenLine,
   extractDanglingReferences,
 } from "../../app/services/dangling-reference-extractor.server";
+import type { EmbedCheck } from "../../app/services/embed-signal.server";
 import { buildMissingSnippetIndex } from "../../app/services/liquid-error-detector.server";
 import type { MenuFetchResult } from "../../app/services/menu-fetcher.server";
 import type { BulkRedirectGroups } from "../../app/services/redirect-detector.server";
 import type { HomepageMaliciousHit } from "../../app/services/runtime-malicious.server";
 import {
   enabledAppEmbedApps,
+  enabledAppEmbedHandles,
   observedEmbedApps,
   isScannableFile,
   MAX_SCANNABLE_FILE_BYTES,
@@ -1319,6 +1321,7 @@ export const scanTheme = inngest.createFunction(
         largestFileBytes,
         scannableTextBytes,
         enabledEmbedApps,
+        enabledEmbedHandles,
         missingSnippetRenders,
         missingSnippetsCapped,
         appsWithEnabledEmbed,
@@ -1644,6 +1647,12 @@ export const scanTheme = inngest.createFunction(
           // schedules that audit step, so the decision is made once, here,
           // inside this memoized step.
           ...(isScriptTagSunsetLive() ? { enabledEmbedApps: embedApps } : {}),
+          // gc-uczg (log only): raw enabled embed handles for the embed check
+          // in the storefront step. Same gate as enabledEmbedApps; null = the
+          // settings_data.json was not observed (no check recorded).
+          ...(isScriptTagSunsetLive()
+            ? { enabledEmbedHandles: enabledAppEmbedHandles(files) }
+            : {}),
           // Snippets this theme renders but does not contain, with the files
           // that render them (gc-i6du): what confirms a missing-snippet Liquid
           // error read from the homepage in the storefront step below. Small
@@ -2278,6 +2287,10 @@ export const scanTheme = inngest.createFunction(
         // checked (flag off, unreachable, or the match failed), so the scan
         // records no homepage coverage (finalLiveFindingTypes).
         homepageMaliciousCount?: number;
+        // gc-uczg (log only, scan_signal): homepage app blocks vs enabled
+        // settings_data embeds. Present only when the storefront was read and
+        // both sides were observed; never shown to merchants.
+        embedCheck?: EmbedCheck;
       } = Array.isArray(enabledEmbedApps)
         ? await step.run("storefront-script-tags", async () => {
             const { logger } = await import("../../app/lib/logger.server");
@@ -2398,6 +2411,17 @@ export const scanTheme = inngest.createFunction(
               event: "liquid_error_findings",
               logMessage: "rendered liquid error findings persisted",
             });
+            const { compareEmbedSignals } = await import("../../app/services/embed-signal.server");
+            const embedCheck =
+              Array.isArray(enabledEmbedHandles) &&
+              storefront.appBlockHandles !== null &&
+              storefront.extensionHandles !== null
+                ? compareEmbedSignals({
+                    storefrontBlockHandles: storefront.appBlockHandles,
+                    settingsEmbedHandles: enabledEmbedHandles,
+                    extensionHandles: storefront.extensionHandles,
+                  })
+                : undefined;
             const homepageMaliciousCount = Array.isArray(storefront.maliciousHits)
               ? await persistHomepageMalicious({ scanId, shopId, hits: storefront.maliciousHits })
               : undefined;
@@ -2410,6 +2434,7 @@ export const scanTheme = inngest.createFunction(
               ...(liquidAudited ? { liquidCapped } : {}),
               ...(scriptTagApps ? { scriptTagApps } : {}),
               ...(homepageMaliciousCount !== undefined ? { homepageMaliciousCount } : {}),
+              ...(embedCheck ? { embedCheck } : {}),
             };
           })
         : { findingCount: 0, unreachable: false, audited: false };
@@ -2888,6 +2913,8 @@ export const scanTheme = inngest.createFunction(
                 : {}),
               unknownScriptCount,
               thirdPartyDomainCount,
+              // gc-uczg (log only): absent unless the storefront was read.
+              ...(scriptTagResult.embedCheck ? { embedCheck: scriptTagResult.embedCheck } : {}),
               detectorHits,
               findingCount: totalFindings,
               durationMs,
