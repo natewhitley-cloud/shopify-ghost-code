@@ -121,10 +121,10 @@ describe("detectScriptTagSunset", () => {
     }
     expect(findings.map((f) => f.appName ?? null).sort()).toEqual([
       "Klaviyo",
+      "Magisto",
       "PushOwl",
       "Rise.ai",
       "Selly",
-      null,
     ]);
   });
 
@@ -467,7 +467,19 @@ describe("detectScriptTagSunset", () => {
         "https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js",
       ]);
       expect(selly?.description).toContain("Selly also has an app embed turned on in your theme");
-      expect(findings.filter((f) => f.appName === undefined)).toHaveLength(1);
+      expect(findings.filter((f) => f.appName === undefined)).toHaveLength(0);
+    });
+
+    it("names Magisto's ScriptTag and keeps it HIGH, as on pawnaturals.com (gc-mp01)", () => {
+      // 2026-11-01 scan: ScriptTag only, no embed, no extension script.
+      const findings = detectScriptTagSunset(PAW_URLS, new Set(["Klaviyo", "Selly"]), BEFORE);
+      const magisto = findings.find((f) => f.appName === "Magisto");
+      expect(magisto?.severity).toBe(Severity.HIGH);
+      expect(magisto?.codeSnippet.split("\n")).toEqual([
+        "script-tags: Magisto",
+        "https://www.magisto.com/media/shopify/magisto.js",
+      ]);
+      expect(magisto?.description).toContain("Ask Magisto's support whether they have migrated.");
     });
 
     describe("app extension scripts on the storefront (gc-3ate)", () => {
@@ -475,7 +487,7 @@ describe("detectScriptTagSunset", () => {
       // extension scripts but have no app embed block, so they read HIGH.
       const EXT = new Set(["PushOwl", "Rise.ai"]);
 
-      it("PushOwl and Rise.ai are LOW with their extension scripts loading; Magisto stays HIGH", () => {
+      it("PushOwl and Rise.ai are LOW with their extension scripts loading; Magisto stays HIGH (gc-mp01)", () => {
         const findings = detectScriptTagSunset(
           PAW_URLS,
           new Set(["Klaviyo", "Selly"]),
@@ -485,7 +497,7 @@ describe("detectScriptTagSunset", () => {
         const sev = (app: string | undefined) => findings.find((f) => f.appName === app)?.severity;
         expect(sev("PushOwl")).toBe(Severity.LOW);
         expect(sev("Rise.ai")).toBe(Severity.LOW);
-        expect(sev(undefined)).toBe(Severity.HIGH);
+        expect(sev("Magisto")).toBe(Severity.HIGH);
         const pushowl = findings.find((f) => f.appName === "PushOwl");
         expect(pushowl?.description).toContain(
           "PushOwl also loads through a Shopify app extension on your storefront, so it has probably moved already.",

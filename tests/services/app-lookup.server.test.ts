@@ -1036,6 +1036,7 @@ describe("ScriptTag app signatures (exact hosts)", () => {
     ["https://instagrid.instasell.co.in/_/pd/index.js", "Instafeed (Instasell)"],
     ["https://master-motivator.hulkapps.com/assets/mha-dao-bar.css", "HulkApps Free Shipping Bar"],
     ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js", "Selly"],
+    ["https://www.magisto.com/media/shopify/magisto.js", "Magisto"],
   ])("attributes %s to %s", (url, app) => {
     expect(identifyAppFromUrl(url)).toBe(app);
   });
@@ -1055,11 +1056,14 @@ describe("ScriptTag app signatures (exact hosts)", () => {
     ["https://master-motivator.hulkapps.com.evil.io/x.js"],
     ["https://evilinstagrid.instasell.co.in.example.com/x.js"],
     // Candidates deliberately NOT added (vendor or listing unconfirmed).
-    ["https://www.magisto.com/media/shopify/magisto.js"],
     ["https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery.js"],
     ["https://app.shoplytics.de/scripts/abc"],
     // Selly's host is one CloudFront distribution, not cloudfront.net at large.
     ["https://cloudfront.net/42/fe/loader_2.js"],
+    // Magisto: www.magisto.com only (gc-mp01), never lookalikes or the apex.
+    ["https://magisto.com/media/shopify/magisto.js"],
+    ["https://www.magisto.com.evil.io/media/shopify/magisto.js"],
+    ["https://evilwww.magisto.com/x.js"],
     ["https://d5zu2f4xvqanl0.cloudfront.net/42/fe/loader_2.js"],
     ["https://d5zu2f4xvqanl.cloudfront.net.evil.io/42/fe/loader_2.js"],
     // Loader fallback host, never seen as a ScriptTag (not added).

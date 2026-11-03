@@ -1285,4 +1285,16 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [],
     embedHandles: ["selly-promotion-pricing"],
   },
+  {
+    // Magisto (video maker, Vimeo-owned since 2019). Its ScriptTag on
+    // pawnaturals.com (2026-11-01 scan) loads www.magisto.com/media/shopify/
+    // magisto.js. Named from the vendor's own domain: apps.shopify.com/magisto
+    // and magisto.com/shopify both 404 (checked 2026-11-03), so no listing
+    // backs it (gc-mp01, Nathan's call). That one host only.
+    appName: "Magisto",
+    cdnDomains: ["www.magisto.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
 ];
