@@ -15,11 +15,10 @@
 
 import { logger } from "../lib/logger.server";
 import { APP_HANDLE } from "../lib/plans";
+import { postResendEmail } from "../lib/resend.server";
 import { safeErrorFields } from "../lib/safe-error";
 import { storeHandleFromDomain } from "../lib/theme-editor-url";
 
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
-const SEND_TIMEOUT_MS = 5000;
 /**
  * Throttle only inside this fraction of the plan window. Scheduled scans recur
  * at exactly the window length, so scheduler jitter (a scan a few minutes
@@ -86,24 +85,21 @@ export async function sendMerchantAlert(
   if (!config.configured) return { sent: false, reason: config.reason };
 
   try {
-    const response = await fetch(RESEND_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-        "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
-        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-        "Idempotency-Key": input.idempotencyKey,
-      },
-      body: JSON.stringify({
+    const response = await postResendEmail(
+      process.env.RESEND_API_KEY ?? "",
+      {
         from: process.env.MERCHANT_ALERT_FROM,
         to: input.to,
         subject: input.subject,
         text: input.text,
         ...(input.html ? { html: input.html } : {}),
-      }),
-      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-    });
+      },
+      {
+        "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        "Idempotency-Key": input.idempotencyKey,
+      },
+    );
     if (!response.ok) {
       // Status (and Resend's error code on a 409): never log the recipient.
       let code: string | undefined;

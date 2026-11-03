@@ -10,7 +10,7 @@
  *
  * `replyTo` (the merchant's address) is set only when the merchant gave an
  * email AND consented to be contacted; the caller enforces that pairing. If
- * Resend rejects the request (4xx) while reply_to was set, the send is retried
+ * Resend rejects the request (400/422) while reply_to was set, the send is retried
  * ONCE without it, so an address Resend dislikes cannot lose the message (the
  * body's "Reply to:" line still names it).
  *
@@ -24,11 +24,9 @@
  */
 import { SUPPORT_EMAIL } from "../lib/help";
 import { logger } from "../lib/logger.server";
+import { postResendEmail } from "../lib/resend.server";
 import { safeErrorFields } from "../lib/safe-error";
 import { recordApiError } from "../models/ops-event.server";
-
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
-const SEND_TIMEOUT_MS = 5000;
 
 /** The api_error code (OpsEvent key) of a Help message that missed the inbox. */
 export const SUPPORT_EMAIL_FAILURE_CODE = "support_email_delivery_failed";
@@ -67,23 +65,20 @@ export async function sendSupportEmail(input: SupportEmailInput): Promise<Suppor
   }
 
   const post = (replyTo: string | null) =>
-    fetch(RESEND_ENDPOINT, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from,
-        to: SUPPORT_EMAIL,
-        subject: input.subject,
-        text: input.text,
-        ...(replyTo ? { reply_to: replyTo } : {}),
-      }),
-      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    postResendEmail(apiKey, {
+      from,
+      to: SUPPORT_EMAIL,
+      subject: input.subject,
+      text: input.text,
+      ...(replyTo ? { reply_to: replyTo } : {}),
     });
 
   try {
     let response = await post(input.replyTo);
     let reason: SupportEmailResult["reason"] = "sent";
-    if (!response.ok && input.replyTo && response.status >= 400 && response.status < 500) {
+    // Only 400/422 can mean "Resend rejected the reply_to address"; a 401,
+    // 403, 409 or 429 would fail the same way without it (gc-7f1p).
+    if (!response.ok && input.replyTo && (response.status === 400 || response.status === 422)) {
       logger.warn("Support email rejected with reply_to; retrying without it", {
         context: "support-email",
         subject: input.subject,

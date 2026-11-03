@@ -97,8 +97,8 @@ describe("sendSupportEmail: delivery", () => {
   });
 });
 
-describe("sendSupportEmail: 4xx with reply_to retries once without it", () => {
-  it.each([400, 422, 499])("%i then OK: delivered without reply_to, body unchanged", async (s) => {
+describe("sendSupportEmail: 400/422 with reply_to retries once without it (gc-7f1p)", () => {
+  it.each([400, 422])("%i then OK: delivered without reply_to, body unchanged", async (s) => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: s });
 
     await expect(sendSupportEmail({ ...INPUT, replyTo: "owner@shop.com" })).resolves.toEqual({
@@ -122,6 +122,20 @@ describe("sendSupportEmail: 4xx with reply_to retries once without it", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(mockRecordApiError).toHaveBeenCalledTimes(1);
   });
+
+  it.each([401, 403, 404, 409, 429, 499])(
+    "%i with reply_to is not retried (not an address problem), one record",
+    async (s) => {
+      fetchMock.mockResolvedValue({ ok: false, status: s });
+
+      await expect(sendSupportEmail({ ...INPUT, replyTo: "owner@shop.com" })).resolves.toEqual({
+        sent: false,
+        reason: "http_error",
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockRecordApiError).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("a 5xx is not retried", async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 });

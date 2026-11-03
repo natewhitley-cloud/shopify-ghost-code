@@ -18,6 +18,7 @@
  */
 
 import { logger } from "../lib/logger.server";
+import { postResendEmail } from "../lib/resend.server";
 import { recordApiError } from "../models/ops-event.server";
 
 // All ops-alert subjects carry this prefix so they are trivially filterable
@@ -28,11 +29,6 @@ const SUBJECT_PREFIX = "[GhostCode Ops]";
 // set, so the channel is functional without also configuring a verified
 // domain. Override with OPS_ALERT_FROM once a branded domain is verified.
 const DEFAULT_FROM = "GhostCode Ops <onboarding@resend.dev>";
-
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
-
-// Bounds worst-case latency of the outbound send inside the cron/webhook.
-const SEND_TIMEOUT_MS = 5000;
 
 export interface OpsAlertResult {
   sent: boolean;
@@ -132,19 +128,11 @@ export async function sendOpsAlert(subject: string, body: string): Promise<OpsAl
   const from = process.env.OPS_ALERT_FROM || DEFAULT_FROM;
 
   try {
-    const response = await fetch(RESEND_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: `${SUBJECT_PREFIX} ${subject}`,
-        text: body,
-      }),
-      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    const response = await postResendEmail(apiKey, {
+      from,
+      to,
+      subject: `${SUBJECT_PREFIX} ${subject}`,
+      text: body,
     });
 
     if (!response.ok) {
