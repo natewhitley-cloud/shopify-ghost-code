@@ -1756,7 +1756,7 @@ describe("aggregateEmbedChecks (gc-uczg)", () => {
     expect(
       formatEmbedCheckLine({ checked: 4, storefrontOnly: 2, settingsOnly: 2, anyMismatch: 3 }),
     ).toBe(
-      "  Embed check (24h, log only): 3 of 4 scans differ (storefront-only apps: 2, settings-only: 2)",
+      "  Embed check (24h, log only): 3 of 4 scans differ (storefront-only: 2 scans, settings-only: 2 scans)",
     );
   });
 });

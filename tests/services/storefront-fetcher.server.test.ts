@@ -1184,6 +1184,45 @@ describe("parseExtensionAssetHandles (gc-3ate)", () => {
     expect(parseExtensionAssetHandles(html)).toEqual([]);
   });
 
+  // Audit M1 (2026-11-03): only a real <script>/<link> tag on the page counts.
+  it.each([
+    ["commented-out tag", `<!-- <script src="${PUSHOWL}"></script> -->`],
+    ["unterminated comment", `<!-- <script src="${PUSHOWL}"></script>`],
+    ["inside <template>", `<template><script src="${PUSHOWL}"></script></template>`],
+    ["string in inline JS", `<script>var t = '<script src="${PUSHOWL}"><\\/script>';</script>`],
+    ["document.write in inline JS", `<script>document.write("<link href=${PUSHOWL}>")</script>`],
+    ["unquoted review text", `<p>Great! src=${PUSHOWL}</p>`],
+    ["inside an alt value of an img", `<img alt="x src=${PUSHOWL}" src="/a.png">`],
+    ["an <a href>", `<a href="${PUSHOWL}">x</a>`],
+    ["an <img src>", `<img src="${PUSHOWL}">`],
+    ["NBSP before src", `<script\u00a0src="${PUSHOWL}"></script>`],
+    ["U+2028 before src", `<script\u2028src="${PUSHOWL}"></script>`],
+  ])("ignores a %s", (_label, html) => {
+    expect(parseExtensionAssetHandles(html)).toEqual([]);
+  });
+
+  it("still reads a real tag after a comment, a template and an inline script", () => {
+    const html = `<!-- x --><template><p>t</p></template><script>var a = 1;</script><script defer src="${PUSHOWL}"></script>`;
+    expect(parseExtensionAssetHandles(html)).toEqual(["pushowl"]);
+  });
+
+  it("reads <script/src=...> and attributes before src", () => {
+    expect(parseExtensionAssetHandles(`<script/src="${PUSHOWL}"></script>`)).toEqual(["pushowl"]);
+    expect(
+      parseExtensionAssetHandles(
+        `<script type="module" async data-x="1" src="${PUSHOWL}"></script>`,
+      ),
+    ).toEqual(["pushowl"]);
+  });
+
+  it("is linear on many unterminated comments, scripts and templates", () => {
+    for (const unit of ["<!--", "<script", "<script>", "<template>", '<script x="', "<link "]) {
+      const started = performance.now();
+      parseExtensionAssetHandles(unit.repeat(500_000 / unit.length));
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+  });
+
   it("lower-cases the host match and the handle", () => {
     const url = PUSHOWL.replace("cdn.shopify.com", "CDN.Shopify.com").replace("pushowl", "PushOwl");
     expect(parseExtensionAssetHandles(`<SCRIPT SRC="${url}"></SCRIPT>`)).toEqual(["pushowl"]);

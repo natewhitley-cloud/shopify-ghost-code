@@ -962,6 +962,69 @@ describe("unauditedCategories with liveFindingTypes (M4)", () => {
   });
 });
 
+describe("a live app's product findings are suppressed, not fixed (gc-k71c audit M1)", () => {
+  const ALL = Object.values(FindingType);
+  const coverage = (embedApps: unknown) => ({
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    skippedFiles: [] as string[],
+    liveFindingTypes: ALL as unknown,
+    liveAppHooks: { embedApps, scriptTagApps: null },
+  });
+  const mf = (app: string | null, key: string) =>
+    makeFinding(`products/${key}`, "GHOST_METAFIELD", `metafield ${key}`, { appName: app });
+  const prior = [
+    mf("Judge.me", "a"),
+    mf("Judge.me", "b"),
+    makeFinding("products/t", "GHOST_TAG", "tag t", { appName: "Judge.me" }),
+    makeFinding("products/p", "GHOST_PRICE", "price p", { appName: "Judge.me" }),
+    mf("Yotpo", "c"),
+    mf(null, "d"),
+    makeFinding("snippets/jm.liquid", "GHOST_SNIPPET", "render jm", { appName: "Judge.me" }),
+  ];
+
+  it("Judge.me live now: its tag/price/metafield findings are neither fixed nor new", () => {
+    const diff = diffScans([], prior, scanDiffOptions(coverage(["Judge.me"]), coverage([])));
+    // Yotpo (not live), the unattributed one and the theme-file type still resolve.
+    expect(diff.resolvedFindings.map((f) => `${f.findingType}:${f.appName}`).sort()).toEqual([
+      "GHOST_METAFIELD:Yotpo",
+      "GHOST_METAFIELD:null",
+      "GHOST_SNIPPET:Judge.me",
+    ]);
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("app no longer live: its findings return and diff normally", () => {
+    const back = [mf("Judge.me", "a")];
+    const diff = diffScans(back, [], scanDiffOptions(coverage([]), coverage(["Judge.me"])));
+    expect(diff.newFindings).toHaveLength(1);
+  });
+
+  it.each([
+    ["not observed (null)", null],
+    ["legacy scan (no hooks)", undefined],
+    ["malformed", "Judge.me"],
+    ["non-string entries", [1, { a: 1 }]],
+  ])("embed set %s: no exclusion, resolves as before", (_label, embedApps) => {
+    const cov =
+      embedApps === undefined
+        ? { ...coverage(null), liveAppHooks: undefined }
+        : coverage(embedApps);
+    const diff = diffScans([], prior, scanDiffOptions(cov, coverage([])));
+    expect(diff.resolvedFindings).toHaveLength(prior.length);
+  });
+
+  it("matches app names exactly (case-sensitive, like the suppression)", () => {
+    const diff = diffScans(
+      [],
+      [mf("Judge.me", "a")],
+      scanDiffOptions(coverage(["judge.me"]), coverage([])),
+    );
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+});
+
 describe("scanDiffOptions + diffScans notNewCategories (H3, M4)", () => {
   const ALL = Object.values(FindingType);
   const coverage = (over: Record<string, unknown> = {}) => ({

@@ -54,6 +54,8 @@ describe("compareEmbedSignals (gc-uczg, log only)", () => {
     ["a path", "x/../../etc"],
     ["an email", "jane@example.com"],
     ["whitespace", "judge me"],
+    ["a Kelvin sign that lower-cases to ASCII", "\u212Aaviyo"],
+    ["a dotted capital I", "\u0130nstafeed"],
     ["full-width letters", "ｊｕｄｇｅ"],
     ["zero-width space", "judge​me"],
     ["too long", "a".repeat(101)],

@@ -239,29 +239,68 @@ export function parseScriptTagUrls(html: string): string[] | null {
   return parsed as string[];
 }
 
-/** A real Shopify storefront always sets `Shopify.shop = "x.myshopify.com";`. */
 /** At most this many distinct extension handles are returned per page. */
 export const MAX_EXTENSION_HANDLES = 50;
 
 /**
- * A `src`/`href` attribute whose value is a Shopify-hosted theme app extension
- * asset: `//cdn.shopify.com/extensions/<uuid>/<handle>-<version>/assets/`.
- * The attribute name must follow whitespace (so `data-src` is not read), the
- * host is exact, and the path segment is bounded, so the scan stays linear.
+ * A `<script>` or `<link>` OPENING TAG whose `src`/`href` value is a
+ * Shopify-hosted theme app extension asset:
+ * `//cdn.shopify.com/extensions/<uuid>/<handle>-<version>/assets/`. The
+ * attribute name must follow HTML whitespace or `/` (never NBSP or U+2028,
+ * which a browser does not split attributes on; never `data-src`). The
+ * attribute run and path segment are bounded, so the scan is linear.
  */
-const EXTENSION_ASSET_RE =
-  /(?<=\s)(?:src|href)\s*=\s*["']?(?:https?:)?\/\/cdn\.shopify\.com\/extensions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/([a-z0-9-]{1,100})\/assets\//gi;
+const EXTENSION_ASSET_TAG_RE =
+  /<(?:script|link)[ \t\n\r\f/][^<>]{0,2000}?(?<=[ \t\n\r\f/])(?:src|href)[ \t\n\r\f]*=[ \t\n\r\f]*["']?(?:https?:)?\/\/cdn\.shopify\.com\/extensions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/([a-z0-9-]{1,100})\/assets\//gi;
 /** `<handle>-<version>`: the handle is everything before the last `-<digits>`. */
 const EXTENSION_SEGMENT_RE = /^([a-z0-9]+(?:-[a-z0-9]+)*)-\d+$/;
+
+/** Where markup a browser would not load as a tag starts (comment, template, script). */
+const NON_MARKUP_OPEN_RE = /<!--|<template\b[^<>]{0,2000}>|<script\b[^<>]{0,2000}>/gi;
+const TEMPLATE_CLOSE_RE = /<\/template\s*>/gi;
+const SCRIPT_CLOSE_RE = /<\/script\s*>/gi;
+
+/**
+ * The page with comments, `<template>` contents and `<script>` BODIES removed
+ * (a script's own opening tag is kept). One forward pass: each search starts
+ * where the last one ended, and an unterminated construct ends the page.
+ */
+function loadedMarkup(html: string): string {
+  const out: string[] = [];
+  let i = 0;
+  NON_MARKUP_OPEN_RE.lastIndex = 0;
+  for (;;) {
+    NON_MARKUP_OPEN_RE.lastIndex = i;
+    const open = NON_MARKUP_OPEN_RE.exec(html);
+    if (!open) break;
+    out.push(html.slice(i, open.index));
+    const after = open.index + open[0].length;
+    if (open[0] === "<!--") {
+      const end = html.indexOf("-->", after);
+      i = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    const isScript = open[0][1].toLowerCase() === "s";
+    if (isScript) out.push(open[0]);
+    const close = isScript ? SCRIPT_CLOSE_RE : TEMPLATE_CLOSE_RE;
+    close.lastIndex = after;
+    const end = close.exec(html);
+    i = end ? end.index + end[0].length : html.length;
+  }
+  out.push(html.slice(i));
+  return out.join("");
+}
 
 /**
  * Theme app extension handles whose scripts or preloads the storefront page
  * loads (gc-3ate), lower-cased, unique, sorted, at most MAX_EXTENSION_HANDLES.
- * Only attribute values count: a URL in page text or inline JS does not.
+ * Only a `<script>`/`<link>` tag the page itself contains counts: never page
+ * text, attribute values of other tags, comments, `<template>`, or strings
+ * inside inline scripts (audit M1).
  */
 export function parseExtensionAssetHandles(html: string): string[] {
   const handles = new Set<string>();
-  for (const match of html.matchAll(EXTENSION_ASSET_RE)) {
+  for (const match of loadedMarkup(html).matchAll(EXTENSION_ASSET_TAG_RE)) {
     const handle = EXTENSION_SEGMENT_RE.exec(match[1].toLowerCase())?.[1];
     if (!handle) continue;
     handles.add(handle);
@@ -287,6 +326,7 @@ export function parseStorefrontAppBlockHandles(html: string): string[] {
   return [...handles].sort();
 }
 
+/** A real Shopify storefront always sets `Shopify.shop = "x.myshopify.com";`. */
 export function isShopifyStorefrontHtml(html: string): boolean {
   return SHOPIFY_SHOP_RE.test(html);
 }

@@ -732,6 +732,7 @@ function toChangeLogScan(row: ChangeLogScanRow, manifest: readonly ManifestEntry
       skippedFiles: row.skippedFiles,
       liveFindingTypes: row.liveFindingTypes,
       walkCoverage: row.walkCoverage,
+      liveAppHooks: row.liveAppHooks,
     },
     findings: row.findings,
     liveAppHooks: row.liveAppHooks,

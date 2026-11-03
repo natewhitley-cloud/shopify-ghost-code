@@ -39,7 +39,12 @@ describe("postResendEmail (gc-v5p7)", () => {
     await postResendEmail(
       "re_key",
       {},
-      { Authorization: "Bearer other", "Content-Type": "text/plain" },
+      {
+        Authorization: "Bearer other",
+        authorization: "Bearer evil",
+        "CONTENT-TYPE": "text/plain",
+        "Content-Type": "text/plain",
+      },
     );
     expect(fetchMock.mock.calls[0][1].headers).toEqual({
       Authorization: "Bearer re_key",

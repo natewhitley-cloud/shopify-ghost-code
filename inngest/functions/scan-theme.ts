@@ -785,6 +785,23 @@ async function runProductAuditChunk(opts: {
   const filteredTagFindings = dropActive(tagOut.findings);
   const filteredPriceFindings = dropActive(priceOut.findings);
   const filteredMetafieldFindings = dropActive(metafieldOut.findings);
+  // Trade-off (as for the theme-side gc-clt4 suppression): an embed left
+  // enabled after uninstall hides that app's real product leftovers. Counted
+  // here so the suppression is visible in logs.
+  const suppressed = {
+    GHOST_TAG: tagOut.findings.length - filteredTagFindings.length,
+    GHOST_PRICE: priceOut.findings.length - filteredPriceFindings.length,
+    GHOST_METAFIELD: metafieldOut.findings.length - filteredMetafieldFindings.length,
+  };
+  if (suppressed.GHOST_TAG + suppressed.GHOST_PRICE + suppressed.GHOST_METAFIELD > 0) {
+    logger.info("product-audit findings suppressed for active-embed apps", {
+      function: "scan-theme",
+      stepName: "product-audit",
+      shopId: opts.shopId,
+      event: "product_audit_active_app_suppressed",
+      suppressed,
+    });
+  }
 
   // Later chunks own only their own products' rows (see the doc comment).
   // `tags` holds every product in the chunk, unfiltered.
@@ -2597,6 +2614,10 @@ export const scanTheme = inngest.createFunction(
         skippedFiles: skippedFilePaths,
         liveFindingTypes: finalLiveFindingTypes,
         walkCoverage,
+        // gc-k71c: a live app's suppressed product findings are not "fixed".
+        liveAppHooks: {
+          embedApps: Array.isArray(appsWithEnabledEmbed) ? appsWithEnabledEmbed : null,
+        },
       };
 
       // FINAL step: compute resolution counts vs the previous scan, then set the

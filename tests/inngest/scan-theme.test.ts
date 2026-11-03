@@ -1638,6 +1638,34 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     }
   });
 
+  it("suppresses a live app's GHOST_PRICE too (gc-k71c)", async () => {
+    const judgeMePrice = makeAuditFinding(FindingType.GHOST_PRICE, { appName: "Judge.me" });
+    const otherPrice = makeAuditFinding(FindingType.GHOST_PRICE, { appName: "Removed App" });
+    (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set(["Judge.me"]));
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({ prices: [{ id: "gid://shopify/Product/1" }] }),
+    );
+    mockDetectPersistentDiscounts.mockReturnValue([judgeMePrice, otherPrice]);
+
+    await runScanTheme();
+
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [otherPrice]);
+  });
+
+  it("settings_data not observed (null embed set): nothing is suppressed (gc-k71c)", async () => {
+    const judgeMeMetafield = makeAuditFinding(FindingType.GHOST_METAFIELD, { appName: "Judge.me" });
+    (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set(["Judge.me"]));
+    (observedEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({ metafields: [{ id: "gid://shopify/Product/1" }] }),
+    );
+    mockDetectOrphanedMetafields.mockReturnValue([judgeMeMetafield]);
+
+    await runScanTheme();
+
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [judgeMeMetafield]);
+  });
+
   it("passes through all product-audit findings when no embeds are active (gc-k71c baseline)", async () => {
     // When enabledEmbedApps is empty, no suppression occurs — all findings persist.
     const metafieldFinding = makeAuditFinding(FindingType.GHOST_METAFIELD, {
@@ -8204,5 +8232,40 @@ describe("scanTheme — menu-label injection audit (gc-7gjj.1)", () => {
     expect(signal.metadata.pageCounts.menus).toBe(2);
     expect(signal.metadata.menuItemCount).toBe(2);
     expect(JSON.stringify(signal.metadata)).not.toContain("cartassure");
+  });
+});
+
+describe("scanTheme — a live app's suppressed product findings are not fixed (gc-k71c audit M1)", () => {
+  it("finalize counts only the non-live app's metafield as resolved", async () => {
+    (observedEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(["Judge.me"]);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-11-03T00:00:00Z"),
+    });
+    const metafield = (appName: string, key: string) => ({
+      filename: `products/${key}`,
+      findingType: FindingType.GHOST_METAFIELD,
+      codeSnippet: `metafield ${key}`,
+      lineNumber: 1,
+      severity: Severity.LOW,
+      appName,
+      description: "d",
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
+      liveFindingTypes: Object.values(FindingType),
+      id: "prev",
+      findingCount: 2,
+      findings: [metafield("Judge.me", "a"), metafield("Yotpo", "b")],
+    });
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan.mock.calls[0][1]).toMatchObject({
+      resolvedFindingCount: 1,
+      liveAppHooks: { embedApps: ["Judge.me"] },
+    });
   });
 });

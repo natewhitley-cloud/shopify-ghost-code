@@ -176,6 +176,32 @@ export interface ScanCoverage {
   liveFindingTypes?: unknown;
   /** Raw `Scan.walkCoverage` (Json?, gc-747u); omitted/NULL = legacy scan. */
   walkCoverage?: unknown;
+  /** Raw `Scan.liveAppHooks` (Json?, gc-frda); omitted/NULL = not recorded. */
+  liveAppHooks?: unknown;
+}
+
+/**
+ * The product-audit types the scan drops for an app with an enabled theme
+ * embed (gc-k71c, scan-theme runProductAuditChunk). A prior finding of one of
+ * these for an app live in the CURRENT scan was suppressed, not fixed.
+ */
+const ACTIVE_APP_PRODUCT_TYPES: ReadonlySet<string> = new Set([
+  FindingType.GHOST_TAG,
+  FindingType.GHOST_PRICE,
+  FindingType.GHOST_METAFIELD,
+]);
+
+/**
+ * The app names with an enabled embed in `Scan.liveAppHooks.embedApps`, or []
+ * when not recorded or malformed (no exclusion: resolves as before). Parsed
+ * here, not via app-removal's parser, which imports this module.
+ */
+function liveEmbedApps(raw: unknown): string[] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const embedApps = (raw as Record<string, unknown>).embedApps;
+  return Array.isArray(embedApps)
+    ? embedApps.filter((a): a is string => typeof a === "string")
+    : [];
 }
 
 /**
@@ -212,6 +238,11 @@ export interface DiffOptions {
   currentWalks?: ScanWalkCoverage | null;
   /** Walk coverage of the BASELINE scan (gc-747u); null/omitted = legacy. */
   baselineWalks?: ScanWalkCoverage | null;
+  /**
+   * Apps with an enabled embed in the CURRENT scan (gc-k71c): their prior
+   * product-audit findings are suppressed now, so never "resolved".
+   */
+  activeEmbedApps?: Iterable<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +379,7 @@ export function scanDiffOptions(
 ): DiffOptions {
   const currentWalks = parseWalkCoverage(current.walkCoverage);
   const baselineWalks = parseWalkCoverage(baseline.walkCoverage);
+  const activeEmbedApps = liveEmbedApps(current.liveAppHooks);
   return {
     skippedCategories: [...unauditedCategories(current), ...homepageMaliciousGap(current)],
     skippedFiles: current.skippedFiles,
@@ -360,6 +392,8 @@ export function scanDiffOptions(
     ],
     currentWalks,
     baselineWalks,
+    // Only when present, so a scan with no live embeds diffs exactly as before.
+    ...(activeEmbedApps.length > 0 ? { activeEmbedApps } : {}),
   };
 }
 
@@ -484,8 +518,9 @@ export function diffScans(
   const hasFileFilter = skippedFiles !== null && skippedFiles.size > 0;
   const currentWalks = opts?.currentWalks ?? null;
   const baselineWalks = opts?.baselineWalks ?? null;
+  const activeApps = new Set(opts?.activeEmbedApps ?? []);
   const effectivePrevious =
-    hasCatFilter || hasFileFilter || currentWalks !== null
+    hasCatFilter || hasFileFilter || currentWalks !== null || activeApps.size > 0
       ? previousFindings.filter(
           (f) =>
             !(
@@ -499,7 +534,13 @@ export function diffScans(
               !SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(f.findingType)
             ) &&
             // gc-747u: a record past the current capped walk was not re-checked.
-            walkChecked(f, currentWalks, baselineWalks),
+            walkChecked(f, currentWalks, baselineWalks) &&
+            // gc-k71c: suppressed now because its app is live, not fixed.
+            !(
+              f.appName != null &&
+              activeApps.has(f.appName) &&
+              ACTIVE_APP_PRODUCT_TYPES.has(f.findingType)
+            ),
         )
       : previousFindings;
 

@@ -12,10 +12,17 @@ export function postResendEmail(
   payload: Record<string, unknown>,
   headers: Record<string, string> = {},
 ): Promise<Response> {
+  // Drop any caller header that names auth or content type in any case, so
+  // it cannot sit beside ours (audit L2).
+  const extra = Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) => !["authorization", "content-type"].includes(name.toLowerCase()),
+    ),
+  );
   return fetch(RESEND_ENDPOINT, {
     method: "POST",
     headers: {
-      ...headers,
+      ...extra,
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },

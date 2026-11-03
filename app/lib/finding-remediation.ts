@@ -320,7 +320,7 @@ const REMEDIATION: Record<string, Remediation> = {
   // ---- Storefront script tags (not theme code; merchants cannot see or remove them) ----
   SCRIPT_TAG_SUNSET: {
     howTo:
-      "Contact the app's support and ask whether it has moved off script tags to an app embed before Shopify stops running script tags on March 1, 2027. You can check for its embed in Online Store > Themes > Customize > Theme settings > App embeds, and turn it on there if the app tells you to. Script tags don't appear in your admin or theme code, so there is nothing for you to delete: the app's developer has to make the move.",
+      "Contact the app's support and ask whether it has moved off script tags to an app embed before Shopify stops running script tags on March 1, 2027. You can check for its embed in Online Store > Themes > Customize > Theme settings > App embeds, and turn it on there if the app tells you to. Some apps move to an app extension that has no embed to turn on, so not finding one there does not mean the app hasn't moved. Script tags don't appear in your admin or theme code, so there is nothing for you to delete: the app's developer has to make the move.",
   },
 
   // ---- Liquid errors printed on the storefront (gc-i6du) ----

@@ -900,7 +900,7 @@ export function aggregateEmbedChecks(
 /** The OPERATIONAL HEALTH embed-check line (gc-uczg). */
 export function formatEmbedCheckLine(d: EmbedCheckDigest | undefined): string {
   if (!d || d.checked === 0) return "  Embed check (24h, log only): no scans checked";
-  return `  Embed check (24h, log only): ${d.anyMismatch} of ${d.checked} scans differ (storefront-only apps: ${d.storefrontOnly}, settings-only: ${d.settingsOnly})`;
+  return `  Embed check (24h, log only): ${d.anyMismatch} of ${d.checked} scans differ (storefront-only: ${d.storefrontOnly} scans, settings-only: ${d.settingsOnly} scans)`;
 }
 
 /** The OPERATIONAL HEALTH client-errors line. */

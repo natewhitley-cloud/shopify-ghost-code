@@ -18,7 +18,7 @@ export const MAX_EMBED_CHECK_HANDLES = 50;
  * An extension handle as Shopify forms it. settings_data.json is theme-authored
  * (untrusted), so anything else is dropped rather than written to the log.
  */
-const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,99}$/;
+const HANDLE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 
 export type EmbedCheck = {
   storefrontBlocks: string[];
@@ -38,8 +38,9 @@ export type EmbedCheck = {
 export function cleanEmbedHandles(handles: Iterable<string>): string[] {
   const out = new Set<string>();
   for (const h of handles) {
-    const lower = h.toLowerCase();
-    if (HANDLE_RE.test(lower)) out.add(lower);
+    // Test before lower-casing: toLowerCase folds some non-ASCII letters
+    // (Kelvin sign U+212A -> "k") into ASCII (audit L1).
+    if (HANDLE_RE.test(h)) out.add(h.toLowerCase());
   }
   return [...out].sort().slice(0, MAX_EMBED_CHECK_HANDLES);
 }
