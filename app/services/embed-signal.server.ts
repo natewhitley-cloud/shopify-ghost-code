@@ -30,7 +30,12 @@ export type EmbedCheck = {
   onlyInSettings: string[];
 };
 
-function clean(handles: readonly string[]): string[] {
+/**
+ * Lower-cased, valid (HANDLE_RE), unique, sorted, at most
+ * MAX_EMBED_CHECK_HANDLES. Also applied where theme-authored handles leave
+ * the scan step (enabledAppEmbedHandles), so the step output stays bounded.
+ */
+export function cleanEmbedHandles(handles: Iterable<string>): string[] {
   const out = new Set<string>();
   for (const h of handles) {
     const lower = h.toLowerCase();
@@ -44,14 +49,14 @@ export function compareEmbedSignals(input: {
   settingsEmbedHandles: readonly string[];
   extensionHandles: readonly string[];
 }): EmbedCheck {
-  const storefrontBlocks = clean(input.storefrontBlockHandles);
-  const settingsEmbeds = clean(input.settingsEmbedHandles);
+  const storefrontBlocks = cleanEmbedHandles(input.storefrontBlockHandles);
+  const settingsEmbeds = cleanEmbedHandles(input.settingsEmbedHandles);
   const onStorefront = new Set(storefrontBlocks);
   const inSettings = new Set(settingsEmbeds);
   return {
     storefrontBlocks,
     settingsEmbeds,
-    extensions: clean(input.extensionHandles),
+    extensions: cleanEmbedHandles(input.extensionHandles),
     onlyOnStorefront: storefrontBlocks.filter((h) => !inSettings.has(h)),
     onlyInSettings: settingsEmbeds.filter((h) => !onStorefront.has(h)),
   };

@@ -74,6 +74,7 @@ import {
   identifyAppFromTextFragment,
   resolveAttribution,
 } from "./app-lookup.server";
+import { cleanEmbedHandles } from "./embed-signal.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { blankNonExecutingLiquid } from "./liquid-error-detector.server";
 import { classifySeverity } from "./severity-classifier.server";
@@ -4337,15 +4338,16 @@ export function enabledAppEmbedApps(files: ThemeFile[]): Set<string> {
  * Raw handles of the ENABLED theme app embeds in settings_data.json, known to a
  * signature or not, lower-cased, unique, sorted (gc-uczg, log-only embed
  * check). null when settings_data.json was not observed (observedEmbedApps'
- * rule). Untrusted theme content: compareEmbedSignals filters and caps them.
+ * rule). Untrusted theme content, so filtered and capped here
+ * (cleanEmbedHandles): the list crosses the fetch-and-scan step boundary.
  */
 export function enabledAppEmbedHandles(files: ThemeFile[]): string[] | null {
   if (observedEmbedApps(files) === null) return null;
-  const handles = new Set<string>();
+  const handles: string[] = [];
   for (const e of parseAppEmbedEntries(files)) {
-    if (!e.disabled) handles.add(e.handle.toLowerCase());
+    if (!e.disabled) handles.push(e.handle);
   }
-  return [...handles].sort();
+  return cleanEmbedHandles(handles);
 }
 
 /**

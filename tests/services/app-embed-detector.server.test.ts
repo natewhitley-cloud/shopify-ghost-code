@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { FindingType, Severity } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MAX_EMBED_CHECK_HANDLES } from "../../app/services/embed-signal.server";
 import {
   ACTIVE_APP_OWN_FILE_TYPES,
   detectAppEmbedOff,
@@ -635,6 +636,18 @@ describe("enabledAppEmbedHandles (gc-uczg)", () => {
       "4": { type: "header", disabled: false },
     });
     expect(enabledAppEmbedHandles([settings])).toEqual(["pagefly-page-builder", "unknown-app"]);
+  });
+
+  it("filters and caps theme-authored handles before they cross the step boundary", () => {
+    const blocks: Record<string, Block> = {};
+    for (let i = 0; i < 10_000; i++) {
+      blocks[String(i)] = { type: `shopify://apps/app-${i}/blocks/x/uuid`, disabled: false };
+    }
+    blocks.big = { type: `shopify://apps/${"a".repeat(5000)}/blocks/x/uuid` };
+    blocks.html = { type: "shopify://apps/<b>x</b>/blocks/x/uuid" };
+    const handles = enabledAppEmbedHandles([settingsWith(blocks)]);
+    expect(handles).toHaveLength(MAX_EMBED_CHECK_HANDLES);
+    for (const h of handles ?? []) expect(h).toMatch(/^[a-z0-9][a-z0-9_-]{0,99}$/);
   });
 
   it("is null when settings_data.json was not observed", () => {
