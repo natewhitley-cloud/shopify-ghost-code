@@ -12,6 +12,12 @@
 - No confirmation email / status page: screenshot each submission with date. Day 0 = submission date; no answer in 14 days or denied -> D1 fallback (cleaned-theme ZIP export, Residue model). Chase via Partner Support with both client IDs.
 - Change vs spike §1.6: the 1.1.3 line now says "GhostCode does not sell or distribute themes" (app has no Theme Store link, so the old "we direct merchants to the Theme Store" claim would be false).
 
+#### Flag reviews + suspicious-code logging (2026-11-04 ~00:30Z)
+- **Settings drift (gc-bwci): keep dark.** 13 scan_signal rows since 10-09 (nw-dev-store-2 x7, paw-naturals x4, one Free store x2), SETTINGS_DRIFT=0 on all. Cumulative 20 prod scans + 3 dev themes, 0 hits, no true positive, only 2 real merchant stores. Bottleneck is install volume, not time. Alerts are live, so a flip sends any FP to merchants.
+- **Checkout guard (gc-1q1s.1): CLOSED, clean.** 11 guarded shops, 0 incidents ever, paw-naturals 169 readable checks; last outcomes 5 ok / 6 paused_password / 0 unreachable; no datacenter-challenge signal. Caveat kept: empty /cart may show no checkout button on some themes.
+- **SUSPICIOUS_CODE_SIGNAL_ENABLED=true set in prod** (Nathan go; Railway redeploy of 9c75db8 SUCCESS 00:29Z, /health 200, no pending migrations). Log-only, merchants see nothing. Review scan_signal.suspiciousCode ~2026-11-18 to 12-02 (gc-gayw); expect few rows (13 scans in 25 days). gc-yn50 also still blocked on release 2 deploy B.
+- How the reads were done: `railway run -s Postgres -- sh -c "PGOPTIONS='-c default_transaction_read_only=on' psql \"\$DATABASE_PUBLIC_URL\" -X -q -f <file.sql>"` from ~/shopify/ghost-code-app (linked). scan_signal: OpsEvent eventType='scan_signal', key=scanId, metadata->'detectorHits' (absent type = 0).
+
 #### Paste-ready justification (fill the brackets)
 
 > **App:** GhostCode (Alpenglow Software LLC). Listed at https://apps.shopify.com/ghost-code. This request covers our [production | test] app record, client ID [ID]. Please apply the same decision to our other record, client ID [ID], which we are submitting separately.
@@ -46,7 +52,7 @@ Leave out install counts, "Shopify-approved" language, competitor names. Re-chec
 2. **gc-dg5e** Canvas check (P2, blocks gc-tib): run the GraphQL checks in docs/spikes/2026-11-03-gc-dg5e-canvas-themes.md on a dev store.
 3. **gc-2x0o** (P3 bug): theme-side active-app suppression reads as Fixed in the differ; adjacent to gc-k71c, cheap while fresh.
 4. **Post-deploy watch:** paw-naturals Magisto one-time New 1 / Fixed 1 (check IgnoredFinding for old host fingerprint); gc-uczg decide ~2026-11-17 from digest SCANNER SIGNALS.
-5. **Flag-flip decisions (little code):** gc-bwci (SETTINGS_DRIFT), gc-gayw -> gc-yn50 (SUSPICIOUS_CODE), gc-1q1s.1 (guard dev-store verify + failure mix).
+5. **Flag decisions:** done 11-04 (see above): gc-bwci stays dark, gc-1q1s.1 closed, suspicious-code logging on; next look ~11-18.
 6. **P1 positioning:** gc-rrh.4 change tracking (in progress), gc-qafb quiet-week receipt.
 7. **Timely:** gc-ujsc summary email ScriptTag 2027-03-01 countdown + "app removed, left N items".
 8. **Possibly stale, verify vs code before building:** gc-i6du (Home theme health checklist shipped 10-12), gc-fed (may be covered by live gc-pa3q).
