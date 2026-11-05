@@ -11,6 +11,7 @@
 
 import { FindingType } from "@prisma/client";
 
+import { isLiveAppOwnFinding } from "./live-app-suppression.server";
 import {
   CROSS_FILE_FINDING_TYPES,
   HOMEPAGE_MALICIOUS_COVERAGE_KEY,
@@ -540,7 +541,9 @@ export function diffScans(
               f.appName != null &&
               activeApps.has(f.appName) &&
               ACTIVE_APP_PRODUCT_TYPES.has(f.findingType)
-            ),
+            ) &&
+            // gc-2x0o: the same for the engine's theme-file suppression.
+            !(activeApps.size > 0 && isLiveAppOwnFinding(f, activeApps)),
         )
       : previousFindings;
 

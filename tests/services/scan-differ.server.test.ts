@@ -986,13 +986,56 @@ describe("a live app's product findings are suppressed, not fixed (gc-k71c audit
 
   it("Judge.me live now: its tag/price/metafield findings are neither fixed nor new", () => {
     const diff = diffScans([], prior, scanDiffOptions(coverage(["Judge.me"]), coverage([])));
-    // Yotpo (not live), the unattributed one and the theme-file type still resolve.
+    // Yotpo (not live) and the unattributed one still resolve; Judge.me's
+    // theme-file snippet was suppressed by the engine too (gc-2x0o).
     expect(diff.resolvedFindings.map((f) => `${f.findingType}:${f.appName}`).sort()).toEqual([
       "GHOST_METAFIELD:Yotpo",
       "GHOST_METAFIELD:null",
-      "GHOST_SNIPPET:Judge.me",
     ]);
     expect(diff.newFindings).toEqual([]);
+  });
+
+  describe("theme-file findings of a live app (gc-2x0o)", () => {
+    const live = (apps: string[]) => scanDiffOptions(coverage(apps), coverage([]));
+
+    it("by appName, in any file: suppressed, not fixed", () => {
+      const prev = [
+        makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src=jm>", {
+          appName: "Judge.me",
+        }),
+        makeFinding("assets/jm.css", "ORPHAN_ASSET", "jm.css", { appName: "Judge.me" }),
+      ];
+      expect(diffScans([], prev, live(["Judge.me"])).resolvedFindings).toEqual([]);
+    });
+
+    it("by file owner (live app's file), whatever the appName, including null", () => {
+      const prev = [
+        makeFinding("sections/ecom-reviews.liquid", "GHOST_SCRIPT", "<script src=jm>", {
+          appName: "Judge.me",
+        }),
+        makeFinding("sections/ecom-reviews.liquid", "GHOST_TEXT", "text", { appName: null }),
+      ];
+      expect(diffScans([], prev, live(["EComposer"])).resolvedFindings).toEqual([]);
+    });
+
+    it("types the engine never suppresses still resolve for a live app", () => {
+      const prev = [
+        makeFinding("layout/theme.liquid", "MALICIOUS_SCRIPT", "<script src=bad>", {
+          appName: "Judge.me",
+        }),
+        makeFinding("layout/theme.ecom.liquid", "GHOST_LAYOUT", "layout", { appName: null }),
+      ];
+      expect(diffScans([], prev, live(["Judge.me", "EComposer"])).resolvedFindings).toHaveLength(2);
+    });
+
+    it("another app's finding in an ordinary file still resolves", () => {
+      const prev = [
+        makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src=yotpo>", {
+          appName: "Yotpo",
+        }),
+      ];
+      expect(diffScans([], prev, live(["Judge.me"])).resolvedFindings).toHaveLength(1);
+    });
   });
 
   it("app no longer live: its findings return and diff normally", () => {
