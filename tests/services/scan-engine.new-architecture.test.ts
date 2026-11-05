@@ -152,13 +152,12 @@ describe("new theme architecture: detectors inside {% block %} / {% partial %}",
     expect(result.unknownScripts).toEqual([]);
   });
 
-  // KNOWN BUG (found by this spike, not fixed here): Liquid never renders a
-  // {% doc %} body, so a leftover script there should be LOW like one inside
-  // {% comment %} (the existing convention). detectGhostScripts reports it HIGH
-  // because classifySeverity's isInsideLiquidComment
-  // (app/services/severity-classifier.server.ts:128) matches `comment` only.
-  // New-architecture blocks carry {% doc %} headers with @example code, so this
-  // matters more there. Flip to `it` once fixed.
+  // KNOWN GAP (gc-08x8): Liquid never renders a {% doc %} body, so a leftover
+  // script there should be LOW like one inside {% comment %}. classifySeverity
+  // only sees the 3-line snippet, and here {% doc %} is 2 lines above the
+  // script, outside it (an adjacent opener is LOW, see the severity-classifier
+  // tests). The same gap exists for {% comment %}. Fix = line-based comment/doc
+  // tracking for GHOST_SCRIPT/STYLE severity (gc-15d9). Flip to `it` then.
   it.fails("a leftover script inside a {% doc %} @example is LOW, like one in a comment", () => {
     const content = [
       "{% doc %}",
