@@ -94,6 +94,37 @@ Confidence: medium-low. Why: no API or date; behaviour of the page is described 
 ### Recommendation: KEEP now; ADAPT after preview-theme test
 Confidence: medium on "no near-term breakage" (official compat statement), low on parse behavior (untested). Add a fixture-based test once Nathan supplies a preview theme export.
 
+### Offline test 2026-11-05 (no dev store)
+Source: Shopify's public skeleton theme, branch `rc-v2.0.0` at `56730a9504f4f62a03ace6b2361de1958932ca53` (github.com/Shopify/skeleton-theme, commit dated 2026-07-23; the only other ref is tag v1.0.0). Its AGENTS.md says: "No sections: no `sections/` folder, no `{% section %}`/`{% sections %}` tags, no JSON templates". Tags used: `{% block 'name', arg: value %}...{% endblock %}` (20), `{% doc %}` headers (6), `{% partial 'name' %}...{% endpartial %}` (1, in blocks/liquid-tips.liquid), plus ordinary Liquid. Its doc header notes the partial renders only when `shop.features.agentic_editor_enabled?` is on; otherwise the storefront raises "Unknown tag 'partial'".
+
+File inventory (41 files, routed by `isScannableFile` / `isMaliciousScanOnlyFile` / `classifyThemeFile`):
+
+| Files | GhostCode treatment |
+|---|---|
+| `templates/*.liquid` (13), `layout/*.liquid` (2), `blocks/*.liquid` (5), `snippets/*.liquid` (3) | full detector suite, kind `code` |
+| `assets/liquid-tips.js`, `config/settings_data.json`, `locales/*.json` (2) | MALICIOUS_SCRIPT only |
+| `assets/*.css`, `assets/*.svg`, `config/settings_schema.json` | not scanned (unchanged, by design) |
+| root `AGENTS.md`, `README.md`, other root dotfiles | not scanned, kind `other` |
+
+No new folders and no new file extensions. Page structure moved into `templates/*.liquid`, which the full suite already covers.
+
+Results:
+- A scan of the full real skeleton (one-off run, not committed: the theme's licence limits use to theme development) found 0 findings, 0 unknown scripts and 0 skipped files. No false positives.
+- `tests/services/scan-engine.new-architecture.test.ts` uses fixtures written for the test in the skeleton's tag shapes:
+  - (a) a listed malicious `<script src>` inside a `{% partial %}` nested in blocks with arguments fires MALICIOUS_SCRIPT on the correct line: PASS;
+  - (b) a Klaviyo script in the same position fires GHOST_SCRIPT (Klaviyo) on the correct line: PASS;
+  - (c) a clean layout + template + block in the new shape produces no findings: PASS;
+  - (d) an AGENTS.md with prompt-like text and a malicious URL is ignored with no crash: PASS.
+- **Bug found (pre-existing, not fixed here):** a leftover app script inside a `{% doc %}` body is reported HIGH, while the same script inside `{% comment %}` is LOW. Liquid never renders doc bodies. Cause: `isInsideLiquidComment` (app/services/severity-classifier.server.ts:128) matches `comment` only. It is recorded as an `it.fails` test, which flips once fixed. New-architecture blocks lean on `{% doc %}` headers with `@example` code, so the exposure grows with adoption.
+- AGENTS.md / DESIGN.md: the file name AGENTS.md is now VERIFIED, since it ships in the skeleton theme. Whether the theme `files` API returns root-level files on a live store is still unknown (the fetcher requests all files; the scanner ignores `.md` either way).
+
+Checks for Nathan, updated:
+- Answered offline: new folders or extensions (none); templates/*.liquid replacing JSON (yes, already full-suite); `{% block %}`/`{% partial %}` parsing and line numbers (correct); markdown agent files (ignored, no crash).
+- Still live-only:
+  - how app blocks and embeds are represented in the new architecture (dangling-reference and attribution);
+  - whether the API returns root `AGENTS.md`;
+  - storefront CSS (item 4), activity log and extension status (items 1 and 2), and all Canvas questions (gc-dg5e).
+
 ---
 
 ## Item 4: Stylesheet subsetting
