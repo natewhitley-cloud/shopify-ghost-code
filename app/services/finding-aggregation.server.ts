@@ -41,7 +41,7 @@
 
 import type { FindingType, Severity } from "@prisma/client";
 
-import { fingerprintFinding } from "./scan-differ.server";
+import { fingerprintFinding, legacyEmbedFingerprint } from "./scan-differ.server";
 import { hiddenStoredFindingTypes } from "./soft-launch-flags.server";
 import {
   createZeroSeverityCounts,
@@ -110,7 +110,15 @@ export function isFindingIgnored(finding: IgnorableFinding, ignores: ShopIgnores
     finding.codeSnippet,
     finding.lineNumber,
   );
-  return ignores.fingerprints.has(fingerprint);
+  if (ignores.fingerprints.has(fingerprint)) return true;
+  // gc-gxnp: an embed ignore stored before the fingerprint fix keeps hiding.
+  const legacy = legacyEmbedFingerprint(
+    finding.filename,
+    finding.findingType,
+    finding.codeSnippet,
+    finding.lineNumber,
+  );
+  return legacy !== null && ignores.fingerprints.has(legacy);
 }
 
 /**

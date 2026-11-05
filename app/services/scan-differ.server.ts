@@ -157,8 +157,56 @@ export function fingerprintFinding(
   codeSnippet: string,
   lineNumber: number,
 ): string {
-  const matched = normalizeForFingerprint(codeSnippet, lineNumber);
+  const matched =
+    (EMBED_FINGERPRINT_TYPES.has(findingType) ? embedBlockIdentity(codeSnippet) : null) ??
+    normalizeForFingerprint(codeSnippet, lineNumber);
   return djb2Hex(`${filename}\0${findingType}\0${matched}`);
+}
+
+/**
+ * App embed finding types whose stored snippet is the settings_data.json entry
+ * `JSON.stringify({ [key]: value }, null, 2)` at line 1 (parseAppEmbedEntries).
+ * Its first line is always "{", so the first-line fingerprint made every embed
+ * finding of a type one identity (gc-gxnp). These hash the embed's block type
+ * instead; every other type keeps the first-line rule, so their stored ignores
+ * are untouched.
+ */
+const EMBED_FINGERPRINT_TYPES: ReadonlySet<string> = new Set(["APP_EMBED_OFF", "GHOST_APP_EMBED"]);
+
+/** `"type": "shopify://apps/<handle>/blocks/<block>/<uuid>"` -> handle + block. */
+const EMBED_BLOCK_TYPE_RE = /"type"\s*:\s*"(shopify:\/\/apps\/[^"/]+\/blocks\/[^"/]+)/;
+
+/**
+ * The embed's block type without its uuid: distinct per app embed and the same
+ * on every scan (the settings key, uuid and settings may change). Read from the
+ * stored snippet, so findings stored before gc-gxnp get the same identity (no
+ * one-time New/Fixed churn). null when the snippet has no recognisable type
+ * (e.g. truncated), which falls back to the first-line rule.
+ */
+function embedBlockIdentity(codeSnippet: string): string | null {
+  return EMBED_BLOCK_TYPE_RE.exec(codeSnippet)?.[1] ?? null;
+}
+
+/**
+ * The fingerprint an embed finding had before gc-gxnp (first line "{"), or
+ * null for any other type or when it equals the current one. Only for matching
+ * INSTANCE ignores stored before the fix: such an ignore hid every embed
+ * finding of its type and keeps doing so, so nothing the merchant ignored
+ * resurfaces. Ignores made after the fix use fingerprintFinding (one embed).
+ */
+export function legacyEmbedFingerprint(
+  filename: string,
+  findingType: string,
+  codeSnippet: string,
+  lineNumber: number,
+): string | null {
+  if (!EMBED_FINGERPRINT_TYPES.has(findingType)) return null;
+  const legacy = djb2Hex(
+    `${filename}\0${findingType}\0${normalizeForFingerprint(codeSnippet, lineNumber)}`,
+  );
+  return legacy === fingerprintFinding(filename, findingType, codeSnippet, lineNumber)
+    ? null
+    : legacy;
 }
 
 // ---------------------------------------------------------------------------
