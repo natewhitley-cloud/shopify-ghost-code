@@ -29,6 +29,8 @@ const mockDb = vi.hoisted(() => ({
 
 const mockCountScansForShopSince = vi.hoisted(() => vi.fn());
 const mockHasCompletedScans = vi.hoisted(() => vi.fn());
+// gc-ydze: no downgrade this period unless a test says otherwise.
+const mockLatestDowngradeSince = vi.hoisted(() => vi.fn(async () => null as Date | null));
 
 vi.mock("../../app/db.server", () => ({
   default: mockDb,
@@ -37,6 +39,10 @@ vi.mock("../../app/db.server", () => ({
 vi.mock("../../app/models/scan.server", () => ({
   countScansForShopSince: mockCountScansForShopSince,
   hasCompletedScans: mockHasCompletedScans,
+}));
+
+vi.mock("../../app/models/billing-event.server", () => ({
+  latestDowngradeSince: mockLatestDowngradeSince,
 }));
 
 // ---------------------------------------------------------------------------
@@ -57,6 +63,7 @@ import {
   canUseScanDiffing,
   getNextScanPeriodStart,
   getScanQuotaPeriod,
+  getQuotaCountStart,
   getScanUsage,
 } from "../../app/lib/plan-gating.server";
 
@@ -816,5 +823,75 @@ describe("automatic scans never meet the manual quota (gc-d0ui)", () => {
     const src = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
     expect(src).toContain(`ScanOrigin.${origin}`);
     expect(src).not.toMatch(/canStartScan|getScanUsage|getScanQuotaPeriod|quota\s*:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-ydze: a downgrade restarts the manual-scan count
+// ---------------------------------------------------------------------------
+
+describe("quota count after a downgrade (gc-ydze)", () => {
+  const NOW = new Date("2026-11-20T12:00:00Z");
+  const MONTH_START = new Date("2026-11-01T00:00:00Z");
+  const DOWNGRADED = new Date("2026-11-18T09:30:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.scan.findFirst.mockResolvedValue(null);
+    mockHasCompletedScans.mockResolvedValue(true);
+    mockLatestDowngradeSince.mockResolvedValue(null);
+  });
+
+  it("getQuotaCountStart: the period start when there was no downgrade", async () => {
+    expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(MONTH_START);
+    expect(mockLatestDowngradeSince).toHaveBeenCalledWith(SHOP_ID, MONTH_START);
+  });
+
+  it("getQuotaCountStart: the downgrade time when it falls inside the period", async () => {
+    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(DOWNGRADED);
+  });
+
+  it("getQuotaCountStart: never earlier than the period start", async () => {
+    mockLatestDowngradeSince.mockResolvedValue(new Date("2026-10-30T00:00:00Z"));
+    expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(MONTH_START);
+  });
+
+  it("Free after a mid-month downgrade: counts only scans since the downgrade", async () => {
+    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    const usage = await getScanUsage(SHOP_ID, "free", NOW);
+
+    expect(mockCountScansForShopSince).toHaveBeenCalledWith(SHOP_ID, DOWNGRADED);
+    // The period itself (and so the next-scan date) is unchanged.
+    expect(usage).toMatchObject({ used: 0, limit: 2, period: "month", periodStart: MONTH_START });
+    expect((await canStartScan(SHOP_ID, "free", NOW)).allowed).toBe(true);
+  });
+
+  it("Standard after a Pro downgrade mid-week: the weekly count also restarts", async () => {
+    const weekStart = new Date("2026-11-16T00:00:00Z");
+    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    await getScanUsage(SHOP_ID, "Standard", NOW);
+
+    expect(mockLatestDowngradeSince).toHaveBeenCalledWith(SHOP_ID, weekStart);
+    expect(mockCountScansForShopSince).toHaveBeenCalledWith(SHOP_ID, DOWNGRADED);
+  });
+
+  it("a scan after the downgrade still counts: 2 since the downgrade blocks Free", async () => {
+    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockCountScansForShopSince.mockResolvedValue(2);
+
+    const result = await canStartScan(SHOP_ID, "free", NOW);
+
+    expect(result.allowed).toBe(false);
+    expect(result.nextScanAt).toEqual(new Date("2026-12-01T00:00:00Z"));
+  });
+
+  it("propagates a database error from the downgrade lookup", async () => {
+    mockLatestDowngradeSince.mockRejectedValue(new Error("DB timeout"));
+    await expect(getScanUsage(SHOP_ID, "free", NOW)).rejects.toThrow("DB timeout");
   });
 });

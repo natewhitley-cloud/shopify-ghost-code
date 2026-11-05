@@ -108,6 +108,8 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
   canUseMultipleThemes: vi.fn(),
   canUseScanDiffing: vi.fn(),
+  // gc-ydze: no downgrade by default, so the count starts at the period start.
+  getQuotaCountStart: vi.fn(async (_shopId: string, periodStart: Date) => periodStart),
   getScanUsage: vi.fn(),
   getWeekStartUTC: vi.fn(),
 }));
@@ -147,6 +149,7 @@ import {
   canStartScan,
   canUseMultipleThemes,
   canUseScanDiffing,
+  getQuotaCountStart,
   getScanUsage,
   getWeekStartUTC,
 } from "../../app/lib/plan-gating.server";
@@ -1194,6 +1197,24 @@ describe("app._index action — theme picker", () => {
         requestedFrom: "unknown",
       });
     });
+  });
+
+  it("counts the atomic quota from getQuotaCountStart (a downgrade in the period, gc-ydze)", async () => {
+    const downgradedAt = new Date("2026-03-18T09:30:00Z");
+    vi.mocked(getQuotaCountStart).mockResolvedValueOnce(downgradedAt);
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+    mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+    mockCanUseMultipleThemes.mockReturnValue(true);
+    mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
+
+    const request = new Request("https://test-shop.myshopify.com/app", {
+      method: "POST",
+      body: new URLSearchParams({ themeId: "gid://shopify/Theme/789" }),
+    });
+    await action(makeActionArgs({ request }));
+
+    expect(getQuotaCountStart).toHaveBeenCalledWith("shop-1", expect.any(Date));
+    expect(mockDispatchScan.mock.calls[0][3].quota.periodStart).toEqual(downgradedAt);
   });
 
   describe("invalid themeId on Professional plan", () => {

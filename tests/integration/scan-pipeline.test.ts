@@ -62,6 +62,8 @@ vi.mock("../../app/models/finding.server", () => ({
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
   canUseMultipleThemes: vi.fn(() => false),
+  // gc-ydze: no downgrade, so the quota counts from the period start.
+  getQuotaCountStart: vi.fn(async (_shopId: string, periodStart: Date) => periodStart),
   getWeekStartUTC: vi.fn(() => new Date("2024-01-15T00:00:00Z")),
   // Checkout-sunset detection is gated in the core fetch-and-scan step (gc-b3c);
   // keep it inert here so this pipeline-mechanics test's finding counts are

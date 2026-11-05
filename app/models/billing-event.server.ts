@@ -49,6 +49,26 @@ export async function hasBillingHistory(shopId: string): Promise<boolean> {
 }
 
 /**
+ * When the shop last moved to a LOWER plan (downgrade or cancellation) at or
+ * after `since`, or null (gc-ydze). Manual scans made before it were made on
+ * the higher plan, so the lower plan's quota counts from here. Upgrades and
+ * reactivations never restart a count. Recorded at reconcile time (when the
+ * app noticed the change); a missing row just keeps the full-period count.
+ */
+export async function latestDowngradeSince(shopId: string, since: Date): Promise<Date | null> {
+  const row = await db.billingEvent.findFirst({
+    where: {
+      shopId,
+      createdAt: { gte: since },
+      eventType: { in: ["downgrade", "cancellation"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  return row?.createdAt ?? null;
+}
+
+/**
  * Options for excluding dev/test/internal/app-review stores from the billing-event
  * aggregation, mirroring the exclusion every other operator-digest metric applies.
  */

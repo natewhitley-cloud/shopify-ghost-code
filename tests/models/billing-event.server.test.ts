@@ -18,6 +18,7 @@ const mockDb = vi.hoisted(() => ({
   billingEvent: {
     create: vi.fn(),
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
 }));
 
@@ -32,6 +33,7 @@ vi.mock("../../app/db.server", () => ({
 import {
   recordBillingEvent,
   getBillingEventStats,
+  latestDowngradeSince,
   type BillingEventType,
 } from "../../app/models/billing-event.server";
 
@@ -241,5 +243,34 @@ describe("getBillingEventStats with exclusion opts", () => {
     await expect(getBillingEventStats(since, { excludeSet, excludePrefixes })).rejects.toThrow(
       "Query failed",
     );
+  });
+});
+
+describe("latestDowngradeSince (gc-ydze)", () => {
+  const SINCE = new Date("2026-11-01T00:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads the latest downgrade or cancellation at or after `since`", async () => {
+    const at = new Date("2026-11-18T09:30:00Z");
+    mockDb.billingEvent.findFirst.mockResolvedValue({ createdAt: at });
+
+    expect(await latestDowngradeSince("shop-1", SINCE)).toEqual(at);
+    expect(mockDb.billingEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        shopId: "shop-1",
+        createdAt: { gte: SINCE },
+        eventType: { in: ["downgrade", "cancellation"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    });
+  });
+
+  it("null when there is none (upgrades and reactivations never restart a count)", async () => {
+    mockDb.billingEvent.findFirst.mockResolvedValue(null);
+    expect(await latestDowngradeSince("shop-1", SINCE)).toBeNull();
   });
 });

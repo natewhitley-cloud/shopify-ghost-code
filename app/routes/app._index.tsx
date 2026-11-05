@@ -50,6 +50,7 @@ import {
   canStartScan,
   canUseMultipleThemes,
   canUseScanDiffing,
+  getQuotaCountStart,
   getScanUsage,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
@@ -1091,7 +1092,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const quotaPeriod = getScanQuotaPeriod(getPlanFeatures(shop.plan));
   if (quotaPeriod) {
     quota = {
-      periodStart: quotaPeriod.periodStart,
+      // gc-ydze: from a downgrade in this period, if later than its start.
+      periodStart: await getQuotaCountStart(shop.id, quotaPeriod.periodStart),
       maxScans: quotaPeriod.limit,
       periodLabel: quotaPeriod.period,
       isFirstScan: !(await hasCompletedScans(shop.id)),
