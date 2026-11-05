@@ -557,26 +557,37 @@ export function diffScans(
   const currentWalks = opts?.currentWalks ?? null;
   const baselineWalks = opts?.baselineWalks ?? null;
   const activeApps = new Set(opts?.activeEmbedApps ?? []);
-  const effectivePrevious =
+  const isEffective =
     hasCatFilter || hasFileFilter || currentWalks !== null || activeApps.size > 0
-      ? previousFindings.filter(
-          (f) =>
-            !(
-              hasCatFilter &&
-              (skippedCats!.has(f.findingType) || skippedCats!.has(coverageKeyOf(f)))
-            ) &&
-            !(
-              hasFileFilter &&
-              skippedFiles!.has(f.filename) &&
-              !CROSS_FILE_FINDING_TYPES.has(f.findingType) &&
-              !SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(f.findingType)
-            ) &&
-            // gc-747u: a record past the current capped walk was not re-checked.
-            walkChecked(f, currentWalks, baselineWalks) &&
-            // gc-k71c / gc-2x0o: suppressed now because its app is live, not fixed.
-            !(activeApps.size > 0 && isLiveAppSuppressedFinding(f, activeApps)),
-        )
-      : previousFindings;
+      ? (f: DiffableFinding) =>
+          !(
+            hasCatFilter &&
+            (skippedCats!.has(f.findingType) || skippedCats!.has(coverageKeyOf(f)))
+          ) &&
+          !(
+            hasFileFilter &&
+            skippedFiles!.has(f.filename) &&
+            !CROSS_FILE_FINDING_TYPES.has(f.findingType) &&
+            !SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(f.findingType)
+          ) &&
+          // gc-747u: a record past the current capped walk was not re-checked.
+          walkChecked(f, currentWalks, baselineWalks) &&
+          // gc-k71c / gc-2x0o: suppressed now because its app is live, not fixed.
+          !(activeApps.size > 0 && isLiveAppSuppressedFinding(f, activeApps))
+      : null;
+  const effectivePrevious = isEffective ? previousFindings.filter(isEffective) : previousFindings;
+  // gc-zji: the prior findings left out above (not re-checked this run). One
+  // that the current scan DID find again is unchanged, not new: a capped
+  // category re-finds part of its findings every scan. Unmatched ones stay out
+  // of "resolved" (unknown, not fixed).
+  const excludedCounts = new Map<string, number>();
+  if (isEffective) {
+    for (const f of previousFindings) {
+      if (isEffective(f)) continue;
+      const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
+      excludedCounts.set(fp, (excludedCounts.get(fp) ?? 0) + 1);
+    }
+  }
 
   // Build a multiset (Map<fingerprint, count>) for the previous findings so
   // we can handle duplicates correctly.
@@ -596,12 +607,17 @@ export function diffScans(
     const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
     const prevCount = remainingPrevious.get(fp) ?? 0;
 
+    const excludedCount = excludedCounts.get(fp) ?? 0;
     if (prevCount > 0) {
       // This finding existed before — it is unchanged.
       unchangedCount++;
       // Decrement so that duplicate current findings beyond the previous count
       // are treated as new.
       remainingPrevious.set(fp, prevCount - 1);
+    } else if (excludedCount > 0) {
+      // gc-zji: matches a prior finding the filters left out: unchanged too.
+      unchangedCount++;
+      excludedCounts.set(fp, excludedCount - 1);
     } else if (
       !notNewCats.has(f.findingType) &&
       !notNewCats.has(coverageKeyOf(f)) &&

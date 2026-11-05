@@ -495,17 +495,17 @@ describe("diffScans — skipped categories (LOG-4 un-audited exclusion)", () => 
   });
 
   it("keeps an unchanged finding in a skipped category from being miscounted", () => {
-    // Edge case: the current scan reports a finding in a skipped category (e.g.
-    // theme-level GHOST_TAG-shaped data). The prior copy is excluded, so the
-    // current one is simply "new" rather than "unchanged" — never a false
-    // resolved, and counts stay internally consistent.
+    // Edge case: the current scan reports a finding in a skipped category (a
+    // capped category re-finds part of its findings). The prior copy is left out
+    // of resolved, and the current one matches it, so it is "unchanged", not
+    // "new" (gc-zji; this test used to pin the old "new" behaviour).
     const tag = makeFinding("n/a", "GHOST_TAG", "orphan-tag");
 
     const diff = diffScans([tag], [tag], { skippedCategories: ["GHOST_TAG"] });
 
     expect(diff.resolvedFindings).toHaveLength(0);
-    expect(diff.unchangedCount).toBe(0);
-    expect(diff.newFindings).toHaveLength(1);
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
   });
 
   it("supports multiple skipped categories at once", () => {
