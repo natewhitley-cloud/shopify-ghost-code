@@ -18,7 +18,8 @@ export type { ScanQuotaPeriod } from "./scan-quota";
 /**
  * Check whether a shop is allowed to start a new MANUAL scan under their plan.
  *
- * - Free plan: first scan ever is always allowed (onboarding); after that, 1 scan per calendar month.
+ * - Free plan: first scan ever is always allowed (onboarding); 2 manual scans per calendar month,
+ *   the first scan included (gc-258i).
  * - Standard: 1 scan per week (resets Monday 00:00 UTC).
  * - Professional: 5 scans per UTC day (resets 00:00 UTC, gc-d0ui).
  *
@@ -86,7 +87,7 @@ export async function canStartScan(
   if (usage.used >= usage.limit) {
     return {
       allowed: false,
-      reason: `Free plan limit: ${usage.limit} scan per month. Upgrade to Standard or Professional for more scans.`,
+      reason: `Free plan limit: ${usage.limit} ${usage.limit === 1 ? "scan" : "scans"} per month. Upgrade to Standard or Professional for more scans.`,
       nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart),
     };
   }
@@ -163,7 +164,7 @@ export function canUseMultipleThemes(planName: string): boolean {
   return getPlanFeatures(planName).maxThemes > 1;
 }
 
-/** Whether the plan can export a scan as a branded PDF report. Professional-only (gc-rrh.1). */
+/** Whether the plan can export a scan as a branded PDF report. Standard and Professional (gc-rrh.1, gc-pqg0). */
 export function canExportPdf(planName: string): boolean {
   return getPlanFeatures(planName).exportPdf;
 }

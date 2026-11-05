@@ -56,7 +56,10 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { getPlanFeatures } from "../../app/lib/billing.server";
 import { logger } from "../../app/lib/logger.server";
+import { PLANS } from "../../app/lib/plans";
+import { getScanQuotaPeriod } from "../../app/lib/scan-quota";
 import {
   buildStaleScanWhere,
   createScan,
@@ -314,6 +317,69 @@ describe("createScan — requestedFrom and shopScanNumber", () => {
     await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, quota, "home");
 
     expect(createdData().shopScanNumber).toBe(3);
+  });
+
+  describe("Free plan install month (gc-258i: 2 manual scans a month)", () => {
+    // The real Free quota, built the way Home's action builds it. Rows are dated
+    // 2026-01-01, inside January's period.
+    const freeQuota = (isFirstScan: boolean) => {
+      const period = getScanQuotaPeriod(
+        getPlanFeatures(PLANS.FREE),
+        new Date("2026-01-15T12:00:00Z"),
+      )!;
+      return {
+        periodStart: period.periodStart,
+        maxScans: period.limit,
+        periodLabel: period.period,
+        isFirstScan,
+      };
+    };
+
+    it("first scan ever: allowed with no prior scans", async () => {
+      mockTx.scan.count.mockImplementation(countRows([]));
+
+      await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, freeQuota(true), "home");
+
+      expect(mockTx.scan.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("second scan in the install month: allowed (the first scan counts as 1 of 2)", async () => {
+      mockTx.scan.count.mockImplementation(
+        countRows([row(ScanOrigin.MANUAL, ScanStatus.COMPLETED)]),
+      );
+
+      await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, freeQuota(false), "home");
+
+      expect(mockTx.scan.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("third scan in the month: rejected, nothing created", async () => {
+      mockTx.scan.count.mockImplementation(
+        countRows([
+          row(ScanOrigin.MANUAL, ScanStatus.COMPLETED),
+          row(ScanOrigin.MANUAL, ScanStatus.COMPLETED),
+        ]),
+      );
+
+      await expect(
+        createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, freeQuota(false), "home"),
+      ).rejects.toThrow("Scan limit reached: 2 of 2 scans used this month.");
+      expect(mockTx.scan.create).not.toHaveBeenCalled();
+    });
+
+    it("a FAILED scan and a scheduled scan do not use the allowance", async () => {
+      mockTx.scan.count.mockImplementation(
+        countRows([
+          row(ScanOrigin.MANUAL, ScanStatus.COMPLETED),
+          row(ScanOrigin.MANUAL, ScanStatus.FAILED),
+          row(ScanOrigin.AUTO_PUBLISH, ScanStatus.COMPLETED),
+        ]),
+      );
+
+      await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, freeQuota(false), "home");
+
+      expect(mockTx.scan.create).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("concurrent-guard path: a rejected request (active scan) counts nothing and creates nothing", async () => {

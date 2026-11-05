@@ -12,7 +12,7 @@
 
 | Feature                | Limit                                                                                                                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scans per month        | First scan always free (onboarding); then 1/month ongoing                                                                                                                       |
+| Scans per month        | 2 manual scans a month (resets on the 1st, 00:00 UTC); the first scan ever is always allowed and counts as one of the 2 (gc-258i)                                               |
 | Finding details        | Severity counts + category breakdown (Scripts, Styles, Snippets, Sections, Orphan Assets) + up to 5 findings shown in full (never more than half; gc-97k.10); all others locked |
 | Themes                 | 1                                                                                                                                                                               |
 | Auto-rescan on publish | No                                                                                                                                                                              |
@@ -48,7 +48,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 **App listing features (max 40 chars each):**
 
 1. First scan always free
-2. 1 scan per month after first
+2. 2 manual scans a month
 3. Findings grouped by impact, with counts
 4. Up to 5 findings shown in full
 5. Single theme scanning
@@ -66,6 +66,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Scans                  | 1 manual per week (resets Monday 00:00 UTC)                                                                                                                                                                                                                                      |
 | Finding details        | Full (file, line number, code snippet)                                                                                                                                                                                                                                           |
+| PDF export             | Yes (same branded report as Professional; CSV and JSON export on both paid plans, gc-pqg0)                                                                                                                                                                                       |
 | Findings trend         | Yes (findings count over time + change between scans)                                                                                                                                                                                                                            |
 | Monthly scheduled scan | Yes (1st of each month, 07:20 UTC, theme changed or not)                                                                                                                                                                                                                         |
 | Monthly re-scan nudge  | Yes (in-app prompt on 1st of each month)                                                                                                                                                                                                                                         |
@@ -92,8 +93,9 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 4. Find dead checkout.liquid code
 5. Monthly auto-scan + findings trend
 6. Monthly store speed report, cost per app
+7. PDF report to share with your team
 
-> Live on the Partner Dashboard Standard plan card (2026-10-19). Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same six bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on.
+> Live on the Partner Dashboard Standard plan card (2026-10-19). Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same seven bullets (gc-4wvb, bullet 7 gc-pqg0), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on.
 
 > **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only _outcomes_ (Broken Links
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of _mechanics_, so
@@ -208,7 +210,7 @@ Framing: a digest, never a status alert. Subject is always `GhostCode digest for
 
 ### Free → Standard
 
-1. **Scan limit hit** — First scan is always free. After that, free users get 1/month; hitting that limit surfaces an upgrade prompt. Monthly quota resets on the 1st of each calendar month.
+1. **Scan limit hit** — First scan is always free. Free users get 2 manual scans a month, the first scan included (gc-258i); hitting that limit surfaces an upgrade prompt. Monthly quota resets on the 1st of each calendar month.
 2. **Finding details locked** — Free users see severity counts, category breakdown (Scripts/Styles/Snippets/Sections/Orphan Assets), and up to 5 findings in full: `max(1, min(5, floor(total / 2)))` of the non-malicious, non-ignored findings, picked by the shared "Start here" ranking (severity, then urgency, then lane; gc-bn0x) and one per consequence lane before any lane repeats (gc-97k.10). All remaining findings are locked server-side. An upgrade banner explains what's behind the paywall.
 
 ### Standard → Professional
@@ -325,3 +327,4 @@ Framing: a digest, never a status alert. Subject is always `GhostCode digest for
 | 2026-10-27 | Audit fixes: menu findings get a read-time kill switch; guard incidents on the scan page and in Sidekick; guard email only to the consented address                                                                                                                                                                                                                                                                                                                                | `MENU_INJECTION_LIVE_ENABLED` off now hides stored menu findings everywhere (like the advisory flag). Guard incidents are security facts, so every surface that shows scan security banners shows them too. Consent (s.2.1.2) covers the address the notice named, so a changed owner email asks again before any email.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 | 2026-10-11 | Liquid error check redesigned after an adversarial audit: missing-snippet errors only, and only when the theme files confirm them; fixed-shape stored text | A blind test of the first, text-only detector scored 0.74 precision: blog excerpts, reviews and tutorials print the same words. A finding that says a store is broken must not be wrong, so page text is now only a lead that the theme must confirm (snippet absent + a file renders it). On the audit sets this gives 0 false positives; recall is 11 of 12 missing-snippet cases when the theme is really broken that way, and every other kind of Liquid error is dropped by design. Stored text is rebuilt from parsed parts, so no page text (shopper data, or text planted for a model) can be stored. |
+| 2026-11-05 | Free: **2 manual scans a month** (was 1; the first scan counts as one), Standard gets the **PDF export** (was Professional-only) (gc-258i, gc-pqg0; built, NOT deployed) |

@@ -19,7 +19,8 @@ import type { BillingEventType } from "../../app/models/billing-event.server";
 describe("getPlanFeatures", () => {
   it("returns free tier features by default", () => {
     const features = getPlanFeatures("unknown");
-    expect(features.maxScansPerMonth).toBe(1);
+    expect(features.maxScansPerMonth).toBe(2); // gc-258i
+    expect(features.exportPdf).toBe(false);
     expect(features.showFindingDetails).toBe(false);
     expect(features.scheduledScan).toBe(false);
   });
@@ -27,6 +28,7 @@ describe("getPlanFeatures", () => {
   it("returns standard features", () => {
     const features = getPlanFeatures(PLANS.STANDARD);
     expect(features.maxScansPerMonth).toBe(Infinity);
+    expect(features.exportPdf).toBe(true); // gc-pqg0: both paid plans
     expect(features.showFindingDetails).toBe(true);
     expect(features.maxThemes).toBe(1);
     expect(features.scheduledScan).toBe(true);

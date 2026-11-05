@@ -30,7 +30,7 @@ export const PLAN_TILE_META: Record<TilePlan, { name: string; price: string }> =
 export const PLAN_LISTING_BULLETS: Record<TilePlan, readonly string[]> = {
   [PLANS.FREE]: [
     "First scan always free",
-    "1 scan per month after first",
+    "2 manual scans a month",
     "Findings grouped by impact, with counts",
     "Up to 5 findings shown in full",
     "Single theme scanning",
@@ -45,6 +45,7 @@ export const PLAN_LISTING_BULLETS: Record<TilePlan, readonly string[]> = {
     "Find dead checkout.liquid code",
     "Monthly auto-scan + findings trend",
     MONTHLY_SPEED_REPORT_BULLET,
+    "PDF report to share with your team",
   ],
   [PLANS.PROFESSIONAL]: [
     "All features in Standard",

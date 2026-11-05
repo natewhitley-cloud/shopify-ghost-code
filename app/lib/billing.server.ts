@@ -200,7 +200,7 @@ export type PlanFeatures = {
    * (gc-b3c), mirroring canDetectDanglingReferences.
    */
   canDetectCheckoutSunset: boolean;
-  /** Whether the plan can export findings as a branded PDF report. Professional-only (gc-rrh.1). */
+  /** Whether the plan can export findings as a branded PDF report. Standard and Professional (gc-rrh.1, gc-pqg0). */
   exportPdf: boolean;
   /**
    * How often the merchant can be emailed about NEW findings (gc-syz.3). Mirrors
@@ -267,7 +267,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scheduledScan: true, // Monthly, 1st 07:20 UTC via monthly-scan, theme changed or not (gc-iefo)
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
-        exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
+        exportPdf: true, // PDF export on both paid plans (gc-rrh.1, gc-pqg0)
         alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: STANDARD_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: STANDARD_REDIRECT_CAP, // gc-747u
@@ -290,7 +290,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scheduledScan: true, // Weekly, Sunday 06:40 UTC via weekly-scan, theme changed or not (gc-iefo)
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
-        exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
+        exportPdf: true, // PDF export on both paid plans (gc-rrh.1, gc-pqg0)
         alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: PROFESSIONAL_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: PROFESSIONAL_REDIRECT_CAP, // gc-747u
@@ -303,7 +303,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
       };
     default: // FREE — no active Shopify subscription
       return {
-        maxScansPerMonth: 1,
+        maxScansPerMonth: 2, // 2 manual scans a month; the first scan counts as one (gc-258i)
         // Infinity signals "no weekly cap" — getScanUsage skips the weekly
         // check and falls through to the monthly limit instead.
         maxScansPerWeek: Infinity,

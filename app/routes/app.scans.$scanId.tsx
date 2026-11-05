@@ -2821,7 +2821,7 @@ export default function ScanDetail() {
                           {downloadIcon}
                           Export JSON
                         </button>
-                        {canExportPdf ? (
+                        {canExportPdf && (
                           <button
                             type="button"
                             onClick={() => downloadExport("pdf", "pdf")}
@@ -2830,15 +2830,6 @@ export default function ScanDetail() {
                             {downloadIcon}
                             Export PDF
                           </button>
-                        ) : (
-                          // Locked affordance advertising the Professional-only
-                          // PDF export; routes the merchant to the upgrade path.
-                          <Link to="/app/settings" style={{ textDecoration: "none" }}>
-                            <span style={{ ...exportButtonStyle, opacity: 0.6 }}>
-                              {downloadIcon}
-                              Export PDF (Pro)
-                            </span>
-                          </Link>
                         )}
                       </div>
                     )}

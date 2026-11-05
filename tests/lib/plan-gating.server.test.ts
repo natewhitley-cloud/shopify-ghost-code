@@ -176,7 +176,7 @@ describe("canDetectCheckoutSunset", () => {
 });
 
 // ---------------------------------------------------------------------------
-// canExportPdf — pure, plan-tier tests (gc-rrh.1: Professional-only)
+// canExportPdf — pure, plan-tier tests (gc-rrh.1; both paid plans since gc-pqg0)
 // ---------------------------------------------------------------------------
 
 describe("canExportPdf", () => {
@@ -184,8 +184,8 @@ describe("canExportPdf", () => {
     expect(canExportPdf("free")).toBe(false);
   });
 
-  it("returns false for Standard plan", () => {
-    expect(canExportPdf("Standard")).toBe(false);
+  it("returns true for Standard plan (gc-pqg0)", () => {
+    expect(canExportPdf("Standard")).toBe(true);
   });
 
   it("returns true for Professional plan", () => {
@@ -435,7 +435,7 @@ describe("getScanUsage / getScanQuotaPeriod (gc-d0ui)", () => {
     expect(getScanQuotaPeriod(getPlanFeatures("free"), now)).toEqual({
       period: "month",
       periodStart: new Date("2026-10-01T00:00:00Z"),
-      limit: 1,
+      limit: 2, // gc-258i
     });
   });
 
@@ -451,7 +451,7 @@ describe("getScanUsage / getScanQuotaPeriod (gc-d0ui)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// canStartScan — Free plan (1 scan per month)
+// canStartScan — Free plan (2 scans per month, gc-258i)
 // ---------------------------------------------------------------------------
 
 describe("canStartScan — Free plan", () => {
@@ -471,14 +471,25 @@ describe("canStartScan — Free plan", () => {
     expect(result.reason).toBeUndefined();
   });
 
-  it("returns allowed: false when the shop has already used 1 scan this month (at limit)", async () => {
+  it("returns allowed: true when the shop has used 1 of 2 scans this month (gc-258i)", async () => {
     mockCountScansForShopSince.mockResolvedValue(1);
 
     const result = await canStartScan(SHOP_ID, "free");
 
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("returns allowed: false when the shop has already used 2 scans this month (at limit)", async () => {
+    mockCountScansForShopSince.mockResolvedValue(2);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("Free plan limit");
-    expect(result.reason).toContain("Upgrade");
+    expect(result.reason).toBe(
+      "Free plan limit: 2 scans per month. Upgrade to Standard or Professional for more scans.",
+    );
+    expect(result.nextScanAt).toBeInstanceOf(Date);
   });
 
   it("returns allowed: false when the shop has used more than the monthly limit", async () => {
@@ -534,8 +545,8 @@ describe("canStartScan — Free plan", () => {
     expect(result.reason).toBeUndefined();
   });
 
-  it("blocks a scan when a COMPLETED scan already exists this month (quota count returns 1)", async () => {
-    mockCountScansForShopSince.mockResolvedValue(1);
+  it("blocks a scan when a COMPLETED scan already exists this month (quota count returns 2, the limit)", async () => {
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free");
 
@@ -543,9 +554,9 @@ describe("canStartScan — Free plan", () => {
     expect(result.reason).toContain("Free plan limit");
   });
 
-  it("blocks a scan when an IN_PROGRESS scan already exists this month (quota count returns 1)", async () => {
+  it("blocks a scan when an IN_PROGRESS scan already exists this month (quota count returns 2, the limit)", async () => {
     // IN_PROGRESS scans count toward quota to prevent concurrent scan spam.
-    mockCountScansForShopSince.mockResolvedValue(1);
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free");
 
@@ -567,7 +578,7 @@ describe("canStartScan — unknown plan defaults to free-tier limits", () => {
   });
 
   it("applies free-tier monthly limit for unrecognised plan names", async () => {
-    mockCountScansForShopSince.mockResolvedValue(1);
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "legacy-plan");
 
@@ -617,7 +628,7 @@ describe("canStartScan — first scan free on free plan", () => {
 
   it("applies normal monthly quota once the shop has at least one completed scan", async () => {
     mockHasCompletedScans.mockResolvedValue(true); // prior scan exists
-    mockCountScansForShopSince.mockResolvedValue(1); // monthly limit hit
+    mockCountScansForShopSince.mockResolvedValue(2); // monthly limit hit
 
     const result = await canStartScan(SHOP_ID, "free");
 
@@ -688,7 +699,7 @@ describe("canStartScan — nextScanAt when the quota blocks (gc-mgi)", () => {
   it("Free, Sep 30 23:59:59Z, quota used: next scan Oct 1 00:00Z", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-30T23:59:59.999Z"));
-    mockCountScansForShopSince.mockResolvedValue(1);
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free");
 
@@ -699,7 +710,7 @@ describe("canStartScan — nextScanAt when the quota blocks (gc-mgi)", () => {
   it("Free, exactly Oct 1 00:00Z: a new month (counted from Oct 1), next would be Nov 1", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
-    mockCountScansForShopSince.mockResolvedValue(1);
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free");
 
@@ -710,7 +721,7 @@ describe("canStartScan — nextScanAt when the quota blocks (gc-mgi)", () => {
   it("Free, December: next scan January 1 of the next year", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-12-31T23:00:00Z"));
-    mockCountScansForShopSince.mockResolvedValue(1);
+    mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free");
 

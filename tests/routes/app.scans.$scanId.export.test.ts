@@ -526,7 +526,7 @@ describe("JSON export", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PDF export (Professional-only, gc-rrh.1)
+// PDF export (both paid plans, gc-rrh.1 + gc-pqg0)
 // ---------------------------------------------------------------------------
 
 describe("PDF export", () => {
@@ -560,7 +560,7 @@ describe("PDF export", () => {
     expect(Object.keys(input).sort()).toEqual(["exportedAt", "findings", "scan"]);
   });
 
-  it("returns 403 when the plan cannot export PDF (Standard/Free)", async () => {
+  it("returns 403 when the plan cannot export PDF", async () => {
     mockCanExportPdf.mockReturnValue(false);
 
     const response = await callLoader("scan-abc", "pdf");

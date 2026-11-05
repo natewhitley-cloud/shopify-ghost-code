@@ -126,10 +126,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // Step 7: Serialise and return the response.
   if (format === "pdf") {
-    // PDF export is Professional-only. The Step 3 paid-only check already ran
-    // (Standard passes it), so a Standard shop reaches here and is gated out.
+    // PDF export is on both paid plans (gc-pqg0). The Step 3 paid-only check
+    // already ran; this stays as the PDF feature's own gate.
     if (!canExportPdf(shop.plan)) {
-      return new Response("Upgrade to Professional to export PDF reports.", { status: 403 });
+      return new Response("Upgrade to Standard or Professional to export PDF reports.", {
+        status: 403,
+      });
     }
 
     const pdf = await renderScanReportPdf({

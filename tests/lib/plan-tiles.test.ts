@@ -47,7 +47,7 @@ describe("planTileBullets", () => {
   it("Free: the live 8-bullet card in order; the security alerts bullet shows even when speed is dark", () => {
     expect(PLAN_LISTING_BULLETS[PLANS.FREE]).toEqual([
       "First scan always free",
-      "1 scan per month after first",
+      "2 manual scans a month",
       "Findings grouped by impact, with counts",
       "Up to 5 findings shown in full",
       "Single theme scanning",
@@ -61,6 +61,14 @@ describe("planTileBullets", () => {
     for (const plan of TILE_PLANS) {
       for (const b of PLAN_LISTING_BULLETS[plan]) expect(b.length).toBeLessThanOrEqual(40);
     }
+  });
+
+  it("Standard lists the PDF report; Professional inherits it, not repeated (gc-pqg0)", () => {
+    expect(PLAN_LISTING_BULLETS[PLANS.STANDARD]).toContain("PDF report to share with your team");
+    expect(PLAN_LISTING_BULLETS[PLANS.PROFESSIONAL]).not.toContain(
+      "PDF report to share with your team",
+    );
+    expect(PLAN_LISTING_BULLETS[PLANS.PROFESSIONAL][0]).toBe("All features in Standard");
   });
 
   it("never mutates the constants", () => {

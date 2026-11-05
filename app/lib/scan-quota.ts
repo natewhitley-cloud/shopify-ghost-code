@@ -48,7 +48,7 @@ export function getNextScanPeriodStart(period: ScanQuotaPeriod, periodStart: Dat
  * Home action's atomic quota (createScan), so the two can never disagree:
  *   - Professional: 5 a day (resets 00:00 UTC, gc-d0ui);
  *   - Standard: 1 a week (resets Monday 00:00 UTC);
- *   - Free: 1 a month (resets on the 1st, 00:00 UTC).
+ *   - Free: 2 a month (resets on the 1st, 00:00 UTC; gc-258i).
  * A limit that is not a finite number (Infinity, or absent) means no cap for
  * that period.
  */
