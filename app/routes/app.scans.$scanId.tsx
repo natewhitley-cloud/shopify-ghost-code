@@ -3056,48 +3056,52 @@ export default function ScanDetail() {
                 ${htmlTableCss("app-map-table")}
                 .app-map-table thead th { white-space: nowrap; }
               `}</style>
-                <table className="app-map-table">
-                  <thead>
-                    <tr>
-                      <th>App</th>
-                      <th>Findings</th>
-                      <th>Types</th>
-                      <th>Files Affected</th>
-                      <th>Before you remove it</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...appAttribution.entries()]
-                      .sort((a, b) => b[1].count - a[1].count)
-                      .map(([appName, data]) => (
-                        <tr key={appName}>
-                          <td style={{ fontWeight: 600 }}>{appName}</td>
-                          <td style={{ textAlign: "center" }}>{data.count}</td>
-                          <td>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-                              {[...data.types].map((t) => (
-                                <div key={t}>
-                                  <s-badge tone="neutral">{FINDING_TYPE_LABELS[t] ?? t}</s-badge>
+                {/* gc-o7y7: the table scrolls inside its own box on narrow screens
+                  (390px), so the page never scrolls sideways. */}
+                <div style={{ overflowX: "auto" }}>
+                  <table className="app-map-table">
+                    <thead>
+                      <tr>
+                        <th>App</th>
+                        <th>Findings</th>
+                        <th>Types</th>
+                        <th>Files Affected</th>
+                        <th>Before you remove it</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...appAttribution.entries()]
+                        .sort((a, b) => b[1].count - a[1].count)
+                        .map(([appName, data]) => (
+                          <tr key={appName}>
+                            <td style={{ fontWeight: 600 }}>{appName}</td>
+                            <td style={{ textAlign: "center" }}>{data.count}</td>
+                            <td>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                                {[...data.types].map((t) => (
+                                  <div key={t}>
+                                    <s-badge tone="neutral">{FINDING_TYPE_LABELS[t] ?? t}</s-badge>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                            <td>
+                              {[...data.files].map((f) => (
+                                <div key={f}>
+                                  <code style={{ fontSize: "12px" }}>{f}</code>
                                 </div>
                               ))}
-                            </div>
-                          </td>
-                          <td>
-                            {[...data.files].map((f) => (
-                              <div key={f}>
-                                <code style={{ fontSize: "12px" }}>{f}</code>
-                              </div>
-                            ))}
-                          </td>
-                          <td style={{ whiteSpace: "nowrap" }}>
-                            <Link to={`/app/scans/${scan.id}?app=${encodeURIComponent(appName)}`}>
-                              See what stays →
-                            </Link>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                            </td>
+                            <td style={{ whiteSpace: "nowrap" }}>
+                              <Link to={`/app/scans/${scan.id}?app=${encodeURIComponent(appName)}`}>
+                                See what stays →
+                              </Link>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
               </s-stack>
             </s-card>
           </div>
