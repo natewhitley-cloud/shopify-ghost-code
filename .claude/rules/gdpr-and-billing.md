@@ -67,5 +67,5 @@ Shopify hosts the "Select a plan" page. We only build the URL to it — see
   `currentAppInstallation.activeSubscriptions` query inside `reconcileShopPlan`.
   Gate paid features on that stored plan (see `getPlanFeatures`), which reflects
   an actual ACTIVE subscription.
-- Free tier: 1 scan per month, basic findings. Paid tiers: more scans, detailed
+- Free tier: 2 manual scans per month (first scan included), basic findings. Paid tiers: more scans, detailed
   findings, historical comparison (see `getPlanFeatures` for exact limits).

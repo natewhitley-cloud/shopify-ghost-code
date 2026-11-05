@@ -91,22 +91,6 @@ describe("classifySeverity", () => {
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 
-  it("downgrades GHOST_SCRIPT to LOW inside a {% doc %} block, which Liquid never renders (gc-08x8)", () => {
-    const snippet =
-      '{% doc %}\n  <script src="//cdn.klaviyo.com/js/klaviyo.js"></script>\n{% enddoc %}';
-    expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).toBe(Severity.LOW);
-    const stripped =
-      '{%- doc -%}\n  <script src="//cdn.klaviyo.com/js/klaviyo.js"></script>\n{%- enddoc -%}';
-    expect(classifySeverity(FindingType.GHOST_SCRIPT, stripped)).toBe(Severity.LOW);
-  });
-
-  it("does not treat look-alike tags ({% docs %}, a bare {% enddoc %}) as a doc block", () => {
-    const script = '<script src="//cdn.klaviyo.com/js/klaviyo.js"></script>';
-    for (const snippet of [`{% docs %}\n${script}`, `${script}\n{% enddoc %}`]) {
-      expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).not.toBe(Severity.LOW);
-    }
-  });
-
   it("downgrades GHOST_SNIPPET to LOW when inside a Liquid comment", () => {
     const snippet = "{% comment %}\n  {% render 'klaviyo-onsite' %}\n{% endcomment %}";
     expect(classifySeverity(FindingType.GHOST_SNIPPET, snippet)).toBe(Severity.LOW);

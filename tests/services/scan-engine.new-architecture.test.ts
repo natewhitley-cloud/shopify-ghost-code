@@ -154,10 +154,11 @@ describe("new theme architecture: detectors inside {% block %} / {% partial %}",
 
   // KNOWN GAP (gc-08x8): Liquid never renders a {% doc %} body, so a leftover
   // script there should be LOW like one inside {% comment %}. classifySeverity
-  // only sees the 3-line snippet, and here {% doc %} is 2 lines above the
-  // script, outside it (an adjacent opener is LOW, see the severity-classifier
-  // tests). The same gap exists for {% comment %}. Fix = line-based comment/doc
-  // tracking for GHOST_SCRIPT/STYLE severity (gc-15d9). Flip to `it` then.
+  // only looks for a `comment` opener in the 3-line snippet, so this is HIGH.
+  // Widening that snippet regex to `doc` was tried and reverted (audit F1): it
+  // also downgrades LIVE code next to a one-line doc header, which new-
+  // architecture blocks start with. Fix = line-based comment/doc tracking
+  // (gc-15d9). Flip to `it` then.
   it.fails("a leftover script inside a {% doc %} @example is LOW, like one in a comment", () => {
     const content = [
       "{% doc %}",

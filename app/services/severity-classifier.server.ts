@@ -124,10 +124,8 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
  * context.
  */
 function isInsideLiquidComment(codeSnippet: string): boolean {
-  // Matches {% comment %} or {%- comment -%} (with optional whitespace / dashes),
-  // and {% doc %}, which Liquid never renders either (gc-08x8; the engine's
-  // computeCommentSkipLines already treats doc like comment).
-  return /\{%-?\s*(?:comment|doc)\s*-?%\}/.test(codeSnippet);
+  // Matches {% comment %} or {%- comment -%} (with optional whitespace / dashes)
+  return /\{%-?\s*comment\s*-?%\}/.test(codeSnippet);
 }
 
 /**

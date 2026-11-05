@@ -11,7 +11,7 @@
 
 import { FindingType } from "@prisma/client";
 
-import { isLiveAppOwnFinding } from "./live-app-suppression.server";
+import { isLiveAppSuppressedFinding } from "./live-app-suppression.server";
 import {
   CROSS_FILE_FINDING_TYPES,
   HOMEPAGE_MALICIOUS_COVERAGE_KEY,
@@ -180,17 +180,6 @@ export interface ScanCoverage {
   /** Raw `Scan.liveAppHooks` (Json?, gc-frda); omitted/NULL = not recorded. */
   liveAppHooks?: unknown;
 }
-
-/**
- * The product-audit types the scan drops for an app with an enabled theme
- * embed (gc-k71c, scan-theme runProductAuditChunk). A prior finding of one of
- * these for an app live in the CURRENT scan was suppressed, not fixed.
- */
-const ACTIVE_APP_PRODUCT_TYPES: ReadonlySet<string> = new Set([
-  FindingType.GHOST_TAG,
-  FindingType.GHOST_PRICE,
-  FindingType.GHOST_METAFIELD,
-]);
 
 /**
  * The app names with an enabled embed in `Scan.liveAppHooks.embedApps`, or []
@@ -536,14 +525,8 @@ export function diffScans(
             ) &&
             // gc-747u: a record past the current capped walk was not re-checked.
             walkChecked(f, currentWalks, baselineWalks) &&
-            // gc-k71c: suppressed now because its app is live, not fixed.
-            !(
-              f.appName != null &&
-              activeApps.has(f.appName) &&
-              ACTIVE_APP_PRODUCT_TYPES.has(f.findingType)
-            ) &&
-            // gc-2x0o: the same for the engine's theme-file suppression.
-            !(activeApps.size > 0 && isLiveAppOwnFinding(f, activeApps)),
+            // gc-k71c / gc-2x0o: suppressed now because its app is live, not fixed.
+            !(activeApps.size > 0 && isLiveAppSuppressedFinding(f, activeApps)),
         )
       : previousFindings;
 

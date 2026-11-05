@@ -128,7 +128,7 @@ const SHOP = {
 };
 
 const FREE_FEATURES = {
-  maxScansPerMonth: 1,
+  maxScansPerMonth: 2,
   maxScansPerWeek: Infinity,
   showFindingDetails: false,
   maxThemes: 1,

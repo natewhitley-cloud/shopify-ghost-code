@@ -24,7 +24,7 @@ Manual end-to-end verification against the Shopify dev store. Run through this b
 
 ## 3. Theme Scan
 
-> **Note**: Free plan allows 1 scan/month. If already used, either upgrade plan first (section 4) or reset scan record in database.
+> **Note**: Free plan allows 2 manual scans/month (the first scan counts as one). If already used, either upgrade plan first (section 4) or reset scan record in database.
 
 - [ ] Click "New Scan" — scan queues successfully
 - [ ] Inngest Cloud dashboard shows `scan-theme` function triggered
@@ -56,7 +56,7 @@ Manual end-to-end verification against the Shopify dev store. Run through this b
 
 ## 6. Scan Limits & Plan Gating
 
-- [ ] Free plan: blocked after 1 scan/month with clear messaging
+- [ ] Free plan: blocked after 2 manual scans/month with clear messaging
 - [ ] Standard plan: 1 scan/week, manual only (no automation toggle)
 - [ ] Professional plan: unlimited scans, automation available
 - [ ] Upgrade prompt appears when hitting free plan limit

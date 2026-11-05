@@ -327,7 +327,7 @@ beforeEach(() => {
     keptFindings: [],
   });
   mockGetPlanFeatures.mockReturnValue({
-    maxScansPerMonth: 1,
+    maxScansPerMonth: 2,
     maxScansPerWeek: Infinity,
     showFindingDetails: false,
     maxThemes: 1,

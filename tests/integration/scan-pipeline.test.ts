@@ -456,7 +456,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
       mockCanStartScan.mockResolvedValue({
         allowed: false,
         reason:
-          "Free plan limit: 1 scan per month. Upgrade to Standard or Professional for unlimited scans.",
+          "Free plan limit: 2 scans per month. Upgrade to Standard or Professional for more scans.",
       });
 
       const result = await action({

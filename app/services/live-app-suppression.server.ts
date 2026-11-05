@@ -1,6 +1,8 @@
 /**
- * Live-app suppression shared by the scan engine (dropActiveAppOwnFileFindings)
- * and the scan differ (gc-2x0o). Kept out of scan-engine.server so the differ
+ * Live-app suppression: the rules the scan uses to drop a live app's findings
+ * (theme files: scan engine dropActiveAppOwnFileFindings, gc-clt4/gc-ps3t;
+ * product audit: scan-theme runProductAuditChunk, gc-k71c), shared with the
+ * scan differ so a suppressed finding is never counted "Fixed" (gc-2x0o). Kept out of scan-engine.server so the differ
  * does not depend on the engine.
  */
 import { FindingType } from "@prisma/client";
@@ -49,4 +51,33 @@ export function isLiveAppOwnFinding(
   if (f.appName && activeApps.has(f.appName)) return true;
   const fileOwner = identifyAppFromFilename(f.filename)?.appName;
   return !!fileOwner && activeApps.has(fileOwner);
+}
+
+/**
+ * The product-audit types scan-theme runProductAuditChunk drops for an app
+ * with an enabled theme embed (gc-k71c).
+ */
+export const ACTIVE_APP_PRODUCT_TYPES: ReadonlySet<FindingType> = new Set<FindingType>([
+  FindingType.GHOST_TAG,
+  FindingType.GHOST_PRICE,
+  FindingType.GHOST_METAFIELD,
+]);
+
+/**
+ * Whether the scan drops `f` because an app in `activeApps` is live: a
+ * live app's product-audit finding (gc-k71c), or isLiveAppOwnFinding. The
+ * differ excludes these prior findings from "resolved".
+ */
+export function isLiveAppSuppressedFinding(
+  f: { findingType: string; appName?: string | null; filename: string },
+  activeApps: ReadonlySet<string>,
+): boolean {
+  if (
+    f.appName != null &&
+    activeApps.has(f.appName) &&
+    (ACTIVE_APP_PRODUCT_TYPES as ReadonlySet<string>).has(f.findingType)
+  ) {
+    return true;
+  }
+  return isLiveAppOwnFinding(f, activeApps);
 }
