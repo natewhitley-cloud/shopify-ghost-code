@@ -77,11 +77,16 @@ describe.each(CASES)("$type severity by line position (gc-15d9)", ({ type, tag }
 });
 
 describe("security findings are never downgraded by the comment rule (gc-15d9)", () => {
-  it("MALICIOUS_SCRIPT inside a {% doc %} block stays HIGH", () => {
-    const content = ["{% doc %}", "  @example", `  ${MALICIOUS}`, "{% enddoc %}"].join("\n");
-    const sev = scanThemeFiles([file(content)])
-      .findings.filter((f) => f.findingType === FindingType.MALICIOUS_SCRIPT)
-      .map((f) => f.severity);
-    expect(sev.every((s) => s === Severity.HIGH)).toBe(true);
+  // MALICIOUS_SCRIPT sets HIGH itself (never classifySeverity), and lines Liquid
+  // never renders are not reported at all. The risk is a LIVE line next to a
+  // one-line block, which the old snippet heuristic would have read as LOW.
+  it.each([
+    ["{% doc %} Renders reviews. {% enddoc %}"],
+    ["{%- doc -%} Renders reviews. {%- enddoc -%}"],
+    ["{% comment %} old {% endcomment %}"],
+  ])("a live malicious script next to %s is found and HIGH", (block) => {
+    for (const content of [[block, MALICIOUS].join("\n"), [MALICIOUS, block].join("\n")]) {
+      expect(severitiesOf(content, FindingType.MALICIOUS_SCRIPT)).toEqual([Severity.HIGH]);
+    }
   });
 });

@@ -258,17 +258,22 @@ function MetricTile({
 function CostTable({
   rows,
   nameHeading,
+  label,
   badges,
 }: {
   rows: SpeedCostRow[];
   nameHeading: string;
+  /** The section heading, naming the scroll region for keyboard and screen readers. */
+  label: string;
   /** gc-vgqc: badges by app name ("New", "Up 0.5 s", "Up 120 KB"). */
   badges?: ReadonlyMap<string, string[]>;
 }) {
   return (
     // gc-hlvu: scrolls inside its own box on narrow screens (390px), so the
-    // page never scrolls sideways.
-    <div style={{ overflowX: "auto" }}>
+    // page never scrolls sideways. Focusable and named so a keyboard user can
+    // scroll it (Safari does not make scroll boxes focusable on its own).
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must be focusable (WCAG 2.1.1; axe scrollable-region-focusable)
+    <div style={{ overflowX: "auto" }} tabIndex={0} role="region" aria-label={label}>
       <table className={TABLE_CLASS}>
         <thead>
           <tr>
@@ -402,7 +407,7 @@ export function SpeedPageSection({
       </h3>
       {headline && <s-paragraph>{headline}</s-paragraph>}
       {apps.length > 0 ? (
-        <CostTable rows={apps} nameHeading="App" badges={badges} />
+        <CostTable rows={apps} nameHeading="App" label="Apps slowing your store" badges={badges} />
       ) : (
         <s-paragraph>No known app added measurable load to this page.</s-paragraph>
       )}
@@ -415,7 +420,7 @@ export function SpeedPageSection({
           <div style={{ ...textSubdued, marginBottom: "8px" }}>
             Code from other services we can&apos;t match to an app, by where it loads from.
           </div>
-          <CostTable rows={others} nameHeading="Loads from" />
+          <CostTable rows={others} nameHeading="Loads from" label="Other third-party code" />
         </>
       )}
     </div>

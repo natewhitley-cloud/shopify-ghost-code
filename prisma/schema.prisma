@@ -175,6 +175,11 @@ model Shop {
   // Shop row on shop/redact, so a reinstall after redact looks never-paid
   // (accepted).
   everPaidAt                   DateTime?
+  // Last time the stored plan moved to a lower tier (gc-ydze audit A1).
+  // Stamped by updateShopPlanByDomain on every reconcile path; the manual-scan
+  // quota counts from it when it falls inside the current period, so scans
+  // made on a higher plan never use up the lower plan's quota. NULL = never.
+  planLoweredAt                DateTime?
   // Merchant monitoring alerts (gc-syz.1). alertsEnabled is the per-shop opt-out
   // (default on: transactional monitoring mail). alertEmail caches the shop-owner
   // email from Admin `shop { email }` (personal data: cleared with the Shop row on

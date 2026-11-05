@@ -3057,8 +3057,15 @@ export default function ScanDetail() {
                 .app-map-table thead th { white-space: nowrap; }
               `}</style>
                 {/* gc-o7y7: the table scrolls inside its own box on narrow screens
-                  (390px), so the page never scrolls sideways. */}
-                <div style={{ overflowX: "auto" }}>
+                  (390px), so the page never scrolls sideways. Focusable and named
+                  so a keyboard user can scroll it. */}
+                <div
+                  style={{ overflowX: "auto" }}
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must be focusable (WCAG 2.1.1; axe scrollable-region-focusable)
+                  tabIndex={0}
+                  role="region"
+                  aria-label="App Impact Map"
+                >
                   <table className="app-map-table">
                     <thead>
                       <tr>

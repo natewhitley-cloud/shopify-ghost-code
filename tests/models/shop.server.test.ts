@@ -418,6 +418,43 @@ describe("updateShopPlanByDomain", () => {
     vi.clearAllMocks();
   });
 
+  describe("planLoweredAt (gc-ydze audit A1: every reconcile path)", () => {
+    const shopOn = (plan: string) => ({ id: "s1", domain: "a.myshopify.com", plan });
+    const dataOf = () => mockDb.shop.update.mock.calls[0][0].data;
+
+    it.each([
+      ["Professional", "free"],
+      ["Professional", "Standard"],
+      ["Standard", "free"],
+    ])("stamps planLoweredAt when %s -> %s", async (from, to) => {
+      mockDb.shop.findUnique.mockResolvedValue(shopOn(from));
+      mockDb.shop.update.mockResolvedValue(shopOn(to));
+
+      await updateShopPlanByDomain("a.myshopify.com", to);
+
+      expect(dataOf()).toEqual({
+        plan: to,
+        planReconciledAt: expect.any(Date),
+        planLoweredAt: expect.any(Date),
+      });
+      expect(dataOf().planLoweredAt).toBe(dataOf().planReconciledAt);
+    });
+
+    it.each([
+      ["free", "Standard"],
+      ["Standard", "Professional"],
+      ["Standard", "Standard"],
+      ["free", "free"],
+    ])("leaves planLoweredAt alone when %s -> %s", async (from, to) => {
+      mockDb.shop.findUnique.mockResolvedValue(shopOn(from));
+      mockDb.shop.update.mockResolvedValue(shopOn(to));
+
+      await updateShopPlanByDomain("a.myshopify.com", to);
+
+      expect(dataOf()).not.toHaveProperty("planLoweredAt");
+    });
+  });
+
   it("returns null when the shop domain is not found in DB", async () => {
     mockDb.shop.findUnique.mockResolvedValue(null);
 
@@ -489,7 +526,10 @@ describe("updateShopPlanByDomain", () => {
     const result = await updateShopPlanByDomain("another-shop.myshopify.com", "free");
 
     expect(mockDb.shop.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { plan: "free", planReconciledAt: expect.any(Date) } }),
+      expect.objectContaining({
+        // A downgrade also stamps planLoweredAt (gc-ydze audit A1).
+        data: { plan: "free", planReconciledAt: expect.any(Date), planLoweredAt: expect.any(Date) },
+      }),
     );
     expect(result?.plan).toBe("free");
   });

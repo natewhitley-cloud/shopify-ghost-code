@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { OPS_EVENT_TYPES, recordOpsEvent } from "./ops-event.server";
 import db from "../db.server";
+import { PLAN_RANK } from "../lib/billing.server";
 import type { InstallSourceAnswer } from "../lib/install-source";
 
 /**
@@ -367,9 +368,12 @@ export async function updateShopPlanByDomain(
   const shop = await db.shop.findUnique({ where: { domain } });
   if (!shop) return null;
 
+  const now = new Date();
+  // gc-ydze: a move to a lower tier restarts the manual-scan count.
+  const lowered = (PLAN_RANK[plan] ?? 0) < (PLAN_RANK[shop.plan] ?? 0);
   return db.shop.update({
     where: { domain },
-    data: { plan, planReconciledAt: new Date() },
+    data: { plan, planReconciledAt: now, ...(lowered ? { planLoweredAt: now } : {}) },
     select: { id: true, domain: true, plan: true },
   });
 }

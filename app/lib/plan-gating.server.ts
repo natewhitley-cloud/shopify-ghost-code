@@ -3,7 +3,6 @@ import { PLANS } from "./plans";
 import { getNextScanPeriodStart, getScanQuotaPeriod } from "./scan-quota";
 import type { ScanQuotaPeriod } from "./scan-quota";
 import db from "../db.server";
-import { latestDowngradeSince } from "../models/billing-event.server";
 import { countScansForShopSince, hasCompletedScans } from "../models/scan.server";
 
 // The pure period helpers live in ./scan-quota (no DB); re-exported here for
@@ -119,14 +118,16 @@ export async function getScanUsage(
 
 /**
  * Where the manual-scan count starts within a quota period: the period start,
- * or a later downgrade/cancellation in it (gc-ydze), so scans made on a higher
- * plan never use up the lower plan's quota ("5 of 2 used"). The period itself,
- * and so the next-scan date, is unchanged. Shared by getScanUsage and Home's
- * atomic createScan quota so the two count the same scans.
+ * or a later move to a lower plan (Shop.planLoweredAt, stamped on every
+ * reconcile path, gc-ydze), so scans made on a higher plan never use up the
+ * lower plan's quota ("5 of 2 used"). The period itself, and so the next-scan
+ * date, is unchanged. Shared by getScanUsage and Home's atomic createScan
+ * quota so the two count the same scans.
  */
 export async function getQuotaCountStart(shopId: string, periodStart: Date): Promise<Date> {
-  const downgradedAt = await latestDowngradeSince(shopId, periodStart);
-  return downgradedAt && downgradedAt > periodStart ? downgradedAt : periodStart;
+  const row = await db.shop.findUnique({ where: { id: shopId }, select: { planLoweredAt: true } });
+  const loweredAt = row?.planLoweredAt ?? null;
+  return loweredAt && loweredAt > periodStart ? loweredAt : periodStart;
 }
 
 /**

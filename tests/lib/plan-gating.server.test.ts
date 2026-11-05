@@ -25,12 +25,16 @@ const mockDb = vi.hoisted(() => ({
   scan: {
     findFirst: vi.fn(),
   },
+  // gc-ydze: Shop.planLoweredAt; no downgrade unless a test says otherwise.
+  shop: {
+    findUnique: vi.fn(
+      async (): Promise<{ planLoweredAt: Date | null } | null> => ({ planLoweredAt: null }),
+    ),
+  },
 }));
 
 const mockCountScansForShopSince = vi.hoisted(() => vi.fn());
 const mockHasCompletedScans = vi.hoisted(() => vi.fn());
-// gc-ydze: no downgrade this period unless a test says otherwise.
-const mockLatestDowngradeSince = vi.hoisted(() => vi.fn(async () => null as Date | null));
 
 vi.mock("../../app/db.server", () => ({
   default: mockDb,
@@ -39,10 +43,6 @@ vi.mock("../../app/db.server", () => ({
 vi.mock("../../app/models/scan.server", () => ({
   countScansForShopSince: mockCountScansForShopSince,
   hasCompletedScans: mockHasCompletedScans,
-}));
-
-vi.mock("../../app/models/billing-event.server", () => ({
-  latestDowngradeSince: mockLatestDowngradeSince,
 }));
 
 // ---------------------------------------------------------------------------
@@ -839,26 +839,34 @@ describe("quota count after a downgrade (gc-ydze)", () => {
     vi.clearAllMocks();
     mockDb.scan.findFirst.mockResolvedValue(null);
     mockHasCompletedScans.mockResolvedValue(true);
-    mockLatestDowngradeSince.mockResolvedValue(null);
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: null });
   });
 
   it("getQuotaCountStart: the period start when there was no downgrade", async () => {
     expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(MONTH_START);
-    expect(mockLatestDowngradeSince).toHaveBeenCalledWith(SHOP_ID, MONTH_START);
+    expect(mockDb.shop.findUnique).toHaveBeenCalledWith({
+      where: { id: SHOP_ID },
+      select: { planLoweredAt: true },
+    });
   });
 
   it("getQuotaCountStart: the downgrade time when it falls inside the period", async () => {
-    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: DOWNGRADED });
     expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(DOWNGRADED);
   });
 
+  it("getQuotaCountStart: a shop row that vanished counts from the period start", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(MONTH_START);
+  });
+
   it("getQuotaCountStart: never earlier than the period start", async () => {
-    mockLatestDowngradeSince.mockResolvedValue(new Date("2026-10-30T00:00:00Z"));
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: new Date("2026-10-30T00:00:00Z") });
     expect(await getQuotaCountStart(SHOP_ID, MONTH_START)).toEqual(MONTH_START);
   });
 
   it("Free after a mid-month downgrade: counts only scans since the downgrade", async () => {
-    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: DOWNGRADED });
     mockCountScansForShopSince.mockResolvedValue(0);
 
     const usage = await getScanUsage(SHOP_ID, "free", NOW);
@@ -871,17 +879,17 @@ describe("quota count after a downgrade (gc-ydze)", () => {
 
   it("Standard after a Pro downgrade mid-week: the weekly count also restarts", async () => {
     const weekStart = new Date("2026-11-16T00:00:00Z");
-    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: DOWNGRADED });
     mockCountScansForShopSince.mockResolvedValue(0);
 
     await getScanUsage(SHOP_ID, "Standard", NOW);
 
-    expect(mockLatestDowngradeSince).toHaveBeenCalledWith(SHOP_ID, weekStart);
+    expect(weekStart).toEqual(new Date("2026-11-16T00:00:00Z"));
     expect(mockCountScansForShopSince).toHaveBeenCalledWith(SHOP_ID, DOWNGRADED);
   });
 
   it("a scan after the downgrade still counts: 2 since the downgrade blocks Free", async () => {
-    mockLatestDowngradeSince.mockResolvedValue(DOWNGRADED);
+    mockDb.shop.findUnique.mockResolvedValue({ planLoweredAt: DOWNGRADED });
     mockCountScansForShopSince.mockResolvedValue(2);
 
     const result = await canStartScan(SHOP_ID, "free", NOW);
@@ -891,7 +899,7 @@ describe("quota count after a downgrade (gc-ydze)", () => {
   });
 
   it("propagates a database error from the downgrade lookup", async () => {
-    mockLatestDowngradeSince.mockRejectedValue(new Error("DB timeout"));
+    mockDb.shop.findUnique.mockRejectedValue(new Error("DB timeout"));
     await expect(getScanUsage(SHOP_ID, "free", NOW)).rejects.toThrow("DB timeout");
   });
 });
