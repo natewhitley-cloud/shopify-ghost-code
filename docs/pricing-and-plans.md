@@ -55,9 +55,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 6. Malicious code and app incident alerts
 7. Ask Sidekick about your scan results
 
-> **Pending owner action (gc-258i):** on deploy day, on the Managed Pricing Free plan card in the Partner Dashboard, delete "First scan always free" and change "1 scan per month after first" to "2 manual scans a month" (22 of 40 chars), so the card has the seven bullets above. Until then the card and the in-app tile disagree. ("First scan always free" was dropped 2026-11-05: next to the 2-scan line it read as 3 scans in the install month.)
-
-> Live on the Partner Dashboard Free plan card (2026-10-19; bullets 1-2 pending, see above). The in-app Settings Free tile lists the same seven bullets (gc-4wvb), bullet 5 only while `SPEED_REPORT_LIVE_ENABLED` is on; bullet 6 ("Malicious code and app incident alerts", never paywalled on any plan) always shows. Bullet 7 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
+> Live on the Partner Dashboard Free plan card (2026-10-19; updated 2026-11-05 for gc-258i: 7 bullets, "First scan always free" dropped). The in-app Settings Free tile lists the same seven bullets (gc-4wvb), bullet 5 only while `SPEED_REPORT_LIVE_ENABLED` is on; bullet 6 ("Malicious code and app incident alerts", never paywalled on any plan) always shows. Bullet 7 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
 
 > Owner action after deploy: paste bullet 4 ("Up to 5 findings shown in full", 30 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "Preview of top finding in full". It matches the in-app Settings Free tile (gc-97k.10: up to 5 findings, never more than half).
 
@@ -96,9 +94,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 6. Monthly store speed report, cost per app
 7. PDF report to share with your team
 
-> **Pending owner action (gc-pqg0):** on deploy day, add bullet 7 "PDF report to share with your team" (34 of 40 chars) to the Managed Pricing Standard plan card in the Partner Dashboard.
-
-> Live on the Partner Dashboard Standard plan card (2026-10-19; bullet 7 pending, see above). Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same seven bullets (gc-4wvb, bullet 7 gc-pqg0), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on.
+> Live on the Partner Dashboard Standard plan card (2026-10-19; bullet 7 added 2026-11-05, gc-pqg0). Shopify renders the trial line on the card itself, so no listing bullet repeats it. The in-app Settings Standard tile lists the same seven bullets (gc-4wvb, bullet 7 gc-pqg0), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on.
 
 > **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only _outcomes_ (Broken Links
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of _mechanics_, so
