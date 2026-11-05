@@ -152,14 +152,11 @@ describe("new theme architecture: detectors inside {% block %} / {% partial %}",
     expect(result.unknownScripts).toEqual([]);
   });
 
-  // KNOWN GAP (gc-08x8): Liquid never renders a {% doc %} body, so a leftover
-  // script there should be LOW like one inside {% comment %}. classifySeverity
-  // only looks for a `comment` opener in the 3-line snippet, so this is HIGH.
-  // Widening that snippet regex to `doc` was tried and reverted (audit F1): it
-  // also downgrades LIVE code next to a one-line doc header, which new-
-  // architecture blocks start with. Fix = line-based comment/doc tracking
-  // (gc-15d9). Flip to `it` then.
-  it.fails("a leftover script inside a {% doc %} @example is LOW, like one in a comment", () => {
+  // Found by gc-08x8: Liquid never renders a {% doc %} body, so a leftover
+  // script there is LOW like one inside {% comment %}. Fixed by gc-15d9: the
+  // severity uses the finding's line (the engine's doc-aware comment line set),
+  // not the 3-line snippet, so the {% doc %} opener 2 lines above counts.
+  it("a leftover script inside a {% doc %} @example is LOW, like one in a comment", () => {
     const content = [
       "{% doc %}",
       "  @example",

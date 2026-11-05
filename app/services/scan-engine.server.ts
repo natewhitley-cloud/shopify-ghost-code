@@ -696,6 +696,21 @@ function buildCommentSkipLines(content: string): Set<number> {
   return new Set(_commentSkipLines);
 }
 
+/**
+ * Whether `lineNumber` is inside a Liquid {% comment %} or {% doc %} block, by
+ * the same line set as buildCommentSkipLines (doc-aware, line-granular), read
+ * without copying it. Used for the comment downgrade in classifySeverity
+ * (gc-15d9) by detectors that flag commented-out code as LOW instead of
+ * skipping it.
+ */
+function isLiquidCommentLine(content: string, lineNumber: number): boolean {
+  if (content !== _commentSkipContent) {
+    _commentSkipLines = computeCommentSkipLines(content);
+    _commentSkipContent = content;
+  }
+  return _commentSkipLines.has(lineNumber);
+}
+
 // Single-entry cache for buildCommentSkipLines, same pattern as lineIndexFor:
 // ~11 comment-aware detectors ask for the set of the same file in a row.
 let _commentSkipContent: string | null = null;
@@ -878,7 +893,9 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
     settingGatedLines ??= buildThemeSettingGatedLines(file.content);
     if (settingGatedLines.has(lineNumber)) continue;
     const codeSnippet = buildSnippet(file.content, lineNumber);
-    const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet);
+    const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet, undefined, {
+      inLiquidComment: isLiquidCommentLine(file.content, lineNumber),
+    });
 
     findings.push({
       filename: file.filename,
@@ -953,7 +970,9 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
     settingGatedLines ??= buildThemeSettingGatedLines(file.content);
     if (settingGatedLines.has(lineNumber)) continue;
     const codeSnippet = buildSnippet(file.content, lineNumber);
-    const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet);
+    const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet, undefined, {
+      inLiquidComment: isLiquidCommentLine(file.content, lineNumber),
+    });
 
     findings.push({
       filename: file.filename,

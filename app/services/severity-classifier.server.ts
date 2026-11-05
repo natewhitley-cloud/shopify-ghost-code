@@ -155,14 +155,22 @@ function isPrintOnlyStylesheet(codeSnippet: string): boolean {
  * @param findingType  The category of ghost code detected.
  * @param codeSnippet  The extracted code context for the finding.
  * @param description  The finding's description text (used for type-specific nuance).
+ * @param opts.inLiquidComment  Whether the finding's LINE is inside a Liquid
+ *   {% comment %} or {% doc %} block, from the scan engine's line set (gc-15d9).
+ *   When given, it decides the comment downgrade and the snippet heuristic is
+ *   not used: the heuristic misses an opener 2+ lines above (false HIGH) and
+ *   downgrades live code next to a one-line block (false LOW). Callers without
+ *   line context omit it and keep the heuristic.
  */
 export function classifySeverity(
   findingType: FindingType,
   codeSnippet: string,
   description?: string,
+  opts?: { inLiquidComment?: boolean },
 ): Severity {
   // Liquid comment blocks: anything inside is dead code — downgrade to LOW.
-  if (isInsideLiquidComment(codeSnippet)) {
+  const inComment = opts?.inLiquidComment ?? isInsideLiquidComment(codeSnippet);
+  if (inComment) {
     return Severity.LOW;
   }
 

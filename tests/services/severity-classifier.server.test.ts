@@ -91,6 +91,37 @@ describe("classifySeverity", () => {
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 
+  describe("opts.inLiquidComment: line-based comment downgrade (gc-15d9)", () => {
+    const live = '<script src="//cdn.klaviyo.com/js/klaviyo.js"></script>';
+
+    it("true: LOW even when the snippet shows no comment opener", () => {
+      expect(
+        classifySeverity(FindingType.GHOST_SCRIPT, live, undefined, { inLiquidComment: true }),
+      ).toBe(Severity.LOW);
+    });
+
+    it("false: normal severity even when the snippet shows a one-line block nearby", () => {
+      const snippet = `{% comment %} note {% endcomment %}\n${live}`;
+      expect(
+        classifySeverity(FindingType.GHOST_SCRIPT, snippet, undefined, { inLiquidComment: false }),
+      ).toBe(classifySeverity(FindingType.GHOST_SCRIPT, live));
+      expect(classifySeverity(FindingType.GHOST_SCRIPT, live)).not.toBe(Severity.LOW);
+    });
+
+    it("omitted: the snippet heuristic still applies (callers without line context)", () => {
+      const snippet = `{% comment %}\n  ${live}\n{% endcomment %}`;
+      expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).toBe(Severity.LOW);
+      expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet, undefined, {})).toBe(Severity.LOW);
+    });
+
+    it("false still applies the other nuance rules (print-only stylesheet stays LOW)", () => {
+      const print = '<link rel="stylesheet" media="print" href="//cdn.loox.io/style.css">';
+      expect(
+        classifySeverity(FindingType.GHOST_STYLE, print, undefined, { inLiquidComment: false }),
+      ).toBe(Severity.LOW);
+    });
+  });
+
   it("downgrades GHOST_SNIPPET to LOW when inside a Liquid comment", () => {
     const snippet = "{% comment %}\n  {% render 'klaviyo-onsite' %}\n{% endcomment %}";
     expect(classifySeverity(FindingType.GHOST_SNIPPET, snippet)).toBe(Severity.LOW);
