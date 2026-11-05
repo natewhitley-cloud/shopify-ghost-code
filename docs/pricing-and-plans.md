@@ -47,18 +47,17 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 
 **App listing features (max 40 chars each):**
 
-1. First scan always free
-2. 2 manual scans a month
-3. Findings grouped by impact, with counts
-4. Up to 5 findings shown in full
-5. Single theme scanning
-6. One-time homepage speed test
-7. Malicious code and app incident alerts
-8. Ask Sidekick about your scan results
+1. 2 manual scans a month
+2. Findings grouped by impact, with counts
+3. Up to 5 findings shown in full
+4. Single theme scanning
+5. One-time homepage speed test
+6. Malicious code and app incident alerts
+7. Ask Sidekick about your scan results
 
-> **Pending owner action (gc-258i):** on deploy day, change Free bullet 2 on the Managed Pricing Free plan card in the Partner Dashboard from "1 scan per month after first" to "2 manual scans a month" (22 of 40 chars). Until then the card and the in-app tile disagree.
+> **Pending owner action (gc-258i):** on deploy day, on the Managed Pricing Free plan card in the Partner Dashboard, delete "First scan always free" and change "1 scan per month after first" to "2 manual scans a month" (22 of 40 chars), so the card has the seven bullets above. Until then the card and the in-app tile disagree. ("First scan always free" was dropped 2026-11-05: next to the 2-scan line it read as 3 scans in the install month.)
 
-> Live on the Partner Dashboard Free plan card (2026-10-19; bullet 2 pending, see above). The in-app Settings Free tile lists the same eight bullets (gc-4wvb), bullet 6 only while `SPEED_REPORT_LIVE_ENABLED` is on; bullet 7 ("Malicious code and app incident alerts", never paywalled on any plan) always shows. Bullet 8 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
+> Live on the Partner Dashboard Free plan card (2026-10-19; bullets 1-2 pending, see above). The in-app Settings Free tile lists the same seven bullets (gc-4wvb), bullet 5 only while `SPEED_REPORT_LIVE_ENABLED` is on; bullet 6 ("Malicious code and app incident alerts", never paywalled on any plan) always shows. Bullet 7 ("Ask Sidekick about your scan results") ships on the tile with the Sidekick extension (gc-5nok).
 
 > Owner action after deploy: paste bullet 4 ("Up to 5 findings shown in full", 30 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "Preview of top finding in full". It matches the in-app Settings Free tile (gc-97k.10: up to 5 findings, never more than half).
 

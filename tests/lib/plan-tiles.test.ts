@@ -44,9 +44,10 @@ describe("planTileBullets", () => {
     expect(TRIAL_BULLET).toBe("7-day free trial");
   });
 
-  it("Free: the live 8-bullet card in order; the security alerts bullet shows even when speed is dark", () => {
+  it("Free: the live 7-bullet card in order; the security alerts bullet shows even when speed is dark", () => {
+    // "First scan always free" dropped with gc-258i (Nathan 2026-11-05): next to
+    // "2 manual scans a month" it read as 3 scans in the install month.
     expect(PLAN_LISTING_BULLETS[PLANS.FREE]).toEqual([
-      "First scan always free",
       "2 manual scans a month",
       "Findings grouped by impact, with counts",
       "Up to 5 findings shown in full",

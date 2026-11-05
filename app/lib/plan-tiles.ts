@@ -29,7 +29,6 @@ export const PLAN_TILE_META: Record<TilePlan, { name: string; price: string }> =
 /** The listing bullets, in card order (max 40 chars each, Managed Pricing limit). */
 export const PLAN_LISTING_BULLETS: Record<TilePlan, readonly string[]> = {
   [PLANS.FREE]: [
-    "First scan always free",
     "2 manual scans a month",
     "Findings grouped by impact, with counts",
     "Up to 5 findings shown in full",
