@@ -19,6 +19,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // tx-scoped mock for $transaction callback (used by createScan).
 const mockTx = vi.hoisted(() => ({
+  // gc-at1g: per-shop advisory lock at the start of createScan's transaction.
+  $executeRaw: vi.fn(async () => 1),
   scan: {
     findFirst: vi.fn(),
     create: vi.fn(),
@@ -380,6 +382,46 @@ describe("createScan — requestedFrom and shopScanNumber", () => {
 
       expect(mockTx.scan.create).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("takes a per-shop advisory lock before the active-scan guard and quota count (gc-at1g)", async () => {
+    const order: string[] = [];
+    mockTx.$executeRaw.mockImplementation(async () => {
+      order.push("lock");
+      return 1;
+    });
+    mockTx.scan.findFirst.mockImplementation(async () => {
+      order.push("guard");
+      return null;
+    });
+    mockTx.scan.count.mockImplementation(async () => {
+      order.push("count");
+      return 0;
+    });
+    const quota = {
+      periodStart: new Date("2026-11-01T00:00:00Z"),
+      maxScans: 2,
+      periodLabel: "month" as const,
+      isFirstScan: false,
+    };
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, quota, "home");
+
+    expect(order[0]).toBe("lock");
+    expect(order.indexOf("lock")).toBeLessThan(order.indexOf("guard"));
+    const [strings, ...values] = mockTx.$executeRaw.mock.calls[0] as unknown as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    expect(strings.join("?")).toContain("pg_advisory_xact_lock");
+    expect(values).toEqual([SHOP_ID]);
+  });
+
+  it("a lock failure creates nothing", async () => {
+    mockTx.$executeRaw.mockRejectedValueOnce(new Error("lock timeout"));
+
+    await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow("lock timeout");
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
   });
 
   it("concurrent-guard path: a rejected request (active scan) counts nothing and creates nothing", async () => {

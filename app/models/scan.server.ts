@@ -28,7 +28,11 @@ export const SUCCESSFUL_SCAN_STATUSES = [ScanStatus.COMPLETED, ScanStatus.PARTIA
  * Pass `null` for plans with no quota.
  */
 export type ScanQuota = {
-  /** Start of the quota period (day for Professional, week for Standard, month for Free). */
+  /**
+   * Count manual scans created from here: the quota period's start (day for
+   * Professional, week for Standard, month for Free), or a later downgrade in
+   * it (getQuotaCountStart, gc-ydze).
+   */
   periodStart: Date;
   /** Maximum scans allowed in the period. */
   maxScans: number;
@@ -43,9 +47,10 @@ export type ScanQuota = {
  * The scan engine will transition it to IN_PROGRESS then COMPLETED/FAILED.
  *
  * Atomic TOCTOU guard: the check for an existing active scan, the quota
- * check, and the create are all wrapped in a single transaction. This
- * prevents two concurrent requests from both passing a pre-flight
- * canStartScan check and both creating scans.
+ * check, and the create are all wrapped in a single transaction that first
+ * takes a per-shop advisory lock (gc-at1g), so two concurrent requests for the
+ * same shop run one after the other and can never both pass the guard or the
+ * quota.
  *
  * Throws an Error with message "A scan is already in progress for this shop."
  * when a PENDING or IN_PROGRESS scan already exists. Callers should catch this
@@ -64,9 +69,8 @@ export type ScanQuota = {
  *   SCHEDULED / AUTO_PUBLISH.
  * - `shopScanNumber` is 1 + the shop's existing scans of EVERY origin and
  *   status, counted inside this transaction AFTER the active-scan guard, so a
- *   rejected request never counts and numbers follow creation order. It shares
- *   the guard's isolation: only the same concurrent-create race the guard
- *   itself does not close (READ COMMITTED) could produce a duplicate number.
+ *   rejected request never counts and numbers follow creation order. The
+ *   per-shop lock also keeps concurrent creates from sharing a number.
  */
 export async function createScan(
   shopId: string,
@@ -77,6 +81,13 @@ export async function createScan(
   requestedFrom?: ScanRequestSource,
 ) {
   return db.$transaction(async (tx) => {
+    // gc-at1g: serialize scan creation per shop. Under READ COMMITTED two
+    // simultaneous starts could both pass the active-scan guard and the quota
+    // count below; a transaction-scoped advisory lock keyed on the shop makes
+    // the second wait until the first commits, then see its row. Released at
+    // commit/rollback; other shops are never blocked.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${shopId}, 0))`;
+
     const activeScan = await tx.scan.findFirst({
       where: { shopId, status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] } },
       select: { id: true },
