@@ -266,37 +266,41 @@ function CostTable({
   badges?: ReadonlyMap<string, string[]>;
 }) {
   return (
-    <table className={TABLE_CLASS}>
-      <thead>
-        <tr>
-          <th scope="col">{nameHeading}</th>
-          <th scope="col">Processing time</th>
-          <th scope="col">Download size</th>
-          <th scope="col">Unused code</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.name}>
-            <td>
-              {row.name}
-              {badges?.has(row.name) && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
-                  {badges.get(row.name)!.map((b) => (
-                    <s-badge key={b} tone="warning">
-                      {b}
-                    </s-badge>
-                  ))}
-                </div>
-              )}
-            </td>
-            <td>{formatSeconds(row.mainThreadMs)}</td>
-            <td>{formatBytes(row.transferBytes)}</td>
-            <td>{row.unusedPct === null ? "Not measured" : `${row.unusedPct}% unused`}</td>
+    // gc-hlvu: scrolls inside its own box on narrow screens (390px), so the
+    // page never scrolls sideways.
+    <div style={{ overflowX: "auto" }}>
+      <table className={TABLE_CLASS}>
+        <thead>
+          <tr>
+            <th scope="col">{nameHeading}</th>
+            <th scope="col">Processing time</th>
+            <th scope="col">Download size</th>
+            <th scope="col">Unused code</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name}>
+              <td>
+                {row.name}
+                {badges?.has(row.name) && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
+                    {badges.get(row.name)!.map((b) => (
+                      <s-badge key={b} tone="warning">
+                        {b}
+                      </s-badge>
+                    ))}
+                  </div>
+                )}
+              </td>
+              <td>{formatSeconds(row.mainThreadMs)}</td>
+              <td>{formatBytes(row.transferBytes)}</td>
+              <td>{row.unusedPct === null ? "Not measured" : `${row.unusedPct}% unused`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
