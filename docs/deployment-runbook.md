@@ -6,7 +6,7 @@ Operational reference for deploying Ghost Code to production (Railway).
 
 Database migrations run as a Railway **pre-deploy** step, not on container
 boot. On each deploy Railway builds the new image, then runs
-`preDeployCommand = "npx prisma migrate deploy"` (configured in `railway.toml`)
+`preDeployCommand = "npx prisma migrate deploy"` (set in the Railway service settings; railway.toml was retired before the 2026-12-01 Config as Code cutoff)
 exactly **once**, against the production database, before traffic switches to
 the new container.
 
