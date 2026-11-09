@@ -1152,4 +1152,92 @@ describe("buildNodDigest engagement: weekly active stores (NOD ADR-012)", () => 
       visits7d: 3,
     });
   });
+
+  it("puts a manual scan and a page view at exactly 14d in the prior week, not at 14d+1ms", async () => {
+    const a = store({ id: "s_a", domain: "a-merchant.myshopify.com" }); // manual scan at 14d
+    const b = store({ id: "s_b", domain: "b-merchant.myshopify.com" }); // page view at 14d
+    const c = store({ id: "s_c", domain: "c-merchant.myshopify.com" }); // both at 14d+1ms
+    world({
+      shop: [a, b, c],
+      scan: [
+        scanAt("a_14", "s_a", ago(14 * D), "MANUAL"),
+        scanAt("c_14", "s_c", ago(14 * D + 1), "MANUAL"),
+      ],
+      opsEvent: [
+        visit("a-merchant.myshopify.com", ago(1 * D)),
+        visit("b-merchant.myshopify.com", ago(1 * D)),
+        visit("c-merchant.myshopify.com", ago(1 * D)),
+        visit("b-merchant.myshopify.com", ago(14 * D)),
+        visit("c-merchant.myshopify.com", ago(14 * D + 1)),
+      ],
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 3,
+      returningMerchants7d: 2, // a and b
+      visits7d: 3,
+    });
+  });
+
+  it("counts a manual scan at exactly 7d as this week", async () => {
+    world({ scan: [scanAt("s1", "shop_edge", ago(7 * D), "MANUAL")] });
+    expect((await engagement()).activeMerchants7d).toBe(1);
+  });
+});
+
+describe("buildNodDigest merchants[].lastActiveAt (NOD ADR-012 rule)", () => {
+  const store = (over: Row = {}): Row => ({ ...EDGE_SHOP, ...over });
+  const scanAt = (id: string, createdAt: Date, origin: string): Row => ({
+    id,
+    shopId: "shop_edge",
+    createdAt,
+    status: "COMPLETED",
+    completedAt: createdAt,
+    resolvedFindingCount: 0,
+    origin,
+  });
+  const lastActiveAt = async (t: { shop?: Row; scan?: Row[]; opsEvent?: Row[] }) => {
+    fake = makeFakeDb({
+      shop: [t.shop ?? store()],
+      scan: t.scan ?? [],
+      opsEvent: t.opsEvent ?? [],
+      finding: [],
+      appRemoval: [],
+      unknownScript: [],
+      scanDomain: [],
+      signatureSubmission: [],
+    });
+    const d = await buildNodDigest(NOW);
+    expect(validateDigest(d)).toEqual([]);
+    return d.merchants.find((m) => m.id === "shop_edge")!.lastActiveAt;
+  };
+  const automatic = [
+    scanAt("sch", ago(1 * H), "SCHEDULED"),
+    scanAt("auto", ago(2 * H), "AUTO_PUBLISH"),
+  ];
+
+  it("omits lastActiveAt for a store with only scheduled and auto-publish scans", async () => {
+    expect(await lastActiveAt({ scan: automatic })).toBeUndefined();
+  });
+
+  it("takes lastActiveAt from page activity only when the newer scans are automatic", async () => {
+    expect(
+      await lastActiveAt({
+        scan: automatic,
+        opsEvent: [{ eventType: "page_visit", key: EDGE_SHOP.domain, createdAt: ago(3 * D) }],
+      }),
+    ).toBe(iso(ago(3 * D)));
+    expect(await lastActiveAt({ shop: store({ lastSeenAt: ago(5 * D) }), scan: automatic })).toBe(
+      iso(ago(5 * D)),
+    );
+  });
+
+  it("moves lastActiveAt to a newer manual scan", async () => {
+    expect(
+      await lastActiveAt({
+        shop: store({ lastSeenAt: ago(5 * D) }),
+        scan: [...automatic, scanAt("man", ago(1 * D), "MANUAL")],
+        opsEvent: [{ eventType: "page_visit", key: EDGE_SHOP.domain, createdAt: ago(3 * D) }],
+      }),
+    ).toBe(iso(ago(1 * D)));
+  });
 });

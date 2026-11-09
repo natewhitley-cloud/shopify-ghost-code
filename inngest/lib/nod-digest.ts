@@ -860,8 +860,11 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
   };
 
   // ---- Merchants: active installs, Shop.id only ----
+  // lastActiveAt follows the WAU rule (NOD ADR-012): page activity and scans
+  // started by hand only, never SCHEDULED or AUTO_PUBLISH scans.
   const lastScanAt = new Map<string, Date>();
   for (const s of scans) {
+    if (s.origin !== ScanOrigin.MANUAL) continue;
     const prev = lastScanAt.get(s.shopId);
     if (!prev || s.createdAt > prev) lastScanAt.set(s.shopId, s.createdAt);
   }
