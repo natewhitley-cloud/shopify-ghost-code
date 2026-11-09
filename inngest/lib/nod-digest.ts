@@ -34,7 +34,7 @@
  * matcher (isBenignLibrary), so the two agree on what is benign, not on totals.
  */
 
-import { AppRemovalState, FindingType, SubmissionStatus } from "@prisma/client";
+import { AppRemovalState, FindingType, ScanOrigin, SubmissionStatus } from "@prisma/client";
 
 import { matchMaliciousDomain } from "../../app/data/malicious-domains.server";
 import db from "../../app/db.server";
@@ -634,7 +634,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
       ? []
       : await db.scan.findMany({
           where: { createdAt: { gte: d30 }, shopId: { in: [...activeIds] } },
-          select: { shopId: true, createdAt: true },
+          select: { shopId: true, createdAt: true, origin: true },
         });
 
   // One definition per value row, reused for the per-merchant actions so the
@@ -712,7 +712,12 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     caveat: m.caveat,
   }));
 
-  // ---- Engagement: page_visit (domain-keyed, 14d retention) + scans ----
+  // ---- Engagement (NOD ADR-012): weekly active STORES ----
+  // A store is active when someone at it opened an admin page of the app
+  // (page_visit, domain-keyed, 14d retention; or Shop.lastSeenAt, which only
+  // the same /app loader stamps on merchant page loads) or started a scan by
+  // hand (origin MANUAL). SCHEDULED and AUTO_PUBLISH scans are automatic and
+  // never count. Active, non-excluded installs only; one count per store.
   const visits = await db.opsEvent.findMany({
     where: { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { gte: d14 } },
     select: { key: true, createdAt: true },
@@ -725,7 +730,9 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
   const priorWeek = new Set<string>();
   const addActivity = (id: string, at: Date) => (at >= d7 ? thisWeek : priorWeek).add(id);
   for (const v of activeVisits) addActivity(v.id, v.createdAt);
-  for (const s of scans) if (s.createdAt >= d14) addActivity(s.shopId, s.createdAt);
+  for (const s of scans) {
+    if (s.origin === ScanOrigin.MANUAL && s.createdAt >= d14) addActivity(s.shopId, s.createdAt);
+  }
   for (const s of activeShops) {
     const seen = shopById.get(s.id)?.lastSeenAt;
     if (seen && seen >= d7) thisWeek.add(s.id);

@@ -320,9 +320,9 @@ describe("buildNodDigest", () => {
     expect(validateDigest(d)).toEqual([]);
   });
 
-  it("derives engagement from page visits + scans of active installs", async () => {
+  it("derives engagement from page visits, lastSeenAt and manual scans of active installs", async () => {
     const { engagement } = await buildNodDigest(NOW);
-    // This week: shop_free (visit, scan, lastSeen). Prior week: shop_free, shop_std.
+    // This week: shop_free (visit, manual scan, lastSeen). Prior week: shop_free, shop_std.
     expect(engagement).toEqual({
       activeMerchants7d: 1,
       returningMerchants7d: 1,
@@ -982,5 +982,174 @@ describe("buildNodDigest research (NOD ADR-011)", () => {
     const d = await buildNodDigest(NOW);
     expect(d.research!.queue.length).toBeGreaterThan(0);
     expect(validateDigest(d)).toEqual([]);
+  });
+});
+
+describe("buildNodDigest engagement: weekly active stores (NOD ADR-012)", () => {
+  const store = (over: Row = {}): Row => ({ ...EDGE_SHOP, ...over });
+  const scanAt = (id: string, shopId: string, createdAt: Date, origin: string): Row => ({
+    id,
+    shopId,
+    createdAt,
+    status: "COMPLETED",
+    completedAt: createdAt,
+    resolvedFindingCount: 0,
+    origin,
+  });
+  const visit = (key: string, createdAt: Date): Row => ({
+    eventType: "page_visit",
+    key,
+    createdAt,
+  });
+  const world = (t: { shop?: Row[]; scan?: Row[]; opsEvent?: Row[] }) => {
+    fake = makeFakeDb({
+      shop: t.shop ?? [store()],
+      scan: t.scan ?? [],
+      opsEvent: t.opsEvent ?? [],
+      finding: [],
+      appRemoval: [],
+      unknownScript: [],
+      scanDomain: [],
+      signatureSubmission: [],
+    });
+  };
+  const engagement = async () => {
+    const d = await buildNodDigest(NOW);
+    expect(validateDigest(d)).toEqual([]);
+    return d.engagement;
+  };
+  const EDGE = EDGE_SHOP.domain as string;
+
+  it("does not count a store whose only activity is scheduled and auto-publish scans", async () => {
+    world({
+      scan: [
+        scanAt("s1", "shop_edge", ago(1 * H), "SCHEDULED"),
+        scanAt("s2", "shop_edge", ago(2 * D), "AUTO_PUBLISH"),
+        scanAt("s3", "shop_edge", ago(9 * D), "SCHEDULED"),
+      ],
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 0,
+      returningMerchants7d: 0,
+      visits7d: 0,
+    });
+  });
+
+  it("counts a store that started a scan by hand", async () => {
+    world({ scan: [scanAt("s1", "shop_edge", ago(3 * D), "MANUAL")] });
+    expect((await engagement()).activeMerchants7d).toBe(1);
+  });
+
+  it("counts a manual scan that failed: someone still started it", async () => {
+    world({
+      scan: [{ ...scanAt("s1", "shop_edge", ago(3 * D), "MANUAL"), status: "FAILED" }],
+    });
+    expect((await engagement()).activeMerchants7d).toBe(1);
+  });
+
+  it("counts a store with an admin page view", async () => {
+    world({ opsEvent: [visit(EDGE, ago(6 * D))] });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 1,
+      returningMerchants7d: 0,
+      visits7d: 1,
+    });
+  });
+
+  it("counts lastSeenAt (stamped only by merchant page loads) inside 7d, not at 7d+1ms", async () => {
+    world({ shop: [store({ lastSeenAt: ago(7 * D) })] });
+    expect((await engagement()).activeMerchants7d).toBe(1);
+    world({ shop: [store({ lastSeenAt: ago(7 * D + 1) })] });
+    expect((await engagement()).activeMerchants7d).toBe(0);
+  });
+
+  it("includes activity exactly 7d ago and drops it at 7d+1ms", async () => {
+    world({
+      opsEvent: [visit(EDGE, ago(7 * D))],
+    });
+    expect((await engagement()).activeMerchants7d).toBe(1);
+    world({
+      scan: [scanAt("s1", "shop_edge", ago(7 * D + 1), "MANUAL")],
+      opsEvent: [visit(EDGE, ago(7 * D + 1))],
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 0,
+      returningMerchants7d: 0,
+      visits7d: 0,
+    });
+  });
+
+  it("excludes internal, app-review, env-listed and uninstalled stores even with manual activity", async () => {
+    const others: Row[] = [
+      store({ id: "s_int", domain: "renamed-dev.myshopify.com", isInternal: true }),
+      store({ id: "s_rev", domain: "app-review-xyz.myshopify.com" }),
+      store({ id: "s_env", domain: "nw-dev-store-2.myshopify.com" }),
+      store({ id: "s_gone", domain: "gone-merchant.myshopify.com", uninstalledAt: ago(1 * D) }),
+    ];
+    world({
+      shop: others.map((s) => ({ ...s, lastSeenAt: ago(1 * H) })),
+      scan: others.flatMap((s) => [
+        scanAt(`${s.id}_now`, s.id as string, ago(2 * H), "MANUAL"),
+        scanAt(`${s.id}_prior`, s.id as string, ago(9 * D), "MANUAL"),
+      ]),
+      opsEvent: others.flatMap((s) => [
+        visit(s.domain as string, ago(1 * D)),
+        visit(s.domain as string, ago(10 * D)),
+      ]),
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 0,
+      returningMerchants7d: 0,
+      visits7d: 0,
+    });
+  });
+
+  it("counts a returning store only when it was active by hand in both weeks", async () => {
+    const a = store({ id: "s_a", domain: "a-merchant.myshopify.com" }); // visit + manual prior
+    const b = store({ id: "s_b", domain: "b-merchant.myshopify.com" }); // this week only
+    const c = store({ id: "s_c", domain: "c-merchant.myshopify.com" }); // prior week only
+    const d = store({ id: "s_d", domain: "d-merchant.myshopify.com" }); // prior: scheduled only
+    world({
+      shop: [a, b, c, d],
+      scan: [
+        scanAt("a_prior", "s_a", ago(10 * D), "MANUAL"),
+        scanAt("c_prior", "s_c", ago(8 * D), "MANUAL"),
+        scanAt("d_prior", "s_d", ago(8 * D), "SCHEDULED"),
+        scanAt("d_prior2", "s_d", ago(9 * D), "AUTO_PUBLISH"),
+      ],
+      opsEvent: [
+        visit("a-merchant.myshopify.com", ago(1 * D)),
+        visit("b-merchant.myshopify.com", ago(2 * D)),
+        visit("d-merchant.myshopify.com", ago(3 * D)),
+      ],
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 3, // a, b, d
+      returningMerchants7d: 1, // a only
+      visits7d: 3,
+    });
+  });
+
+  it("counts a store once however many staff, pages, scans and key casings it has", async () => {
+    world({
+      shop: [store({ lastSeenAt: ago(1 * H) })],
+      scan: [
+        scanAt("s1", "shop_edge", ago(1 * D), "MANUAL"),
+        scanAt("s2", "shop_edge", ago(2 * D), "MANUAL"),
+        scanAt("s3", "shop_edge", ago(9 * D), "MANUAL"),
+      ],
+      opsEvent: [
+        visit(EDGE, ago(1 * H)),
+        visit(EDGE.toUpperCase(), ago(2 * H)),
+        visit(EDGE, ago(3 * D)),
+        visit(EDGE, ago(8 * D)),
+        visit(EDGE, ago(12 * D)),
+      ],
+    });
+    expect(await engagement()).toEqual({
+      activeMerchants7d: 1,
+      returningMerchants7d: 1,
+      visits7d: 3,
+    });
   });
 });

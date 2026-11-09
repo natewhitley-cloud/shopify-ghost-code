@@ -98,7 +98,8 @@ const scan = (
   status: string,
   completedAt: Date | null,
   resolvedFindingCount = 0,
-): Row => ({ id, shopId, createdAt, status, completedAt, resolvedFindingCount });
+  origin = "MANUAL", // the column's DB default
+): Row => ({ id, shopId, createdAt, status, completedAt, resolvedFindingCount, origin });
 
 const scans: Row[] = [
   scan("sc_free1", "shop_free", ago(2 * H), "COMPLETED", ago(1 * H), 2),

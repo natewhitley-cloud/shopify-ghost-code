@@ -8,17 +8,27 @@ export const ERROR_CATEGORIES = ["api", "webhook", "token", "encryption", "job",
 const MERCHANT_KEYS = ["id", "plan", "installedAt", "lastActiveAt", "actions7d", "actions30d"];
 const TOP_KEYS = [
   "contractVersion", "app", "generatedAt", "lifecycle", "installs", "revenue",
-  "value", "engagement", "nudges", "errors", "series", "journey", "research", "merchants",
+  "value", "engagement", "nudges", "errors", "series", "journey", "research", "breakdowns", "merchants",
 ];
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 // Object built-ins: as keys they would shadow or replace prototype properties when stage times are merged.
 const RESERVED_KEYS = ["__proto__", "constructor"];
 const JOURNEY_MERCHANT_KEYS = ["id", "installedAt", "uninstalledAt", "plan", "reached"];
 // ADR-004: an ID that looks like a domain or email leaks identity.
-const opaqueId = (id) => typeof id === "string" && id.length > 0 && !/[@.]/.test(id.replace(/^gid:\/\/shopify\/Shop\//, ""));
+// Allowlist (ADR-012 audit): ASCII id characters only, so look-alike dots, at-signs and spaced names can't pass.
+const opaqueId = (id) => typeof id === "string" && /^(gid:\/\/shopify\/Shop\/)?[A-Za-z0-9_-]{1,64}$/.test(id) && !/myshopify/i.test(id);
 
+// Display text in breakdowns (ADR-012): one visible line, never a domain, email or store handle.
+// NFKC folds full-width look-alikes first; format and separator characters don't count as content.
+const LINE_BREAKS = /[\r\n\u0085\u2028\u2029]/;
+const IDENTITY = /@|myshopify|[a-z0-9]\.[a-z]{2,}/i;
+const safeText = (v, max) => {
+  if (typeof v !== "string" || v.length > max || LINE_BREAKS.test(v)) return false;
+  const n = v.normalize("NFKC");
+  return n.replace(/[\p{Cf}\p{Z}]/gu, "").length > 0 && !IDENTITY.test(n);
+};
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const isCount = (v) => Number.isInteger(v) && v >= 0;
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
 const KEY_RE = /^[a-z0-9_-]+$/;
 // Strict ISO-8601: a real calendar date, optionally with a UTC/offset time. Rejects "1" or "2026-02-30".
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
@@ -249,6 +259,73 @@ export function validateDigest(d) {
         if (q.suggestions !== undefined) counts(q, p, ["suggestions"]);
         req(isIso(q.firstSeenAt) && isIso(q.lastSeenAt), `${p}.firstSeenAt and lastSeenAt must be timestamps`);
         if (isIso(q.firstSeenAt) && isIso(q.lastSeenAt)) req(Date.parse(q.firstSeenAt) <= Date.parse(q.lastSeenAt), `${p}.firstSeenAt cannot be after lastSeenAt`);
+      });
+    }
+  }
+
+  // ADR-012: titled count tables, optionally per merchant (ids only, ids from merchants[]).
+  if (d.breakdowns !== undefined) {
+    const merchantIds = new Set(Array.isArray(d.merchants) ? d.merchants.map((m) => m?.id) : []);
+    const goodKey = (k) => typeof k === "string" && KEY_RE.test(k) && !RESERVED_KEYS.includes(k);
+    if (!Array.isArray(d.breakdowns) || d.breakdowns.length > 6) errs.push("breakdowns must be an array of at most 6");
+    else {
+      const bKeys = new Set();
+      d.breakdowns.forEach((b, i) => {
+        const p = `breakdowns[${i}]`;
+        if (!isObj(b)) return errs.push(`${p} must be an object`);
+        noExtra(b, p, ["key", "title", "note", "partition", "rows", "byMerchant"]);
+        req(goodKey(b.key), `${p}.key must match ${KEY_RE} and not be a reserved name`);
+        if (bKeys.has(b.key)) errs.push(`${p}.key "${b.key}" is duplicated`);
+        bKeys.add(b.key);
+        req(safeText(b.title, 60), `${p}.title must be one line of 1 to 60 characters, no domain or email`);
+        if (b.note !== undefined) req(safeText(b.note, 200), `${p}.note must be one non-empty line of at most 200 characters, no domain or email`);
+        if (b.partition !== undefined) req(typeof b.partition === "boolean", `${p}.partition must be true or false`);
+        const rowKeys = new Set();
+        if (!Array.isArray(b.rows) || b.rows.length < 1 || b.rows.length > 12) { errs.push(`${p}.rows must be an array of 1 to 12`); return; }
+        b.rows.forEach((r, j) => {
+          const rp = `${p}.rows[${j}]`;
+          if (!isObj(r)) return errs.push(`${rp} must be an object`);
+          noExtra(r, rp, ["key", "label", "d7", "d30", "current"]);
+          req(goodKey(r.key), `${rp}.key must match ${KEY_RE} and not be a reserved name`);
+          if (rowKeys.has(r.key)) errs.push(`${rp}.key "${r.key}" is duplicated`);
+          rowKeys.add(r.key);
+          req(safeText(r.label, 60), `${rp}.label must be one line of 1 to 60 characters, no domain or email`);
+          counts(r, rp, ["d7", "d30"]);
+          if (r.current !== undefined) counts(r, rp, ["current"]);
+          if (isCount(r.d7) && isCount(r.d30)) req(r.d7 <= r.d30, `${rp}.d7 cannot exceed d30`);
+        });
+        if (b.byMerchant === undefined) return;
+        if (!Array.isArray(b.byMerchant)) return errs.push(`${p}.byMerchant must be an array`);
+        const seen = new Set();
+        const rowByKey = new Map(b.rows.filter(isObj).map((r) => [r.key, r]));
+        const sums = { d7: new Map(), d30: new Map(), current: new Map() };
+        b.byMerchant.forEach((m, j) => {
+          const mp = `${p}.byMerchant[${j}]`;
+          if (!isObj(m)) return errs.push(`${mp} must be an object`);
+          noExtra(m, mp, ["id", "d7", "d30", "current"]);
+          req(opaqueId(m.id), `${mp}.id must be an opaque non-empty string (no domain or email)`);
+          req(merchantIds.has(m.id), `${mp}.id must be one of merchants[].id`);
+          if (seen.has(m.id)) errs.push(`${mp}.id is duplicated`);
+          seen.add(m.id);
+          for (const per of ["d7", "d30", "current"]) {
+            if (m[per] === undefined) { if (per !== "current") errs.push(`${mp}.${per} is required`); continue; }
+            if (!isObj(m[per])) { errs.push(`${mp}.${per} must be an object`); continue; }
+            for (const [k, v] of Object.entries(m[per])) {
+              req(rowKeys.has(k), `${mp}.${per}.${k} is not a row key`);
+              req(isCount(v), `${mp}.${per}.${k} must be a non-negative integer`);
+              // A store's "now" count only for rows that report one, or it would never be shown.
+              if (per === "current" && rowKeys.has(k)) req(rowByKey.get(k)?.current !== undefined, `${mp}.current.${k} needs rows[].current for that row`);
+              if (isCount(v)) sums[per].set(k, (sums[per].get(k) ?? 0) + v);
+            }
+          }
+          if (isObj(m.d7) && isObj(m.d30)) for (const [k, v] of Object.entries(m.d7))
+            if (isCount(v) && isCount(m.d30[k] ?? 0)) req(v <= (m.d30[k] ?? 0), `${mp}.d7.${k} cannot exceed d30`);
+        });
+        // Per-store counts are a split of the table's totals, so they can't add up to more.
+        for (const [per, totals] of Object.entries(sums)) for (const [k, total] of totals) {
+          const row = rowByKey.get(k);
+          if (row && isCount(row[per])) req(total <= row[per], `${p}.byMerchant ${per}.${k} adds up to ${total}, more than rows ${per} ${row[per]}`);
+        }
       });
     }
   }
