@@ -11,11 +11,18 @@
   - Demo re-run on fixed code: 13/13 removed into unpublished copy "test-data - clean copy pa4zrdal" (153007784113); live theme pulled before/after, byte-identical (291 files). Screenshots re-rendered in `~/shopify/gc-preview-harness/cleancopy/png/`.
   - Ticket reply DRAFT: `memory/shopify-ticket-71890683-reply-draft.md` (Nathan reviews, takes admin screenshots 4-7, sends).
   - Audit r3 (this batch): no HIGH, no MEDIUM; 8 LOWs, all fixed in the r3 commit (finding 5 moot: getTheme cannot return USER_ERROR). Gate green: 12,131 tests.
-- **Next:**
+- **Session 3 (2026-11-11, all committed, gate green: 12,142 tests):**
+  - gc-tib.19 filed: LAUNCH COPY SWEEP (every 'read-only / never edits' claim on site, guides, llms.txt, in-app settings, listing; ship on launch day only).
+  - 1b040f3 gc-tib.10: scan-page count uses one shared `findingBlockReason` (preflight + select page + count); button only on the latest successful scan before a theme publish.
+  - gc-tib.9 decided (Nathan delegated): keep the newest-20 prune. Real gap filed as gc-tib.20 (no way back to a run result / don't-publish warning) = PRE-LAUNCH, needs Nathan's UX call.
+  - gc-5p4g + gc-i29e closed: prod read-only check, 11/11 offline sessions expiring with refresh tokens; tripwire test d942551. Library gotcha in memory (flag doesn't migrate old tokens).
+  - gc-dg5e closed: Canvas addendum 5512c55. No API marker; AGENTS.md is NOT a Canvas signal (Horizon ships it). RECOMMENDATION on gc-tib.12 pending Nathan: downgrade release blocker to launch follow-up.
+  - Audit r4 (5cd3859..HEAD): no HIGH/MED; 6 LOWs fixed in 932551b; finding 4 remainder = gc-tib.21.
   1. Nathan: admin screenshots + send the reply.
   2. Theme library on nw-dev-store-2 now holds 3 GhostCode copies (probe 153006309553, ffewpawe 153006604465, pa4zrdal 153007784113). Nathan deletes the old two whenever; keep pa4zrdal for the screenshots.
-  3. Remaining beads: gc-tib.17 (Admin API probe: does themeDuplicate bump MAIN updatedAt), gc-tib.18 (LOW), gc-tib.8-.11 (r1 LOWs), gc-tib.12 Canvas RELEASE BLOCKER, gc-tib.6 legal publish before deploy.
-  4. Copy-name run-id suffix nit: kept on purpose (it is the adoption key for crash-retry).
+  3. Nathan decides: gc-tib.12 downgrade (spike addendum end), gc-tib.20 UX.
+  4. Remaining beads: gc-tib.17 (Admin API probe after approval), gc-tib.18, .8, .11, .21 (LOWs), gc-tib.6 legal publish before deploy, gc-tib.19 launch copy.
+  5. Copy-name run-id suffix nit: kept on purpose (it is the adoption key for crash-retry).
 
 ## Done means (whole gc-tib)
 - [x] Slices 1-5 built, gate green (12,106 tests + lint/format/typecheck/build at ca6f240).
