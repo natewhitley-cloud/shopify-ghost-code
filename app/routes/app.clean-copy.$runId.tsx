@@ -236,9 +236,9 @@ export default function CleanCopyRun() {
                   {editorUrls[item.filename] && (
                     <>
                       {" "}
-                      <a href={editorUrls[item.filename]} target="_top">
+                      <s-link href={editorUrls[item.filename]} target="_top">
                         Open in code editor
-                      </a>
+                      </s-link>
                     </>
                   )}
                 </div>

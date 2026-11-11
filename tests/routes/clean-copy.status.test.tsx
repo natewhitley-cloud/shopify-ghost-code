@@ -261,7 +261,7 @@ describe("status page", () => {
     expect(html).toContain('target="_blank"');
     expect(html).toContain("Open theme library");
     expect(html).toContain("Removed from layout/theme.liquid, line 7");
-    expect(html).toContain("Open in code editor");
+    expect(html).toMatch(/<s-link href="[^"]+" target="_top">Open in code editor<\/s-link>/);
     expect(html).toContain(esc(CLEAN_COPY_FOOTER_NOTE));
     expect(html).toContain("Dawn (GhostCode clean copy abc123)");
   });
