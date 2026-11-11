@@ -251,3 +251,36 @@ mutation DupCanvas($id: ID!) {
 - Our code: `app/services/theme-fetcher.server.ts`, `app/services/theme-cache.server.ts`, `app/services/scan-engine.server.ts`, `app/services/storefront-fetcher.server.ts`, `app/services/liquid-error-detector.server.ts`, `app/routes/app._index.tsx`, `app/routes/webhooks.themes.publish.tsx`, `docs/spikes/2026-10-01-theme-autofix.md`
 
 Leads (not chased): community.shopify.dev reports (unverified) that a "Generate App" feature exists inside Canvas; the Editions item "Apps can no longer create or update script tags" (gc-pa3q / gc-08x8 item 5); Shopify CLI `theme pull` on a Canvas theme (not tested, CLI unavailable to me).
+
+## Addendum 2026-11-11: what changed, and the gc-tib.12 decision input
+
+Method: re-read of the Shopify sources (researcher pass, all pages accessed 2026-11-10; key quote re-checked from the raw thread JSON 2026-11-11) plus one live probe on nw-dev-store-2 through the Shopify CLI.
+
+### Changes since 2026-11-03
+- **Admin API: no change found.** OnlineStoreTheme fields, ThemeRole values, the `themes` query, `themeDuplicate`, `themeFilesUpsert` and the webhook topic pages (API 2026-10, `latest` and `unstable`) contain no Canvas mention. The 2026-10 and 2027-01 release-note URLs returned 404 (not read). Confidence: high for "no Canvas marker"; medium for "no 2027-01 change".
+- **Theme app extensions: still unsupported.** New staff source, Paige-Shopify (staff=true), https://community.shopify.dev/t/39026, 2026-10-26: "Theme app extensions aren't officially supported in Canvas yet, but we're working on adding support. Until then, they don't render in the Canvas editor. If a non-Canvas theme already has theme app extensions enabled, duplicating it into Canvas preserves those extensions in the theme code." No ETA. Latest indirect evidence (thread 39435, 2026-11-06) still treats app embeds as unavailable.
+  - Answers Q4 in part: duplicating into Canvas **keeps theme code**, so leftover app code in theme files most likely travels into the Canvas copy (inferred from "preserves those extensions in the theme code").
+- **Rollout: still early access.** help.shopify.com Canvas page: "Canvas is in early access and is available only to certain stores." No GA date. A merchant-side "Canvas has fully rolled out" (community.shopify.com/t/707240, 2026-10-30) is unverified and contradicts the help page.
+- **Webhooks:** no Canvas mention; whether `themes/publish` fires for a Canvas publish is still unknown.
+
+### Live probe (2026-11-11, nw-dev-store-2, Shopify CLI 4.9.4)
+- `shopify theme pull --only AGENTS.md --only DESIGN.md` on **Horizon (unpublished, 149633695921)**: `AGENTS.md` present. On the live theme `test-data` (149633761457): neither file.
+- **Consequence: `AGENTS.md` / `DESIGN.md` is NOT a Canvas signal.** Shopify's own non-Canvas Horizon ships `AGENTS.md`, so refusing on it would block every Horizon store. Drop the "proposed detection 3" idea above.
+- Not testable here: whether this store has Canvas access (the CLI can't show the Canvas badge).
+
+### gc-tib.12 decision input (recommendation for Nathan)
+There is still **no positive Canvas signal** in the Admin API. What the clean-copy code does in each case:
+
+| Case | What happens today | Live theme at risk? |
+|---|---|---|
+| Live theme is Canvas-edited, and `themes` hides it (staff statement 2026-10-01) | The scan itself can't find a published theme, so no scan and no Clean copy; if a scan exists, preflight's `getMainTheme` is null -> `NO_MAIN_THEME` refusal | No |
+| Live theme is Canvas-edited and `themes` DOES list it (statement stale) | We duplicate it; the API copy may open only in Canvas; writes to it are undocumented | No: the adapter guard never writes MAIN or the source, and the merchant publishes |
+| A non-Canvas live theme (today's normal case) | Works as built | No |
+
+The core safety promise (live theme never written, merchant previews and publishes) holds in every row. The remaining risk is a confusing copy in row 2, not damage.
+
+**Recommendation:** downgrade gc-tib.12 from release blocker to a launch follow-up:
+1. Keep the `canvasThemeRefusal` hook (no-op) so a future API marker plugs straight in.
+2. Make the `NO_MAIN_THEME` refusal copy mention Canvas ("If you edit your theme in Canvas, Clean copy can't read it yet."), and the same for the scan's "No published theme found" (gc-n3ot).
+3. After write_themes approval, run Live checks A-C above on any store with Canvas access (Partner support can enable early access) before marketing Clean copy to Canvas users.
+Alternative (keep as blocker): wait for a Shopify API marker or a live test on a Canvas store. No date for either.
