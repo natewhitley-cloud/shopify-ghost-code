@@ -39,7 +39,9 @@ export type SpanRefusal =
   /** The element is inside a comment, raw/schema/javascript/stylesheet block, or another script/style body. */
   | "IN_NON_CODE_REGION"
   /** The finding type is not in the v1 fixable allowlist. */
-  | "NOT_FIXABLE_TYPE";
+  | "NOT_FIXABLE_TYPE"
+  /** The element would be longer than MAX_SPAN_CHARS: not a plain app tag. */
+  | "SPAN_TOO_LONG";
 
 export type SpanResult = { ok: true; span: RemovalSpan } | { ok: false; reason: SpanRefusal };
 
@@ -59,6 +61,13 @@ export const FIXABLE_FINDING_TYPES: readonly FixableFindingType[] = [
 
 const refuse = (reason: SpanRefusal): SpanResult => ({ ok: false, reason });
 
+/**
+ * Longest span we will ever remove. A real app tag is a few hundred chars;
+ * anything longer is refused, and every boundary scan stops here, so locating
+ * one span is O(MAX_SPAN_CHARS) whatever the file holds.
+ */
+export const MAX_SPAN_CHARS = 2048;
+
 /** ASCII-only case-insensitive prefix test (full-width lookalikes never match). */
 function startsWithAsciiCI(content: string, at: number, lowerNeedle: string): boolean {
   if (at < 0 || at + lowerNeedle.length > content.length) return false;
@@ -76,17 +85,21 @@ function isWs(ch: string | undefined): boolean {
 
 /**
  * Validate an HTML opening tag starting at `start` (`<script` / `<link`) and
- * return the offset of its closing `>`. Quotes must balance, Liquid output
- * `{{ }}` must pair up inside the tag, and no Liquid tag or second `<` may
- * appear. A `>` inside a quoted value or `{{ }}` is followed correctly (the
- * scan skips quoted and Liquid-output text), so the end is the real tag end.
+ * return the offset of its closing `>`. Quotes must balance, and a quoted
+ * value may not hold `<` or a line break (an unbalanced quote would otherwise
+ * swallow the markup after the tag). Liquid output `{{ }}` must pair up inside
+ * the tag, and no Liquid tag or second `<` may appear. A `>` inside a quoted
+ * value or `{{ }}` is skipped, so the end is the real tag end. Never scans
+ * past MAX_SPAN_CHARS.
  */
 function openTagEnd(content: string, start: number, nameLength: number): number | SpanRefusal {
+  const limit = Math.min(content.length, start + MAX_SPAN_CHARS);
   let quote: string | null = null;
-  for (let i = start + 1 + nameLength; i < content.length; i++) {
+  for (let i = start + 1 + nameLength; i < limit; i++) {
     const ch = content[i];
     if (quote) {
       if (ch === quote) quote = null;
+      else if (ch === "<" || ch === "\n" || ch === "\r") return "MALFORMED_TAG";
       else if (ch === "{" && content[i + 1] === "%") return "LIQUID_TAG_IN_ELEMENT";
       continue;
     }
@@ -96,13 +109,14 @@ function openTagEnd(content: string, start: number, nameLength: number): number 
     else if (ch === "{" && content[i + 1] === "%") return "LIQUID_TAG_IN_ELEMENT";
     else if (ch === "{" && content[i + 1] === "{") {
       const close = content.indexOf("}}", i + 2);
-      if (close === -1) return "MALFORMED_TAG";
+      if (close === -1 || close >= limit)
+        return limit < content.length ? "SPAN_TOO_LONG" : "MALFORMED_TAG";
       const inner = content.slice(i + 2, close);
       if (inner.includes("{{") || inner.includes("{%")) return "MALFORMED_TAG";
       i = close + 1;
     }
   }
-  return "MALFORMED_TAG";
+  return limit < content.length ? "SPAN_TOO_LONG" : "MALFORMED_TAG";
 }
 
 /** Span of `<script ...></script>` (only whitespace allowed between). */
@@ -113,11 +127,13 @@ export function scriptElementSpan(content: string, start: number): SpanResult {
   const gt = openTagEnd(content, start, 6);
   if (typeof gt === "string") return refuse(gt);
   if (content[gt - 1] === "/") return refuse("SELF_CLOSING_SCRIPT");
+  const limit = Math.min(content.length, start + MAX_SPAN_CHARS);
   let i = gt + 1;
-  while (i < content.length && isWs(content[i])) i++;
+  while (i < limit && isWs(content[i])) i++;
+  if (i >= limit && limit < content.length) return refuse("SPAN_TOO_LONG");
   if (!startsWithAsciiCI(content, i, "</script")) return refuse("SCRIPT_BODY_NOT_EMPTY");
   let j = i + 8;
-  while (j < content.length && isWs(content[j])) j++;
+  while (j < limit && isWs(content[j])) j++;
   if (content[j] !== ">") return refuse("MALFORMED_TAG");
   return { ok: true, span: { start, end: j + 1 } };
 }
@@ -133,22 +149,26 @@ export function linkElementSpan(content: string, start: number): SpanResult {
 }
 
 /**
- * End offset (exclusive) of a Liquid tag `{% ... %}` that starts at `start`,
- * scanning quote-aware. Refuses if another `{%`/`{{` opens first.
+ * End offset (exclusive) of the Liquid tag `{% ... %}` that starts at `start`,
+ * with Liquid's own rule: a tag ends at the FIRST `%}`, quotes or not (the
+ * tokenizer is not quote-aware). Null (refuse) when a `{%` or `{{` opens
+ * before that, when the tag text holds an odd number of `'` or `"` (a quote
+ * that does not close inside the tag), or when no `%}` follows within
+ * `maxLength` chars.
  */
-function liquidTagEnd(content: string, start: number): number | null {
-  let quote: string | null = null;
-  for (let i = start + 2; i < content.length; i++) {
-    const ch = content[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === "%" && content[i + 1] === "}") return i + 2;
-    else if (ch === "{" && (content[i + 1] === "%" || content[i + 1] === "{")) return null;
-  }
-  return null;
+function liquidTagEnd(content: string, start: number, maxLength = Infinity): number | null {
+  const close = content.indexOf("%}", start + 2);
+  if (close === -1 || close + 2 - start > maxLength) return null;
+  const inner = content.slice(start + 2, close);
+  if (inner.includes("{%") || inner.includes("{{")) return null;
+  if (count(inner, "'") % 2 !== 0 || count(inner, '"') % 2 !== 0) return null;
+  return close + 2;
+}
+
+function count(text: string, ch: string): number {
+  let n = 0;
+  for (let i = text.indexOf(ch); i !== -1; i = text.indexOf(ch, i + 1)) n++;
+  return n;
 }
 
 const RENDER_TAG_HEAD = /^\{%-?\s*(?:render|include)\s+["']/i;
@@ -156,7 +176,7 @@ const RENDER_TAG_HEAD = /^\{%-?\s*(?:render|include)\s+["']/i;
 /** Span of a `{% render 'x' ... %}` / `{%- include "x" -%}` tag. */
 export function liquidRenderTagSpan(content: string, start: number): SpanResult {
   if (!RENDER_TAG_HEAD.test(content.slice(start, start + 64))) return refuse("NOT_AT_ELEMENT");
-  const end = liquidTagEnd(content, start);
+  const end = liquidTagEnd(content, start, MAX_SPAN_CHARS);
   if (end === null) return refuse("UNTERMINATED_LIQUID_TAG");
   return { ok: true, span: { start, end } };
 }
@@ -165,63 +185,96 @@ const LIQUID_BLOCK_OPEN = /\{%-?\s*liquid\b/gi;
 const BARE_RENDER_LINE = /^[ \t]*(?:render|include)\s+["']/i;
 
 /**
+ * Every `{% liquid %}` block in the file, in order, as [start, end) with the
+ * same first-`%}` rule as liquidTagEnd. An unterminated (or unbalanced) block
+ * ends the list with end = Infinity: nothing after it is certain. One linear
+ * pass; compute once per file and pass to bareLiquidStatementSpan.
+ */
+export function liquidBlockRanges(content: string): Array<[number, number]> {
+  const blocks: Array<[number, number]> = [];
+  LIQUID_BLOCK_OPEN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = LIQUID_BLOCK_OPEN.exec(content)) !== null) {
+    const end = liquidTagEnd(content, m.index);
+    if (end === null) {
+      blocks.push([m.index, Infinity]);
+      break;
+    }
+    blocks.push([m.index, end]);
+    LIQUID_BLOCK_OPEN.lastIndex = end;
+  }
+  return blocks;
+}
+
+/**
  * Span of one bare `render 'x'` statement line inside `{% liquid %}`: from the
  * line start (`lineStart`, as RENDER_LIQUID_BLOCK_RE reports it) to the end of
  * the line, newline excluded. The splice engine then drops the emptied line.
  */
-export function bareLiquidStatementSpan(content: string, lineStart: number): SpanResult {
+export function bareLiquidStatementSpan(
+  content: string,
+  lineStart: number,
+  blocks: ReadonlyArray<[number, number]> = liquidBlockRanges(content),
+): SpanResult {
   if (lineStart > 0 && content[lineStart - 1] !== "\n") return refuse("NOT_AT_ELEMENT");
   let lineEnd = content.indexOf("\n", lineStart);
   if (lineEnd === -1) lineEnd = content.length;
   if (lineEnd > lineStart && content[lineEnd - 1] === "\r") lineEnd--;
+  if (lineEnd - lineStart > MAX_SPAN_CHARS) return refuse("SPAN_TOO_LONG");
   const line = content.slice(lineStart, lineEnd);
   if (!BARE_RENDER_LINE.test(line)) return refuse("NOT_AT_ELEMENT");
 
-  // Quote-aware: the statement must not close the block or open another tag.
-  let quote: string | null = null;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (
-      (ch === "%" && line[i + 1] === "}") ||
-      (ch === "{" && /[%{]/.test(line[i + 1] ?? ""))
-    ) {
-      return refuse("LIQUID_STATEMENT_SHARES_LINE");
-    }
+  // The statement must not close the block or open another tag (Liquid ends
+  // the block at the first `%}`, even inside quotes), and its quotes balance.
+  if (line.includes("%}") || line.includes("{%") || line.includes("{{")) {
+    return refuse("LIQUID_STATEMENT_SHARES_LINE");
   }
-  if (quote) return refuse("LIQUID_STATEMENT_SHARES_LINE");
+  if (count(line, "'") % 2 !== 0 || count(line, '"') % 2 !== 0) {
+    return refuse("LIQUID_STATEMENT_SHARES_LINE");
+  }
 
   // Inside a {% liquid %} block that opened on an earlier line.
-  LIQUID_BLOCK_OPEN.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  let inside = false;
-  while ((m = LIQUID_BLOCK_OPEN.exec(content)) !== null && m.index < lineStart) {
-    const end = liquidTagEnd(content, m.index);
-    if (end === null || end > lineStart) {
-      inside = end !== null && content.lastIndexOf("\n", lineStart - 1) >= m.index;
-      break;
-    }
-    LIQUID_BLOCK_OPEN.lastIndex = end;
-  }
+  const block = lastBlockBefore(blocks, lineStart);
+  const inside =
+    block !== null &&
+    block[1] !== Infinity &&
+    block[1] > lineStart &&
+    content.lastIndexOf("\n", lineStart - 1) >= block[0];
   if (!inside) return refuse("NOT_IN_LIQUID_BLOCK");
   return { ok: true, span: { start: lineStart, end: lineEnd } };
+}
+
+/** The last block starting before `offset` (blocks sorted), or null. */
+function lastBlockBefore(
+  blocks: ReadonlyArray<[number, number]>,
+  offset: number,
+): [number, number] | null {
+  let lo = 0;
+  let hi = blocks.length - 1;
+  let found: [number, number] | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (blocks[mid][0] < offset) {
+      found = blocks[mid];
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return found;
 }
 
 /**
  * [start, end) ranges where markup is not live code: Liquid comment, doc, raw,
  * schema, javascript and stylesheet blocks; `{%# %}` inline comments; HTML
- * comments; and the bodies of `<script>` / `<style>` elements (so a
- * `document.write('<script src=...')` string is never treated as an element).
+ * comments; the bodies of `<script>` / `<style>` elements (so a
+ * `document.write('<script src=...')` string is never treated as an element);
+ * and the text-only or inert `<textarea>` / `<title>` / `<template>` / `<xmp>`
+ * / `<noscript>` bodies.
  * One left-to-right pass; an unterminated region runs to the end of the file.
  */
 export function nonCodeRanges(content: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const token =
-    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|<(script|style)(?=[\s>/])/gi;
+    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|<(script|style|textarea|title|template|xmp|noscript)(?=[\s>/])/gi;
   let m: RegExpExecArray | null;
   while ((m = token.exec(content)) !== null) {
     const at = m.index;
@@ -280,21 +333,32 @@ export function removalSpanFor(
   content: string,
   matchStart: number,
   ranges: ReadonlyArray<[number, number]> = nonCodeRanges(content),
+  /** liquidBlockRanges(content), computed once per file by callers that locate many spans. */
+  blocks?: ReadonlyArray<[number, number]>,
 ): SpanResult {
   if (inRanges(ranges, matchStart)) return refuse("IN_NON_CODE_REGION");
+  let result: SpanResult;
   switch (findingType) {
     case "GHOST_SCRIPT":
-      return scriptElementSpan(content, matchStart);
+      result = scriptElementSpan(content, matchStart);
+      break;
     case "GHOST_STYLE":
     case "GHOST_PRECONNECT":
-      return linkElementSpan(content, matchStart);
+      result = linkElementSpan(content, matchStart);
+      break;
     case "GHOST_SNIPPET":
-      return content[matchStart] === "{"
-        ? liquidRenderTagSpan(content, matchStart)
-        : bareLiquidStatementSpan(content, matchStart);
+      result =
+        content[matchStart] === "{"
+          ? liquidRenderTagSpan(content, matchStart)
+          : bareLiquidStatementSpan(content, matchStart, blocks);
+      break;
     default:
       // Runtime guard: callers pass stored enum strings, so an unknown type
       // must refuse, never fall through to undefined.
       return refuse("NOT_FIXABLE_TYPE");
   }
+  if (result.ok && result.span.end - result.span.start > MAX_SPAN_CHARS) {
+    return refuse("SPAN_TOO_LONG");
+  }
+  return result;
 }

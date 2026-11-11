@@ -25,6 +25,9 @@ export type FixRunStatus = ActiveFixRunStatus | "completed" | "partial" | "faile
 export type FixItemStatus = "pending" | "removed" | "skipped" | "failed";
 
 export const FIX_RUNS_KEEP_PER_SHOP = 20;
+
+/** Relation filter: item writes apply only while the run is active (audit M-j). */
+const ACTIVE_RUN = { status: { in: [...ACTIVE_FIX_RUN_STATUSES] } };
 /** An active run with no update for this long is presumed lost. */
 export const ACTIVE_RUN_STALE_MS = 60 * 60 * 1000;
 
@@ -53,14 +56,27 @@ export async function createFixRun(
     const lockKey = `fix-run:${shopId}`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
-    await tx.fixRun.updateMany({
+    // A lost run: fail it AND its pending items (audit M-j), so nothing of it
+    // reads as still in progress.
+    const stale = await tx.fixRun.findMany({
       where: {
         shopId,
         status: { in: [...ACTIVE_FIX_RUN_STATUSES] },
         updatedAt: { lt: new Date(now.getTime() - ACTIVE_RUN_STALE_MS) },
       },
-      data: { status: "failed", failureReason: "STALE", completedAt: now },
+      select: { id: true },
     });
+    if (stale.length > 0) {
+      const ids = stale.map((r) => r.id);
+      await tx.fixRun.updateMany({
+        where: { id: { in: ids }, status: { in: [...ACTIVE_FIX_RUN_STATUSES] } },
+        data: { status: "failed", failureReason: "STALE", completedAt: now },
+      });
+      await tx.fixItem.updateMany({
+        where: { fixRunId: { in: ids }, status: "pending" },
+        data: { status: "failed", reasonCode: "STALE" },
+      });
+    }
 
     const active = await tx.fixRun.findFirst({
       where: { shopId, status: { in: [...ACTIVE_FIX_RUN_STATUSES] } },
@@ -109,6 +125,42 @@ export async function getFixRunWithItems(runId: string) {
     where: { id: runId },
     include: { items: { orderBy: [{ filename: "asc" }, { spanStart: "asc" }] } },
   });
+}
+
+/** An active run untouched for ACTIVE_RUN_STALE_MS (the status page shows it as stopped). */
+export function isStaleActiveRun(
+  run: { status: string; updatedAt: Date },
+  now: Date = new Date(),
+): boolean {
+  return (
+    (ACTIVE_FIX_RUN_STATUSES as readonly string[]).includes(run.status) &&
+    now.getTime() - run.updatedAt.getTime() > ACTIVE_RUN_STALE_MS
+  );
+}
+
+/** Whether the run is still active (re-checked right before a write, audit sec 7). */
+export async function isFixRunActive(runId: string): Promise<boolean> {
+  const run = await db.fixRun.findFirst({
+    where: { id: runId, status: { in: [...ACTIVE_FIX_RUN_STATUSES] } },
+    select: { id: true },
+  });
+  return run !== null;
+}
+
+/**
+ * Flag do-not-publish when a FAILED run has a copy and any item recorded an
+ * expected post-write md5: a write may have landed unverified (audit M-d).
+ */
+export async function markDoNotPublishIfWritten(runId: string): Promise<boolean> {
+  const run = await db.fixRun.findUnique({
+    where: { id: runId },
+    select: { status: true, copyThemeId: true, items: { select: { postMd5: true } } },
+  });
+  // Only a failed run: a completed / partial run verified every write it made.
+  if (run?.status !== "failed" || !run.copyThemeId) return false;
+  if (!run.items.some((i) => i.postMd5 !== null)) return false;
+  await db.fixRun.update({ where: { id: runId }, data: { doNotPublish: true } });
+  return true;
 }
 
 export type FixRunWithItems = NonNullable<Awaited<ReturnType<typeof getFixRunWithItems>>>;
@@ -167,13 +219,16 @@ export type ItemDecision = {
   postMd5?: string | null;
 };
 
-/** Decide pending items (one transaction). Already-decided items are left alone. */
+/**
+ * Decide pending items (one transaction). Already-decided items, and items of
+ * a run that is no longer active, are left alone.
+ */
 export async function decideFixItems(runId: string, decisions: ItemDecision[]): Promise<void> {
   if (decisions.length === 0) return;
   await db.$transaction(
     decisions.map((d) =>
       db.fixItem.updateMany({
-        where: { id: d.itemId, fixRunId: runId, status: "pending" },
+        where: { id: d.itemId, fixRunId: runId, status: "pending", fixRun: ACTIVE_RUN },
         data: {
           status: d.status,
           reasonCode: d.reasonCode ?? null,
@@ -195,7 +250,7 @@ export async function recordExpectedPostMd5(
 ): Promise<void> {
   if (itemIds.length === 0) return;
   await db.fixItem.updateMany({
-    where: { id: { in: itemIds }, fixRunId: runId, status: "pending" },
+    where: { id: { in: itemIds }, fixRunId: runId, status: "pending", fixRun: ACTIVE_RUN },
     data: { postMd5 },
   });
 }

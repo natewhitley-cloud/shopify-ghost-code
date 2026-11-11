@@ -80,6 +80,12 @@ export type UpsertResult = {
   /** Null when Shopify returned no job (nothing to wait for). */
   jobId: string | null;
   jobDone: boolean;
+  /**
+   * Non-access userErrors, codes only (allowlisted). The job is still returned
+   * with them (audit M-e): Shopify may apply the other files, so the caller
+   * waits for the job and trusts the post-read checksums.
+   */
+  userErrors: Array<{ filename: string | null; code: string }>;
 };
 
 export interface CleanCopyAdmin {
@@ -96,6 +102,19 @@ export interface CleanCopyAdmin {
     files: ReadonlyArray<{ filename: string; content: string }>;
   }): Promise<AdminResult<UpsertResult>>;
   getJob(jobId: string): Promise<AdminResult<{ done: boolean }>>;
+  /** Every access scope handle granted to this installation, read live. */
+  getGrantedScopes(): Promise<AdminResult<string[]>>;
+}
+
+/**
+ * TODO(gc-dg5e) D9: Canvas themes are excluded from v1, but there is no
+ * reliable Canvas signal yet. When gc-dg5e reports one, return "CANVAS_THEME"
+ * for a Canvas theme here; preflight and the selection page already refuse on
+ * any non-null result. Until then this hook refuses nothing.
+ */
+export function canvasThemeRefusal(theme: ThemeInfo): "CANVAS_THEME" | null {
+  void theme;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +163,8 @@ const UPSERT_MUTATION = `mutation CleanCopyUpsert($themeId: ID!, $files: [Online
 
 const JOB_QUERY = `query CleanCopyJob($id: ID!) { job(id: $id) { id done } }`;
 
+const ACCESS_SCOPES_QUERY = `query CleanCopyScopes { currentAppInstallation { accessScopes { handle } } }`;
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -180,8 +201,15 @@ function toTheme(node: Record<string, unknown> | null | undefined): ThemeInfo | 
  * variables (file bodies), and theme content must never reach logs or Inngest
  * (privacy policy). Classification still reads the messages.
  */
-function codesOf(codes: Array<string | null | undefined>): string {
-  const list = [...new Set(codes.map((c) => c || "UNKNOWN"))];
+/** Only a plain machine code passes (audit sec 8); anything else is UNKNOWN. */
+const SAFE_CODE = /^[A-Z0-9_]{1,64}$/;
+
+export function safeCode(code: unknown): string {
+  return typeof code === "string" && SAFE_CODE.test(code) ? code : "UNKNOWN";
+}
+
+function codesOf(codes: unknown[]): string {
+  const list = [...new Set(codes.map(safeCode))];
   return list.join(",") || "UNKNOWN";
 }
 
@@ -349,11 +377,25 @@ export function createCleanCopyAdmin(admin: AdminApiContext): CleanCopyAdmin {
         | { job?: { id?: string; done?: boolean } | null; userErrors?: UserError[] }
         | null
         | undefined;
-      if (payload?.userErrors && payload.userErrors.length > 0) {
-        return classifyUserErrors(payload.userErrors);
+      const rawErrors = (payload?.userErrors ?? []) as Array<
+        UserError & { filename?: string | null }
+      >;
+      if (rawErrors.length > 0) {
+        const classified = classifyUserErrors(rawErrors);
+        if (classified.error === "ACCESS_DENIED") return classified;
       }
       const jobId = typeof payload?.job?.id === "string" ? payload.job.id : null;
-      return { ok: true, value: { jobId, jobDone: jobId === null || payload?.job?.done === true } };
+      return {
+        ok: true,
+        value: {
+          jobId,
+          jobDone: jobId === null || payload?.job?.done === true,
+          userErrors: rawErrors.map((e) => ({
+            filename: typeof e.filename === "string" ? e.filename : null,
+            code: safeCode(e.code),
+          })),
+        },
+      };
     },
 
     async getJob(jobId) {
@@ -362,6 +404,19 @@ export function createCleanCopyAdmin(admin: AdminApiContext): CleanCopyAdmin {
       const job = res.value.job as { done?: boolean } | null | undefined;
       if (!job) return fail("TRANSIENT", "job not found");
       return { ok: true, value: { done: job.done === true } };
+    },
+
+    async getGrantedScopes() {
+      const res = await call(ACCESS_SCOPES_QUERY);
+      if (!res.ok) return res;
+      const scopes = (
+        res.value.currentAppInstallation as { accessScopes?: Array<{ handle?: unknown }> } | null
+      )?.accessScopes;
+      if (!Array.isArray(scopes)) return fail("TRANSIENT", "no access scopes");
+      return {
+        ok: true,
+        value: scopes.map((s) => s.handle).filter((h): h is string => typeof h === "string"),
+      };
     },
   };
 }

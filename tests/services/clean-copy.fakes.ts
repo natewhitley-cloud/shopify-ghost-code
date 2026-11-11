@@ -78,7 +78,14 @@ export function createFakeDb() {
   const fixItem = {
     updateMany: async ({ where, data }: { where: Row; data: Row }) => {
       await tick();
-      const rows = state.fixItems.filter((r) => matches(r, where));
+      // Relation filter on the parent run (e.g. only while it is active).
+      const { fixRun: runWhere, ...own } = where as Row & { fixRun?: Row };
+      const rows = state.fixItems.filter(
+        (r) =>
+          matches(r, own) &&
+          (!runWhere ||
+            matches(state.fixRuns.find((run) => run.id === r.fixRunId) ?? {}, runWhere)),
+      );
       rows.forEach((r) => Object.assign(r, data));
       return { count: rows.length };
     },
@@ -259,6 +266,14 @@ export class FakeShopify {
   checksumOverride = new Map<string, string>();
   /** Applied to the content an upsert stores (simulate Shopify reformatting). */
   upsertTransform: ((filename: string, content: string) => string) | null = null;
+  /** currentAppInstallation.accessScopes handles. */
+  grantedScopes: string[] = ["read_themes", "write_themes"];
+  /** userErrors returned WITH the job by the next upserts (files still applied). */
+  upsertUserErrors: Array<{ code: string; filename: string | null; message: string }> = [];
+  /** Files named here are NOT applied by an upsert (Shopify rejected them). */
+  upsertRejects = new Set<string>();
+  /** Called on every job poll (e.g. the merchant publishes the copy mid-write). */
+  onJobPoll: (() => void) | null = null;
   private seq = 100;
   private jobPolls = 0;
 
@@ -377,6 +392,7 @@ export class FakeShopify {
       case "CleanCopyUpsert": {
         const t = this.themes.get(String(v.themeId));
         for (const f of (v.files as Array<{ filename: string; body: { value: string } }>) ?? []) {
+          if (this.upsertRejects.has(f.filename)) continue;
           const content = this.upsertTransform
             ? this.upsertTransform(f.filename, f.body.value)
             : f.body.value;
@@ -389,13 +405,22 @@ export class FakeShopify {
             themeFilesUpsert: {
               job: { id: "gid://shopify/Job/1", done: this.jobPollsUntilDone === 0 },
               upsertedThemeFiles: [],
-              userErrors: [],
+              userErrors: this.upsertUserErrors.map((e) => ({ ...e, field: ["files"] })),
             },
           },
         };
       }
+      case "CleanCopyScopes":
+        return {
+          data: {
+            currentAppInstallation: {
+              accessScopes: this.grantedScopes.map((handle) => ({ handle })),
+            },
+          },
+        };
       case "CleanCopyJob": {
         this.jobPolls++;
+        this.onJobPoll?.();
         return { data: { job: { id: v.id, done: this.jobPolls >= this.jobPollsUntilDone } } };
       }
       default:

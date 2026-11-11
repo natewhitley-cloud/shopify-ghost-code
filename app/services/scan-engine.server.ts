@@ -99,7 +99,12 @@ import {
   type MaliciousDomain,
 } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
-import { nonCodeRanges, removalSpanFor, type FixableFindingType } from "../lib/removal-span";
+import {
+  liquidBlockRanges,
+  nonCodeRanges,
+  removalSpanFor,
+  type FixableFindingType,
+} from "../lib/removal-span";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import {
   detectSuspiciousCode,
@@ -859,24 +864,52 @@ function buildThemeSettingGatedLines(content: string): Set<number> {
 // Clean-copy removal spans (gc-tib)
 // ---------------------------------------------------------------------------
 
+type RemovalSpanFields = { spanStart?: number; spanEnd?: number; spanSha256?: string };
+
 /**
- * Per-file span locator for the 4 fixable detectors. Non-code ranges are built
- * once per file on the first fixable match (most files have none).
+ * Findings whose removal span is not computed yet (gc-tib audit sec 6). A
+ * detector registers each fixable finding here; scanThemeFiles computes the
+ * span only for findings that survive the per-file cap (withRemovalSpans), so
+ * a tag-dense file costs at most MAX_FINDINGS_PER_FILE_PER_TYPE span lookups
+ * per type. A WeakMap, so a finding that is dropped is simply collected.
+ */
+const pendingRemovalSpans = new WeakMap<CreateFindingInput, () => RemovalSpanFields>();
+
+/**
+ * Per-file span locator for the 4 fixable detectors: registers a lazy span
+ * on the finding and returns it. Non-code ranges and `{% liquid %}` block
+ * ranges are built once per file, on the first span actually computed.
  */
 function removalSpanLocator(content: string) {
   let ranges: Array<[number, number]> | null = null;
-  return (type: FixableFindingType, matchStart: number) => {
-    ranges ??= nonCodeRanges(content);
-    const r = removalSpanFor(type, content, matchStart, ranges);
-    if (!r.ok) return {};
-    return {
-      spanStart: r.span.start,
-      spanEnd: r.span.end,
-      spanSha256: createHash("sha256")
-        .update(content.slice(r.span.start, r.span.end), "utf8")
-        .digest("hex"),
-    };
+  let blocks: Array<[number, number]> | null = null;
+  return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
+    pendingRemovalSpans.set(finding, () => {
+      ranges ??= nonCodeRanges(content);
+      if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
+      const r = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
+      if (!r.ok) return {};
+      return {
+        spanStart: r.span.start,
+        spanEnd: r.span.end,
+        spanSha256: createHash("sha256")
+          .update(content.slice(r.span.start, r.span.end), "utf8")
+          .digest("hex"),
+      };
+    });
+    return finding;
   };
+}
+
+/** Compute the registered spans of the findings kept after the cap. */
+function withRemovalSpans(findings: CreateFindingInput[]): CreateFindingInput[] {
+  for (const finding of findings) {
+    const compute = pendingRemovalSpans.get(finding);
+    if (!compute) continue;
+    pendingRemovalSpans.delete(finding);
+    Object.assign(finding, compute());
+  }
+  return findings;
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +924,11 @@ const SCRIPT_SRC_TAG = tagPattern([
 ]);
 
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
+  return withRemovalSpans(ghostScriptsPendingSpans(file));
+}
+
+/** detectGhostScripts with spans left pending (scanThemeFiles computes them after the cap). */
+function ghostScriptsPendingSpans(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <script ...> tag first (linear, non-backtracking), then apply
@@ -925,18 +963,23 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
       inLiquidComment: isLiquidCommentLine(file.content, lineNumber),
     });
 
-    findings.push({
-      filename: file.filename,
-      lineNumber,
-      codeSnippet,
-      findingType: FindingType.GHOST_SCRIPT,
-      severity,
-      appName: resolved.appName,
-      description: resolved.overriddenTracker
-        ? `External script left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
-        : `External script from ${resolved.appName} (${url})`,
-      ...spanAt("GHOST_SCRIPT", offset),
-    });
+    findings.push(
+      spanAt(
+        {
+          filename: file.filename,
+          lineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_SCRIPT,
+          severity,
+          appName: resolved.appName,
+          description: resolved.overriddenTracker
+            ? `External script left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
+            : `External script from ${resolved.appName} (${url})`,
+        },
+        "GHOST_SCRIPT",
+        offset,
+      ),
+    );
   }
 
   return findings;
@@ -967,6 +1010,11 @@ const LINK_STYLESHEET_TAG = tagPattern([
 ]);
 
 export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
+  return withRemovalSpans(ghostStylesPendingSpans(file));
+}
+
+/** detectGhostStyles with spans left pending (scanThemeFiles computes them after the cap). */
+function ghostStylesPendingSpans(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
@@ -1004,18 +1052,23 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
       inLiquidComment: isLiquidCommentLine(file.content, lineNumber),
     });
 
-    findings.push({
-      filename: file.filename,
-      lineNumber,
-      codeSnippet,
-      findingType: FindingType.GHOST_STYLE,
-      severity,
-      appName: resolved.appName,
-      description: resolved.overriddenTracker
-        ? `External stylesheet left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
-        : `External stylesheet from ${resolved.appName} (${url})`,
-      ...spanAt("GHOST_STYLE", offset),
-    });
+    findings.push(
+      spanAt(
+        {
+          filename: file.filename,
+          lineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_STYLE,
+          severity,
+          appName: resolved.appName,
+          description: resolved.overriddenTracker
+            ? `External stylesheet left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
+            : `External stylesheet from ${resolved.appName} (${url})`,
+        },
+        "GHOST_STYLE",
+        offset,
+      ),
+    );
   }
 
   return findings;
@@ -1048,6 +1101,14 @@ export function detectGhostSnippets(
   file: ThemeFile,
   corroboratedApps: ReadonlySet<string> = findCorroboratedApps([file]),
 ): CreateFindingInput[] {
+  return withRemovalSpans(ghostSnippetsPendingSpans(file, corroboratedApps));
+}
+
+/** detectGhostSnippets with spans left pending (scanThemeFiles computes them after the cap). */
+function ghostSnippetsPendingSpans(
+  file: ThemeFile,
+  corroboratedApps: ReadonlySet<string>,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Precompute lines inside Liquid comment blocks so bare `render 'app-snippet'`
@@ -1070,16 +1131,21 @@ export function detectGhostSnippets(
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_SNIPPET, codeSnippet);
 
-    findings.push({
-      filename: file.filename,
-      lineNumber,
-      codeSnippet,
-      findingType: FindingType.GHOST_SNIPPET,
-      severity,
-      appName,
-      description: `Liquid render/include of known ${appName} snippet '${snippetName}'`,
-      ...spanAt("GHOST_SNIPPET", matchIndex),
-    });
+    findings.push(
+      spanAt(
+        {
+          filename: file.filename,
+          lineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_SNIPPET,
+          severity,
+          appName,
+          description: `Liquid render/include of known ${appName} snippet '${snippetName}'`,
+        },
+        "GHOST_SNIPPET",
+        matchIndex,
+      ),
+    );
   };
 
   // Standard form: {% render 'name' %} — may span multiple lines.
@@ -5550,6 +5616,11 @@ export function isSharedCdnDomain(hostname: string): boolean {
  *   - Skips unknown domains not in app signatures
  */
 export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
+  return withRemovalSpans(ghostPreconnectPendingSpans(file));
+}
+
+/** detectGhostPreconnect with spans left pending (scanThemeFiles computes them after the cap). */
+function ghostPreconnectPendingSpans(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Precompute which line numbers to skip (inside comment blocks or on
@@ -5599,16 +5670,21 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
     const relType = match[1] ?? match[4]; // "preconnect", "dns-prefetch", or "preload"
     const severity = classifySeverity(FindingType.GHOST_PRECONNECT, codeSnippet);
 
-    findings.push({
-      filename: file.filename,
-      lineNumber,
-      codeSnippet,
-      findingType: FindingType.GHOST_PRECONNECT,
-      severity,
-      appName,
-      description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
-      ...spanAt("GHOST_PRECONNECT", offset),
-    });
+    findings.push(
+      spanAt(
+        {
+          filename: file.filename,
+          lineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_PRECONNECT,
+          severity,
+          appName,
+          description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
+        },
+        "GHOST_PRECONNECT",
+        offset,
+      ),
+    );
   }
 
   return findings;
@@ -6107,9 +6183,9 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
       if (lines.length > 0) menuLabelHits.push({ path: file.filename, lines, outputCount });
     }
 
-    findings.push(...capped(detectGhostScripts(file)));
-    findings.push(...capped(detectGhostStyles(file)));
-    findings.push(...capped(detectGhostSnippets(file, corroboratedApps)));
+    findings.push(...withRemovalSpans(capped(ghostScriptsPendingSpans(file))));
+    findings.push(...withRemovalSpans(capped(ghostStylesPendingSpans(file))));
+    findings.push(...withRemovalSpans(capped(ghostSnippetsPendingSpans(file, corroboratedApps))));
     findings.push(...capped(detectGhostSections(file, corroboratedApps)));
     findings.push(...capped(detectGhostHrefLang(file)));
     findings.push(...capped(detectDuplicateMetaTags(file, EARLY_EXIT_LIMIT)));
@@ -6123,7 +6199,7 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     findings.push(...capped(detectGhostCanonical(file, EARLY_EXIT_LIMIT)));
     findings.push(...capped(detectGhostTitle(file, EARLY_EXIT_LIMIT)));
     findings.push(...capped(detectGhostOg(file, EARLY_EXIT_LIMIT)));
-    findings.push(...capped(detectGhostPreconnect(file)));
+    findings.push(...withRemovalSpans(capped(ghostPreconnectPendingSpans(file))));
     findings.push(...capped(detectGhostFont(file)));
     findings.push(...capped(detectGhostAjax(file)));
 

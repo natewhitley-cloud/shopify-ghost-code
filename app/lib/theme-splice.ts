@@ -105,7 +105,8 @@ export function spliceSpans(content: string, spans: readonly RemovalSpan[]): Spl
   const dropped = new Set<number>();
   for (let k = cutPoints.length - 1; k >= 0; k--) {
     const at = cutPoints[k];
-    const lineStart = out.lastIndexOf("\n", at - 1) + 1;
+    // at = 0: lastIndexOf("\n", -1) would still match a "\n" at index 0.
+    const lineStart = at === 0 ? 0 : out.lastIndexOf("\n", at - 1) + 1;
     if (dropped.has(lineStart)) continue;
     let lineEnd = out.indexOf("\n", at);
     const hasNewline = lineEnd !== -1;

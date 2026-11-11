@@ -104,7 +104,10 @@ describe("write guard (never writes MAIN or the source theme)", () => {
     const copyId = await readyCopy();
     shop.jobPollsUntilDone = 2;
     const res = await admin.upsertFiles({ themeId: copyId, sourceThemeId: MAIN_ID, files: [file] });
-    expect(res).toEqual({ ok: true, value: { jobId: "gid://shopify/Job/1", jobDone: false } });
+    expect(res).toEqual({
+      ok: true,
+      value: { jobId: "gid://shopify/Job/1", jobDone: false, userErrors: [] },
+    });
     const call = shop.calls.find((c) => c.op === "CleanCopyUpsert")!;
     expect(call.variables).toEqual({
       themeId: copyId,
@@ -190,10 +193,18 @@ describe("error mapping (typed, never raw GraphQL errors)", () => {
     const b = await admin.upsertFiles({ themeId: copyId, sourceThemeId: MAIN_ID, files: [file] });
     shop.overrides.CleanCopyUpsert = () => new Error(`boom ${BODY_MARKER}`);
     const c = await admin.upsertFiles({ themeId: copyId, sourceThemeId: MAIN_ID, files: [file] });
-    for (const res of [a, b, c]) {
-      expect(res.ok).toBe(false);
-      expect(JSON.stringify(res)).not.toContain(BODY_MARKER);
-    }
+    for (const res of [a, b, c]) expect(JSON.stringify(res)).not.toContain(BODY_MARKER);
+    expect(a.ok).toBe(false);
+    expect(c.ok).toBe(false);
+    // userErrors come back WITH the job (audit M-e), codes only.
+    expect(b).toEqual({
+      ok: true,
+      value: {
+        jobId: null,
+        jobDone: true,
+        userErrors: [{ filename: null, code: "INVALID" }],
+      },
+    });
   });
 });
 

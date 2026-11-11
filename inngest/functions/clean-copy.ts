@@ -83,7 +83,8 @@ export const cleanCopy = inngest.createFunction(
     concurrency: [{ key: "event.data.shopId", limit: 1 }, { limit: 1 }],
     onFailure: async ({ event, error }) => {
       const { fixRunId } = event.data.event.data;
-      const { markFixRunFailed } = await import("../../app/models/fix-run.server");
+      const { markDoNotPublishIfWritten, markFixRunFailed } =
+        await import("../../app/models/fix-run.server");
       const reason =
         // The error arrives deserialized: match the message, not the class.
         /ACCESS_DENIED/.test(String((error as { message?: unknown })?.message ?? ""))
@@ -97,6 +98,8 @@ export const cleanCopy = inngest.createFunction(
         where: { fixRunId, status: "pending" },
         data: { status: "failed", reasonCode: reason },
       });
+      // A write may have landed unverified before the crash (audit M-d).
+      await markDoNotPublishIfWritten(fixRunId);
     },
   },
   { event: "clean-copy/requested" },
@@ -104,7 +107,7 @@ export const cleanCopy = inngest.createFunction(
     const { shopId, fixRunId } = event.data;
 
     const loaded = await step.run("load", async () => {
-      const { isCleanCopyEnabled } = await import("../../app/services/soft-launch-flags.server");
+      const { runGateFailure } = await import("../../app/services/clean-copy.server");
       const { getFixRunWithItems, markFixRunFailed, ACTIVE_FIX_RUN_STATUSES } =
         await import("../../app/models/fix-run.server");
       const run = await getFixRunWithItems(fixRunId);
@@ -112,9 +115,16 @@ export const cleanCopy = inngest.createFunction(
       if (!(ACTIVE_FIX_RUN_STATUSES as readonly string[]).includes(run.status)) {
         return { proceed: false, why: "not_active" };
       }
-      if (!isCleanCopyEnabled()) {
-        await markFixRunFailed(fixRunId, "FLAG_OFF");
-        return { proceed: false, why: "flag_off" };
+      // Flag still on, shop still on Professional (audit logic 11).
+      const gate = await runGateFailure(run);
+      if (gate) {
+        await markFixRunFailed(fixRunId, gate);
+        const db = (await import("../../app/db.server")).default;
+        await db.fixItem.updateMany({
+          where: { fixRunId, status: "pending" },
+          data: { status: "failed", reasonCode: gate },
+        });
+        return { proceed: false, why: gate === "FLAG_OFF" ? "flag_off" : "not_professional" };
       }
       return { proceed: true, why: null };
     });

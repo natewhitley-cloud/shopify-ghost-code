@@ -12,12 +12,21 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 
-import { fixItemReasonCopy, previewUrl, runSummary, type RunSummary } from "../lib/clean-copy-view";
+import {
+  fixItemReasonCopy,
+  liveThemeNotice,
+  liveThemeState,
+  type LiveThemeNotice,
+  previewUrl,
+  runSummary,
+  type RunSummary,
+} from "../lib/clean-copy-view";
 import { buildThemeEditorUrl, storeHandleFromDomain } from "../lib/theme-editor-url";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getFindingsForScan } from "../models/finding.server";
-import { getFixRunWithItems } from "../models/fix-run.server";
+import { getFixRunWithItems, isStaleActiveRun } from "../models/fix-run.server";
 import { getShopMetadata } from "../models/shop.server";
+import { createCleanCopyAdmin } from "../services/clean-copy-admin.server";
 import { authenticate } from "../shopify.server";
 import { groundStyle, hairline, textSubdued } from "../styles/shared";
 
@@ -46,6 +55,8 @@ export type CleanCopyRunData = {
     hasCopy: boolean;
   };
   summary: RunSummary;
+  /** Stale-copy warning or "you published it" note (spike §3); null when neither. */
+  liveTheme: LiveThemeNotice;
   items: CleanCopyRunItem[];
   /** Null unless the summary allows a preview. */
   previewUrl: string | null;
@@ -58,7 +69,7 @@ export const loader = async ({
   request,
   params,
 }: LoaderFunctionArgs): Promise<CleanCopyRunData> => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const { runId } = params;
   if (!runId) throw new Response("Run ID is required", { status: 400 });
 
@@ -68,12 +79,41 @@ export const loader = async ({
   const run = await getFixRunWithItems(runId);
   if (!run || run.shopId !== shop.id) throw new Response("Not found", { status: 404 });
 
-  const summary = runSummary({
-    status: run.status,
+  // An active run nobody has touched for the stale threshold was lost: show it
+  // as stopped (the next request's sweep fails it for real, audit M-j).
+  const stale = isStaleActiveRun(run);
+  const hasCopy = run.copyThemeId !== null;
+  const baseSummary = runSummary({
+    status: stale ? "failed" : run.status,
     doNotPublish: run.doNotPublish,
-    failureReason: run.failureReason,
+    failureReason: stale ? "STALE" : run.failureReason,
     items: run.items,
+    hasCopy,
   });
+
+  // Stale-copy check (spike §3, audit H2): only for a finished copy the
+  // merchant may still publish. A failed read shows nothing, never crashes.
+  let liveTheme: LiveThemeNotice = null;
+  let summary = baseSummary;
+  if ((run.status === "completed" || run.status === "partial") && run.copyThemeId && !stale) {
+    try {
+      const main = await createCleanCopyAdmin(admin).getMainTheme();
+      if (main.ok && main.value) {
+        const state = liveThemeState({
+          mainId: main.value.id,
+          mainUpdatedAt: main.value.updatedAt,
+          sourceThemeId: run.sourceThemeId,
+          copyThemeId: run.copyThemeId,
+          copyCreatedAt: run.copyCreatedAt,
+        });
+        liveTheme = liveThemeNotice(state);
+        // An outdated copy or one already live: no preview / editor links.
+        if (state !== "unchanged") summary = { ...baseSummary, showPreview: false };
+      }
+    } catch {
+      liveTheme = null;
+    }
+  }
 
   // Line numbers live on the scan's findings; only the finished list shows them.
   const lineByFinding = new Map<string, number>();
@@ -107,10 +147,12 @@ export const loader = async ({
       status: run.status,
       failureReason: run.failureReason,
       doNotPublish: run.doNotPublish,
-      copyThemeName: run.copyThemeName,
-      hasCopy: run.copyThemeId !== null,
+      // Only a copy that exists has a name worth showing (audit logic 12).
+      copyThemeName: hasCopy ? run.copyThemeName : null,
+      hasCopy,
     },
     summary,
+    liveTheme,
     items,
     previewUrl: summary.showPreview ? previewUrl(shop.domain, run.copyThemeId) : null,
     themeLibraryUrl: `https://admin.shopify.com/store/${storeHandleFromDomain(shop.domain)}/themes`,
@@ -142,6 +184,7 @@ export default function CleanCopyRun() {
   const {
     run,
     summary,
+    liveTheme,
     items,
     previewUrl: preview,
     themeLibraryUrl,
@@ -163,10 +206,11 @@ export default function CleanCopyRun() {
         <s-banner tone={summary.tone} heading={summary.heading}>
           {summary.body}
         </s-banner>
+        {liveTheme && <s-banner tone={liveTheme.tone}>{liveTheme.text}</s-banner>}
         {pollingTimedOut && <s-banner tone="warning">{CLEAN_COPY_POLL_TIMEOUT}</s-banner>}
-        {summary.showPreview && (
+        {(summary.showPreview || liveTheme) && (
           <s-stack direction="inline" gap="base">
-            {preview && (
+            {summary.showPreview && preview && (
               <s-button variant="primary" href={preview} target="_blank">
                 Preview clean copy
               </s-button>

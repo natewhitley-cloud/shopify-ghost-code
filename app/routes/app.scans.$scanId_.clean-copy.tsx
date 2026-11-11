@@ -39,11 +39,10 @@ import {
 } from "../lib/clean-copy-view";
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
-import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { getFindingsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanManifest } from "../models/scan-manifest.server";
-import { getScanById, SUCCESSFUL_SCAN_STATUSES } from "../models/scan.server";
+import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { parseLiveAppHooks } from "../services/app-removal.server";
 import {
@@ -51,7 +50,11 @@ import {
   isAllowedFixPath,
   MAX_FILES_PER_REQUEST,
 } from "../services/clean-copy-admin.server";
-import { MAX_SELECTED_FINDINGS, requestCleanCopy } from "../services/clean-copy.server";
+import {
+  checkCleanCopyFreshness,
+  MAX_SELECTED_FINDINGS,
+  requestCleanCopy,
+} from "../services/clean-copy.server";
 import { isFindingIgnored } from "../services/finding-aggregation.server";
 import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { authenticate } from "../shopify.server";
@@ -71,13 +74,6 @@ const MAX_FIELD_CHARS = 200;
 
 const scanPath = (scanId: string) => `/app/scans/${encodeURIComponent(scanId)}`;
 const runPath = (runId: string) => `/app/clean-copy/${encodeURIComponent(runId)}`;
-
-function splitScopes(scope: string | null | undefined): string[] {
-  return (scope ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -113,8 +109,11 @@ export const loader = async ({
   const scan = await getScanById(scanId, { includeFindings: false });
   if (!scan || scan.shopId !== shop.id) return redirect(scanPath(scanId));
 
-  const hasWriteScope = splitScopes(session.scope).includes(CLEAN_COPY_SCOPE);
   const cleanAdmin = createCleanCopyAdmin(admin);
+  // Read live, not from the session (audit M-h): a grant or revoke since the
+  // session was stored must count. A failed read asks for the scope again.
+  const scopes = await cleanAdmin.getGrantedScopes();
+  const hasWriteScope = scopes.ok && scopes.value.includes(CLEAN_COPY_SCOPE);
   const refused = (refusal: string): CleanCopySelectData => ({
     scanId: scan.id,
     groups: [],
@@ -124,28 +123,16 @@ export const loader = async ({
     fileLimit: MAX_FILES_PER_REQUEST,
   });
 
-  // Cheap pre-check, in the service's order: explain a stale scan instead of
-  // offering a button that will fail.
-  if (
-    !(SUCCESSFUL_SCAN_STATUSES as readonly string[]).includes(scan.status) ||
-    !scan.completedAt ||
-    isScanStaleAfterThemeChange({
-      autoRescan: false,
-      lastThemePublishAt: shop.lastThemePublishAt,
-      scan,
-    })
-  ) {
-    return refused("SCAN_STALE");
-  }
-  const mainRes = await cleanAdmin.getMainTheme();
-  if (!mainRes.ok) {
-    return refused(mainRes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE");
-  }
-  const main = mainRes.value;
-  if (!main) return refused("NO_MAIN_THEME");
-  if (main.id !== scan.themeId || (main.updatedAt !== null && main.updatedAt > scan.completedAt)) {
-    return refused("SCAN_STALE");
-  }
+  // The service's own freshness check (audit M-i): explain a stale scan, a
+  // changed or Canvas theme instead of offering a button that will fail.
+  const fresh = await checkCleanCopyFreshness({
+    shopId: shop.id,
+    lastThemePublishAt: shop.lastThemePublishAt,
+    scan,
+    admin: cleanAdmin,
+  });
+  if (!fresh.ok) return refused(fresh.reason);
+  const main = fresh.main;
   const manifest = await getScanManifest(scan.id);
   if (!manifest) return refused("MANIFEST_MISSING");
   const md5ByPath = new Map(manifest.entries.map((e) => [e[0], e[1]] as const));
@@ -282,13 +269,18 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return reject("TOO_MANY_FINDINGS");
   }
 
+  const cleanAdmin = createCleanCopyAdmin(admin);
+  const scopes = await cleanAdmin.getGrantedScopes();
+  if (!scopes.ok) {
+    return reject(scopes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE");
+  }
   const result = await requestCleanCopy({
     shopId: shop.id,
     scanId,
     findingIds,
     confirmedApps,
-    grantedScopes: splitScopes(session.scope),
-    admin: createCleanCopyAdmin(admin),
+    grantedScopes: scopes.value,
+    admin: cleanAdmin,
   });
   if (result.ok) return redirect(runPath(result.runId));
   if (result.reason === "RUN_ACTIVE") return redirect(runPath(result.activeRunId));

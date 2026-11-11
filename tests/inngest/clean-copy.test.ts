@@ -205,6 +205,16 @@ describe("lifecycle", () => {
     expect(shop.calls).toHaveLength(0);
   });
 
+  it("shop no longer Professional -> load fails the run NOT_PROFESSIONAL (audit logic 11)", async () => {
+    const runId = await createRun();
+    fake.state.shops[0].plan = "Standard";
+    const { result } = await run(runId);
+    expect(result).toEqual({ fixRunId: runId, outcome: "not_professional" });
+    expect(runOf(runId)).toMatchObject({ status: "failed", failureReason: "NOT_PROFESSIONAL" });
+    expect(itemStatuses(runId).every((st) => st === "failed")).toBe(true);
+    expect(shop.calls).toHaveLength(0);
+  });
+
   it("event for another shop's run is a no-op", async () => {
     const runId = await createRun();
     const { result } = await run(runId, "shop-evil");
@@ -312,6 +322,33 @@ describe("Inngest retry after a crash at each boundary", () => {
       error: { name: "NonRetriableError", message: "clean copy: ACCESS_DENIED (x)" },
     });
     expect(runOf(runId)).toMatchObject({ status: "failed", failureReason: "ACCESS_DENIED" });
+  });
+
+  it("onFailure after a recorded write sets doNotPublish (audit M-d)", async () => {
+    const runId = await createRun(["f-other"]);
+    let reads = 0;
+    // crash on the post-read, every attempt: the write landed, never verified
+    shop.overrides.CleanCopyFiles = () => (++reads >= 2 ? new Error("crash") : undefined);
+    await expect(run(runId)).rejects.toThrow();
+    expect(runOf(runId).doNotPublish).toBe(false);
+    await registration.config.onFailure({
+      event: { data: { event: { data: { shopId: SHOP_ID, fixRunId: runId } } } },
+      error: new Error("crash"),
+    });
+    expect(runOf(runId)).toMatchObject({
+      status: "failed",
+      failureReason: "INTERNAL_ERROR",
+      doNotPublish: true,
+    });
+  });
+
+  it("onFailure before any write leaves doNotPublish off", async () => {
+    const runId = await createRun();
+    await registration.config.onFailure({
+      event: { data: { event: { data: { shopId: SHOP_ID, fixRunId: runId } } } },
+      error: new Error("boom"),
+    });
+    expect(runOf(runId).doNotPublish).toBe(false);
   });
 
   it("onFailure (retries exhausted) fails a still-active run and its pending items", async () => {

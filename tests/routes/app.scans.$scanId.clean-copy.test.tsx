@@ -19,7 +19,8 @@ import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../app/shopify.server", () => ({ authenticate: { admin: vi.fn() } }));
-vi.mock("../../app/db.server", () => ({ default: {} }));
+const dbMock = vi.hoisted(() => ({ scan: { findFirst: vi.fn() } }));
+vi.mock("../../app/db.server", () => ({ default: dbMock }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
 vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
@@ -30,10 +31,11 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
 }));
 vi.mock("../../app/models/scan-manifest.server", () => ({ getScanManifest: vi.fn() }));
-vi.mock("../../app/services/clean-copy.server", () => ({
-  MAX_SELECTED_FINDINGS: 500,
-  requestCleanCopy: vi.fn(),
-}));
+// The real freshness check (audit M-i); only the run request is mocked.
+vi.mock("../../app/services/clean-copy.server", async (importActual) => {
+  const actual = await importActual<typeof import("../../app/services/clean-copy.server")>();
+  return { ...actual, requestCleanCopy: vi.fn() };
+});
 vi.mock("../../app/services/clean-copy-admin.server", async (importActual) => {
   const actual = await importActual<typeof import("../../app/services/clean-copy-admin.server")>();
   return { ...actual, createCleanCopyAdmin: vi.fn() };
@@ -128,6 +130,7 @@ function looxFinding(over: Record<string, unknown> = {}) {
 
 const getMainTheme = vi.fn();
 const readFiles = vi.fn();
+const getGrantedScopes = vi.fn();
 
 function loaderArgs(scanId = "scan-1"): LoaderFunctionArgs {
   return {
@@ -174,7 +177,10 @@ beforeEach(() => {
       { filename: "layout/theme.liquid", checksumMd5: md5(THEME_LIQUID), content: THEME_LIQUID },
     ],
   });
-  mockMakeAdmin.mockReturnValue({ getMainTheme, readFiles });
+  getGrantedScopes.mockResolvedValue({ ok: true, value: ["read_themes", "write_themes"] });
+  mockMakeAdmin.mockReturnValue({ getMainTheme, readFiles, getGrantedScopes });
+  // This scan is the latest successful scan of its theme.
+  dbMock.scan.findFirst.mockResolvedValue({ id: "scan-1" });
 });
 
 afterEach(() => {
@@ -238,7 +244,7 @@ describe("selection loader: candidates", () => {
   });
 
   it("hasWriteScope is false without write_themes", async () => {
-    mockAuth.mockResolvedValue({ admin: {}, session: { shop: DOMAIN, scope: "read_themes" } });
+    getGrantedScopes.mockResolvedValue({ ok: true, value: ["read_themes"] });
     const res = (await run()) as CleanCopySelectData;
     expect(res.hasWriteScope).toBe(false);
   });
@@ -659,5 +665,59 @@ describe("selection page", () => {
     });
     expect(html).not.toContain("SOMETHING_NEW");
     expect(html).not.toContain("ODD_CODE");
+  });
+});
+
+describe("audit M-h: granted scopes are read live, never from the session", () => {
+  it("loader: a stale session claiming write_themes does not count", async () => {
+    mockAuth.mockResolvedValue({
+      admin: {},
+      session: { shop: DOMAIN, scope: "read_themes,write_themes" },
+    });
+    getGrantedScopes.mockResolvedValue({ ok: true, value: ["read_themes"] });
+    expect(((await run()) as CleanCopySelectData).hasWriteScope).toBe(false);
+  });
+
+  it("loader: a live grant counts even when the session predates it", async () => {
+    mockAuth.mockResolvedValue({ admin: {}, session: { shop: DOMAIN, scope: "read_themes" } });
+    expect(((await run()) as CleanCopySelectData).hasWriteScope).toBe(true);
+  });
+
+  it("loader: a failed scope read means no scope (the page asks again)", async () => {
+    getGrantedScopes.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "" });
+    expect(((await run()) as CleanCopySelectData).hasWriteScope).toBe(false);
+  });
+
+  it("action: passes the live scopes to the service", async () => {
+    mockAuth.mockResolvedValue({
+      admin: {},
+      session: { shop: DOMAIN, scope: "read_themes,write_themes" },
+    });
+    getGrantedScopes.mockResolvedValue({ ok: true, value: ["read_themes"] });
+    mockRequest.mockResolvedValue({ ok: false, reason: "SCOPE_MISSING" });
+    await action(actionArgs(formOf(["a"], ["Klaviyo"])));
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ grantedScopes: ["read_themes"] }),
+    );
+  });
+
+  it("action: a failed scope read refuses without calling the service", async () => {
+    getGrantedScopes.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "" });
+    const res = (await action(actionArgs(formOf(["a"], ["Klaviyo"])))) as unknown as DataResult;
+    expect(res.data.refusal).toBe("ADMIN_UNAVAILABLE");
+    expect(mockRequest).not.toHaveBeenCalled();
+    getGrantedScopes.mockResolvedValue({ ok: false, error: "ACCESS_DENIED", message: "" });
+    const denied = (await action(actionArgs(formOf(["a"], ["Klaviyo"])))) as unknown as DataResult;
+    expect(denied.data.refusal).toBe("ACCESS_DENIED");
+  });
+});
+
+describe("audit M-i: the loader uses the service's freshness check", () => {
+  it("SCAN_STALE when a newer successful scan of the theme exists", async () => {
+    dbMock.scan.findFirst.mockResolvedValue({ id: "scan-2" });
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBe("SCAN_STALE");
+    expect(res.groups).toEqual([]);
+    expect(readFiles).not.toHaveBeenCalled();
   });
 });

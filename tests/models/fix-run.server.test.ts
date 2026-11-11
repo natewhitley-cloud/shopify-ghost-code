@@ -23,6 +23,9 @@ import {
   decideFixItems,
   FIX_RUNS_KEEP_PER_SHOP,
   finalizeFixRun,
+  isFixRunActive,
+  isStaleActiveRun,
+  markDoNotPublishIfWritten,
   markFixRunFailed,
   recordExpectedPostMd5,
   setFixRunActiveStatus,
@@ -229,6 +232,71 @@ describe("markFixRunFailed", () => {
     await markFixRunFailed(runId, "SCAN_STALE");
     expect(await markFixRunFailed(runId, "INTERNAL_ERROR")).toBe(false);
     expect(runOf(runId).failureReason).toBe("SCAN_STALE");
+  });
+});
+
+describe("audit M-j / M-d / sec 7", () => {
+  it("the STALE sweep also fails the lost run's pending items", async () => {
+    const old = await created();
+    runOf(old).updatedAt = new Date(Date.now() - ACTIVE_RUN_STALE_MS - 60_000);
+    await createFixRun(input());
+    expect(itemsOf(old).map((i) => [i.status, i.reasonCode])).toEqual([
+      ["failed", "STALE"],
+      ["failed", "STALE"],
+    ]);
+  });
+
+  it("item decisions and expected md5s are no-ops once the run is no longer active", async () => {
+    const runId = await created();
+    await markFixRunFailed(runId, "STALE");
+    const ids = itemsOf(runId).map((i) => i.id as string);
+    await recordExpectedPostMd5(runId, ids, "expected");
+    await decideFixItems(runId, [{ itemId: ids[0], status: "removed" }]);
+    expect(itemsOf(runId).every((i) => i.status === "pending" && i.postMd5 === null)).toBe(true);
+  });
+
+  it("isFixRunActive / isStaleActiveRun", async () => {
+    const runId = await created();
+    expect(await isFixRunActive(runId)).toBe(true);
+    const now = new Date();
+    expect(isStaleActiveRun({ status: "writing", updatedAt: now }, now)).toBe(false);
+    expect(
+      isStaleActiveRun(
+        { status: "writing", updatedAt: new Date(now.getTime() - ACTIVE_RUN_STALE_MS - 1) },
+        now,
+      ),
+    ).toBe(true);
+    expect(isStaleActiveRun({ status: "failed", updatedAt: new Date(0) }, now)).toBe(false);
+    await markFixRunFailed(runId, "X");
+    expect(await isFixRunActive(runId)).toBe(false);
+  });
+
+  it("markDoNotPublishIfWritten: only a failed run with a copy and a recorded write", async () => {
+    const runId = await created();
+    await recordExpectedPostMd5(runId, [itemsOf(runId)[0].id as string], "expected");
+    // active run: never flagged
+    expect(await markDoNotPublishIfWritten(runId)).toBe(false);
+    await markFixRunFailed(runId, "INTERNAL_ERROR");
+    // no copy yet: nothing could have been written
+    expect(await markDoNotPublishIfWritten(runId)).toBe(false);
+    runOf(runId).copyThemeId = "gid://shopify/OnlineStoreTheme/9";
+    expect(await markDoNotPublishIfWritten(runId)).toBe(true);
+    expect(runOf(runId).doNotPublish).toBe(true);
+
+    const clean = await created();
+    await markFixRunFailed(clean, "INTERNAL_ERROR");
+    runOf(clean).copyThemeId = "gid://shopify/OnlineStoreTheme/10";
+    expect(await markDoNotPublishIfWritten(clean)).toBe(false);
+  });
+});
+
+describe("schema comments (audit logic 18)", () => {
+  it("the StorefrontIncident doc comment sits directly above its model", () => {
+    const schema = readFileSync(join(__dirname, "..", "..", "prisma/schema.prisma"), "utf8");
+    const before = schema.slice(0, schema.indexOf("model StorefrontIncident {")).trimEnd();
+    expect(before.endsWith("// also deletes it explicitly.")).toBe(true);
+    const fixRunHeader = schema.slice(0, schema.indexOf("model FixRun {"));
+    expect(fixRunHeader.slice(-900)).not.toContain("Checkout guard incident");
   });
 });
 

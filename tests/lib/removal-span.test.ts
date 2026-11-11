@@ -211,12 +211,23 @@ describe("GHOST_SNIPPET spans", () => {
       `{% render 'app-widget' %}`,
       `{%- render "app-widget" -%}`,
       `{% include 'app-widget' %}`,
-      `{% render 'app-widget', product: product, label: 'a %} b' %}`,
       `{% render 'app-widget' with product as p %}`,
       `{%\n  render 'app-widget',\n  product: product\n%}`,
     ]) {
       expect(spanText(S, `<div>${tag}</div>`, "{%")).toBe(tag);
     }
+  });
+
+  it("ends a tag at the FIRST %} like Liquid does, so a %} inside quotes is refused (gc-tib audit M-b)", () => {
+    // Liquid's tokenizer is not quote-aware: this tag really ends after 'a ,
+    // leaving an unbalanced quote, so we must not remove it.
+    expect(refusal(S, `{% render 'app-widget', label: 'a %} b' %}`, "{%")).toBe(
+      "UNTERMINATED_LIQUID_TAG",
+    );
+    // The audit repro: a quoted %} would otherwise swallow <h1>KEEP</h1>.
+    expect(
+      refusal(S, `<div>\n{% render 'judgeme_widgets', label: '%}<h1>KEEP</h1>{%' %}\n</div>`, "{%"),
+    ).toBe("UNTERMINATED_LIQUID_TAG");
   });
 
   it("refuses an unterminated render tag or one with a nested tag", () => {

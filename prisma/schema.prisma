@@ -334,9 +334,6 @@ model StorefrontGuardState {
   updatedAt              DateTime  @updatedAt
 }
 
-// Checkout guard incident (gc-1q1s.4): one row per (shop, signal), reopened in
-// place. Hostnames and fixed labels only. Cascades from Shop; deleteShopData
-// also deletes it explicitly.
 // ---------------------------------------------------------------------------
 // Clean copy (gc-tib): one FixRun per merchant "Make a clean copy" click.
 // The run duplicates the MAIN theme and removes the selected findings' spans in
@@ -398,6 +395,9 @@ model FixItem {
   @@index([fixRunId])
 }
 
+// Checkout guard incident (gc-1q1s.4): one row per (shop, signal), reopened in
+// place. Hostnames and fixed labels only. Cascades from Shop; deleteShopData
+// also deletes it explicitly.
 model StorefrontIncident {
   id              String    @id @default(cuid())
   shopId          String

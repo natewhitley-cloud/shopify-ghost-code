@@ -51,7 +51,7 @@ const CANDIDATE_BLOCK_COPY: Record<CandidateBlockReason, string> = {
   APP_UNKNOWN:
     "We can't tell which app this code came from, so we can't confirm it's safe to remove.",
   NO_SPAN:
-    "We can't mark exactly where this code starts and ends, so it can't be removed automatically.",
+    "We can't remove this one automatically. It may be commented out, or its start and end aren't clear.",
   IGNORED: "You ignored this finding. Un-ignore it to include it in a clean copy.",
   PATH_NOT_ALLOWED: "This file is one we don't edit in a clean copy.",
   FILE_CHANGED: "This file changed after your scan. Run a new scan to include it.",
@@ -133,7 +133,10 @@ export function groupCandidatesByApp(cands: readonly CleanCopyCandidate[]): Cand
 // Run refusals and failures
 // ---------------------------------------------------------------------------
 
-/** Every RunRefusal of the service, plus RUN_ACTIVE and DISPATCH_FAILED. */
+/**
+ * Every RunRefusal of the service, plus RUN_ACTIVE and DISPATCH_FAILED, plus
+ * the worker failure reasons that need their own explanation.
+ */
 export const RUN_REFUSAL_REASONS = [
   "FLAG_OFF",
   "EMPTY_SELECTION",
@@ -152,6 +155,12 @@ export const RUN_REFUSAL_REASONS = [
   "FINDINGS_REFUSED",
   "RUN_ACTIVE",
   "DISPATCH_FAILED",
+  "CANVAS_THEME",
+  "NOTHING_REMOVED",
+  "INCOMPLETE",
+  "INTERNAL_ERROR",
+  "DUPLICATE_FAILED",
+  "COPY_PUBLISHED_DURING_WRITE",
 ] as const;
 
 export type RunRefusalReason = (typeof RUN_REFUSAL_REASONS)[number];
@@ -161,7 +170,6 @@ const COPY_NOT_SAFE =
 
 /** Reasons the worker writes onto a run after it started (FixRun.failureReason). */
 const WORKER_FAILURE_COPY: Record<string, string> = {
-  DUPLICATE_FAILED: "Shopify couldn't copy your theme. Try again in a few minutes.",
   DUPLICATE_PROCESSING_FAILED:
     "Shopify couldn't finish copying your theme. Try again in a few minutes.",
   DUPLICATE_TIMEOUT:
@@ -200,6 +208,15 @@ const RUN_REFUSAL_COPY: Record<RunRefusalReason, string> = {
   RUN_ACTIVE:
     "A clean copy is already being made for your store. Wait for it to finish, then try again.",
   DISPATCH_FAILED: "We couldn't start your clean copy. Try again in a few minutes.",
+  CANVAS_THEME: "Clean copy doesn't support Canvas themes yet.",
+  NOTHING_REMOVED:
+    "We couldn't remove any of the code you selected. If those files changed after your scan, run a new scan and try again.",
+  INCOMPLETE: "Your clean copy stopped before it finished. Try again.",
+  INTERNAL_ERROR: "Something went wrong while making your clean copy. Try again in a few minutes.",
+  DUPLICATE_FAILED:
+    "Shopify couldn't copy your theme. Your store may be at its theme limit. Delete themes you don't use from Online Store > Themes, then try again.",
+  COPY_PUBLISHED_DURING_WRITE:
+    "The copy was published while we were still removing code from it, so we stopped.",
 };
 
 const GENERIC_RUN_COPY = "We couldn't make your clean copy. Try again in a few minutes.";
@@ -240,6 +257,8 @@ const ITEM_REASON_COPY: Record<string, string> = {
   POST_WRITE_MISMATCH: "Not removed. We couldn't confirm the change was saved correctly.",
   NOT_FIXABLE_TYPE: "Skipped. We can't remove this kind of finding automatically.",
   INCOMPLETE: "Not removed. The run ended before we got to this one.",
+  COPY_PUBLISHED_DURING_WRITE:
+    "Not confirmed. The copy was published before we could check this change.",
 };
 
 const ITEM_GENERIC = "Not removed. Something went wrong with this one.";
@@ -281,6 +300,8 @@ export type RunSummaryInput = {
   doNotPublish: boolean;
   failureReason: string | null;
   items: ReadonlyArray<{ status: string }>;
+  /** The run made a copy theme (it stays in the store until the merchant deletes it). */
+  hasCopy?: boolean;
 };
 
 const ACTIVE_HEADINGS: Record<string, string> = {
@@ -290,6 +311,8 @@ const ACTIVE_HEADINGS: Record<string, string> = {
 };
 
 const LIVE_THEME_UNCHANGED = "Your live theme was not changed.";
+const DELETE_LEFTOVER_COPY =
+  "We made a copy of your theme before this stopped. Delete it from Online Store > Themes before you try again.";
 const PUBLISH_YOURSELF =
   "Preview the copy, then publish it from Online Store > Themes when you're happy with it.";
 
@@ -302,6 +325,17 @@ export function runSummary(input: RunSummaryInput): RunSummary {
   const removed = input.items.filter((i) => i.status === "removed").length;
   const total = input.items.length;
 
+  // The merchant published the copy mid-write: it IS the live theme now, so
+  // "your live theme was not changed" would be false.
+  if (input.failureReason === "COPY_PUBLISHED_DURING_WRITE") {
+    return {
+      tone: "critical",
+      heading: "The copy was published before we finished",
+      body: `${runRefusalCopy(input.failureReason)} It's now your live theme, and we can't confirm every change in it. Publish your previous theme again from Online Store > Themes, then make a new clean copy.`,
+      showPreview: false,
+      active: false,
+    };
+  }
   if (input.doNotPublish) {
     return {
       tone: "critical",
@@ -315,7 +349,7 @@ export function runSummary(input: RunSummaryInput): RunSummary {
     return {
       tone: "info",
       heading: ACTIVE_HEADINGS[input.status],
-      body: "We're making an unpublished copy of your theme and removing the code you selected from it. This page updates on its own. It usually takes a minute or two.",
+      body: "We're making an unpublished copy of your theme and removing the code you selected from it. Don't publish the copy until this finishes. This page updates on its own. It usually takes a minute or two.",
       showPreview: false,
       active,
     };
@@ -342,7 +376,13 @@ export function runSummary(input: RunSummaryInput): RunSummary {
     return {
       tone: "critical",
       heading: "We couldn't make your clean copy",
-      body: `${runRefusalCopy(input.failureReason)} ${LIVE_THEME_UNCHANGED}`,
+      body: [
+        runRefusalCopy(input.failureReason),
+        LIVE_THEME_UNCHANGED,
+        input.hasCopy ? DELETE_LEFTOVER_COPY : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
       showPreview: false,
       active,
     };
@@ -355,6 +395,46 @@ export function runSummary(input: RunSummaryInput): RunSummary {
     showPreview: false,
     active: false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Live theme after the copy (spike §3 stale-copy warning, audit H2)
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to the live theme since the copy was made:
+ *   unchanged       MAIN is still the source theme and not edited since
+ *   changed         another theme was published, or MAIN was edited after the
+ *                   copy was made: publishing the copy would lose those edits
+ *   published_copy  the merchant already published this clean copy
+ */
+export type LiveThemeState = "unchanged" | "changed" | "published_copy";
+
+export function liveThemeState(input: {
+  mainId: string;
+  mainUpdatedAt: Date | null;
+  sourceThemeId: string;
+  copyThemeId: string;
+  copyCreatedAt: Date | null;
+}): LiveThemeState {
+  if (input.mainId === input.copyThemeId) return "published_copy";
+  if (input.mainId !== input.sourceThemeId) return "changed";
+  if (input.mainUpdatedAt && input.copyCreatedAt && input.mainUpdatedAt > input.copyCreatedAt) {
+    return "changed";
+  }
+  return "unchanged";
+}
+
+export type LiveThemeNotice = { tone: SummaryTone; text: string } | null;
+
+export const LIVE_THEME_CHANGED_COPY =
+  "Your live theme changed after this clean copy was made. Make a new copy so you don't lose those changes.";
+export const PUBLISHED_COPY_COPY = "You published this clean copy.";
+
+export function liveThemeNotice(state: LiveThemeState | null): LiveThemeNotice {
+  if (state === "changed") return { tone: "warning", text: LIVE_THEME_CHANGED_COPY };
+  if (state === "published_copy") return { tone: "info", text: PUBLISHED_COPY_COPY };
+  return null;
 }
 
 // ---------------------------------------------------------------------------

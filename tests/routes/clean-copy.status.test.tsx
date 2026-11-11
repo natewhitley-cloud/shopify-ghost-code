@@ -17,10 +17,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../app/shopify.server", () => ({ authenticate: { admin: vi.fn() } }));
 vi.mock("../../app/db.server", () => ({ default: {} }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
-vi.mock("../../app/models/fix-run.server", () => ({ getFixRunWithItems: vi.fn() }));
+vi.mock("../../app/models/fix-run.server", async (importActual) => {
+  const actual = await importActual<typeof import("../../app/models/fix-run.server")>();
+  return { ...actual, getFixRunWithItems: vi.fn() };
+});
+vi.mock("../../app/services/clean-copy-admin.server", async (importActual) => {
+  const actual = await importActual<typeof import("../../app/services/clean-copy-admin.server")>();
+  return { ...actual, createCleanCopyAdmin: vi.fn() };
+});
 vi.mock("../../app/models/finding.server", () => ({ getFindingsForScan: vi.fn() }));
 
-import { fixItemReasonCopy, runRefusalCopy } from "../../app/lib/clean-copy-view";
+import {
+  fixItemReasonCopy,
+  LIVE_THEME_CHANGED_COPY,
+  PUBLISHED_COPY_COPY,
+  runRefusalCopy,
+} from "../../app/lib/clean-copy-view";
 import { getFindingsForScan } from "../../app/models/finding.server";
 import { getFixRunWithItems } from "../../app/models/fix-run.server";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -31,12 +43,29 @@ import CleanCopyRun, {
   removedItemLabel,
 } from "../../app/routes/app.clean-copy.$runId";
 import type { CleanCopyRunData } from "../../app/routes/app.clean-copy.$runId";
+import { createCleanCopyAdmin } from "../../app/services/clean-copy-admin.server";
 import { authenticate } from "../../app/shopify.server";
 
 const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockShop = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockRun = getFixRunWithItems as ReturnType<typeof vi.fn>;
 const mockFindings = getFindingsForScan as ReturnType<typeof vi.fn>;
+const mockMakeAdmin = createCleanCopyAdmin as ReturnType<typeof vi.fn>;
+const getMainTheme = vi.fn();
+const SOURCE_GID = "gid://shopify/OnlineStoreTheme/111";
+const COPY_CREATED = new Date("2026-11-10T12:00:00Z");
+const mainTheme = (over: Record<string, unknown> = {}) => ({
+  ok: true,
+  value: {
+    id: SOURCE_GID,
+    name: "Dawn",
+    role: "MAIN",
+    processing: false,
+    processingFailed: false,
+    updatedAt: new Date("2026-11-10T11:00:00Z"),
+    ...over,
+  },
+});
 
 const DOMAIN = "test-shop.myshopify.com";
 const COPY_GID = "gid://shopify/OnlineStoreTheme/222";
@@ -63,6 +92,8 @@ const baseRun = (over: Record<string, unknown> = {}) => ({
   sourceThemeId: "gid://shopify/OnlineStoreTheme/111",
   copyThemeId: COPY_GID,
   copyThemeName: "Dawn (GhostCode clean copy abc123)",
+  copyCreatedAt: COPY_CREATED,
+  updatedAt: new Date(),
   status: "completed",
   failureReason: null,
   doNotPublish: false,
@@ -81,7 +112,9 @@ const run = () => loader(args());
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockAuth.mockResolvedValue({ session: { shop: DOMAIN } });
+  mockAuth.mockResolvedValue({ admin: {}, session: { shop: DOMAIN } });
+  getMainTheme.mockResolvedValue(mainTheme());
+  mockMakeAdmin.mockReturnValue({ getMainTheme });
   mockShop.mockResolvedValue({ id: "shop-1", domain: DOMAIN });
   mockRun.mockResolvedValue(baseRun());
   mockFindings.mockResolvedValue([
@@ -301,5 +334,115 @@ describe("status page", () => {
       "Removed from a.liquid",
     );
     expect(CLEAN_COPY_POLL_TIMEOUT.length).toBeGreaterThan(0);
+  });
+});
+
+describe("audit H2: stale-copy warning", () => {
+  it("MAIN unchanged since the copy: no notice, preview kept", async () => {
+    const res = await run();
+    expect(res.liveTheme).toBeNull();
+    expect(res.previewUrl).not.toBeNull();
+  });
+
+  it("MAIN edited after the copy was made: warning, no preview or editor links, library kept", async () => {
+    getMainTheme.mockResolvedValue(mainTheme({ updatedAt: new Date("2026-11-10T12:30:00Z") }));
+    const res = await run();
+    expect(res.liveTheme).toEqual({ tone: "warning", text: LIVE_THEME_CHANGED_COPY });
+    expect(res.summary.showPreview).toBe(false);
+    expect(res.previewUrl).toBeNull();
+    expect(res.editorUrls).toEqual({});
+    const html = render(res);
+    expect(html).toContain(esc(LIVE_THEME_CHANGED_COPY));
+    expect(html).not.toContain("Preview clean copy");
+    expect(html).toContain("Open theme library");
+  });
+
+  it("another theme was published: warning", async () => {
+    getMainTheme.mockResolvedValue(mainTheme({ id: "gid://shopify/OnlineStoreTheme/999" }));
+    expect((await run()).liveTheme?.tone).toBe("warning");
+  });
+
+  it("the merchant published this copy: neutral note, no warning, no preview", async () => {
+    getMainTheme.mockResolvedValue(mainTheme({ id: COPY_GID }));
+    const res = await run();
+    expect(res.liveTheme).toEqual({ tone: "info", text: PUBLISHED_COPY_COPY });
+    expect(res.previewUrl).toBeNull();
+    expect(render(res)).toContain(PUBLISHED_COPY_COPY);
+  });
+
+  it("a failed or throwing MAIN read shows nothing and does not crash", async () => {
+    getMainTheme.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "" });
+    expect((await run()).liveTheme).toBeNull();
+    getMainTheme.mockRejectedValue(new Error("boom"));
+    const res = await run();
+    expect(res.liveTheme).toBeNull();
+    expect(res.previewUrl).not.toBeNull();
+  });
+
+  it("not checked for failed or active runs", async () => {
+    for (const over of [
+      { status: "failed", failureReason: "SCAN_STALE" },
+      { status: "writing", items: [item({ status: "pending" })] },
+    ]) {
+      mockRun.mockResolvedValue(baseRun(over));
+      expect((await run()).liveTheme).toBeNull();
+    }
+    expect(getMainTheme).not.toHaveBeenCalled();
+  });
+});
+
+describe("audit M-j / M-d / logic 12 / M-a on the status page", () => {
+  it("an active run past the stale threshold is shown as stopped, not polling", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({
+        status: "writing",
+        updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        items: [item({ status: "pending" })],
+      }),
+    );
+    const res = await run();
+    expect(res.summary.active).toBe(false);
+    expect(res.summary.tone).toBe("critical");
+    expect(res.summary.body).toContain(runRefusalCopy("STALE"));
+  });
+
+  it("a failed run that made a copy tells the merchant to delete it first", async () => {
+    mockRun.mockResolvedValue(baseRun({ status: "failed", failureReason: "INTERNAL_ERROR" }));
+    const res = await run();
+    expect(res.summary.body).toContain(
+      "Delete it from Online Store > Themes before you try again.",
+    );
+    mockRun.mockResolvedValue(
+      baseRun({ status: "failed", failureReason: "INTERNAL_ERROR", copyThemeId: null }),
+    );
+    expect((await run()).summary.body).not.toContain("Delete it");
+  });
+
+  it("shows the copy name only when a copy exists", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({ status: "failed", failureReason: "DUPLICATE_FAILED", copyThemeId: null }),
+    );
+    const res = await run();
+    expect(res.run.copyThemeName).toBeNull();
+    expect(render(res)).not.toContain("Copy name:");
+  });
+
+  it("while active, says not to publish the copy yet", async () => {
+    mockRun.mockResolvedValue(baseRun({ status: "writing", items: [item({ status: "pending" })] }));
+    expect((await run()).summary.body).toContain("Don't publish the copy until this finishes.");
+  });
+
+  it("a copy published mid-write never claims the live theme was unchanged", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({
+        status: "failed",
+        failureReason: "COPY_PUBLISHED_DURING_WRITE",
+        doNotPublish: true,
+        items: [item({ status: "failed", reasonCode: "COPY_PUBLISHED_DURING_WRITE" })],
+      }),
+    );
+    const res = await run();
+    expect(res.summary.heading).toBe("The copy was published before we finished");
+    expect(res.summary.body).not.toContain("Your live theme was not changed.");
   });
 });

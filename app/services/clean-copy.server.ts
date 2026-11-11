@@ -24,12 +24,13 @@ import { createHash } from "node:crypto";
 import { parseLiveAppHooks } from "./app-removal.server";
 import {
   type AdminResult,
+  canvasThemeRefusal,
   type CleanCopyAdmin,
   isAllowedFixPath,
   MAX_FILES_PER_REQUEST,
   type ThemeInfo,
 } from "./clean-copy-admin.server";
-import { fingerprintFinding } from "./scan-differ.server";
+import { isFindingIgnored } from "./finding-aggregation.server";
 import { isCleanCopyEnabled } from "./soft-launch-flags.server";
 import { inngest } from "../../inngest/client";
 import db from "../db.server";
@@ -45,6 +46,7 @@ import {
   type FixItemInput,
   type FixRunWithItems,
   getFixRunWithItems,
+  isFixRunActive,
   type ItemDecision,
   markFixRunFailed,
   recordExpectedPostMd5,
@@ -87,7 +89,9 @@ export type RunRefusal =
   /** More than MAX_SELECTED_FINDINGS ids (bounds the query on untrusted input). */
   | "TOO_MANY_FINDINGS"
   /** One or more selected findings refused; see `findings`. */
-  | "FINDINGS_REFUSED";
+  | "FINDINGS_REFUSED"
+  /** D9: Canvas themes are not supported yet (canvasThemeRefusal). */
+  | "CANVAS_THEME";
 
 export type FindingRefusal =
   | "NOT_IN_SCAN"
@@ -126,14 +130,73 @@ export type PreflightInput = {
   admin: CleanCopyAdmin;
 };
 
+export { canvasThemeRefusal };
+
+export type FreshnessRefusal =
+  | "SCAN_STALE"
+  | "ACCESS_DENIED"
+  | "ADMIN_UNAVAILABLE"
+  | "NO_MAIN_THEME"
+  | "CANVAS_THEME";
+
+export type FreshnessScan = {
+  id: string;
+  themeId: string;
+  status: string;
+  completedAt: Date | null;
+};
+
 /**
- * TODO(gc-dg5e) D9: Canvas themes are excluded from v1, but there is no
- * reliable Canvas signal yet. When gc-dg5e reports one, return "CANVAS_THEME"
- * here (and add it to RunRefusal). Until then this hook refuses nothing.
+ * The one definition of "this scan may feed a clean copy" (audit M-i), shared
+ * by preflight and the selection page: the scan succeeded, it is the LATEST
+ * successful scan of its theme, no theme was published after it, its theme is
+ * the current MAIN, MAIN has not changed since the scan completed, and MAIN is
+ * not a Canvas theme (D9 hook). Returns MAIN on success.
  */
-export function canvasThemeRefusal(main: ThemeInfo): null {
-  void main;
-  return null;
+export async function checkCleanCopyFreshness(input: {
+  shopId: string;
+  lastThemePublishAt: Date | string | null;
+  scan: FreshnessScan;
+  admin: CleanCopyAdmin;
+}): Promise<{ ok: true; main: ThemeInfo } | { ok: false; reason: FreshnessRefusal }> {
+  const { scan } = input;
+  if (!(SUCCESSFUL_SCAN_STATUSES as readonly string[]).includes(scan.status) || !scan.completedAt) {
+    return { ok: false, reason: "SCAN_STALE" };
+  }
+  const latest = await db.scan.findFirst({
+    where: {
+      shopId: input.shopId,
+      themeId: scan.themeId,
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  if (
+    latest?.id !== scan.id ||
+    isScanStaleAfterThemeChange({
+      autoRescan: false,
+      lastThemePublishAt: input.lastThemePublishAt,
+      scan,
+    })
+  ) {
+    return { ok: false, reason: "SCAN_STALE" };
+  }
+  const mainRes = await input.admin.getMainTheme();
+  if (!mainRes.ok) {
+    return {
+      ok: false,
+      reason: mainRes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE",
+    };
+  }
+  const main = mainRes.value;
+  if (!main) return { ok: false, reason: "NO_MAIN_THEME" };
+  if (main.id !== scan.themeId || (main.updatedAt !== null && main.updatedAt > scan.completedAt)) {
+    return { ok: false, reason: "SCAN_STALE" };
+  }
+  const canvas = canvasThemeRefusal(main);
+  if (canvas !== null) return { ok: false, reason: canvas };
+  return { ok: true, main };
 }
 
 export async function preflightCleanCopy(input: PreflightInput): Promise<PreflightResult> {
@@ -157,41 +220,14 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
     select: { id: true, themeId: true, status: true, completedAt: true, liveAppHooks: true },
   });
   if (!scan) return { ok: false, reason: "SCAN_NOT_FOUND" };
-  const latest = await db.scan.findFirst({
-    where: {
-      shopId: input.shopId,
-      themeId: scan.themeId,
-      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true },
+  const fresh = await checkCleanCopyFreshness({
+    shopId: input.shopId,
+    lastThemePublishAt: shop.lastThemePublishAt,
+    scan,
+    admin: input.admin,
   });
-  if (
-    !(SUCCESSFUL_SCAN_STATUSES as readonly string[]).includes(scan.status) ||
-    !scan.completedAt ||
-    latest?.id !== scan.id ||
-    isScanStaleAfterThemeChange({
-      autoRescan: false,
-      lastThemePublishAt: shop.lastThemePublishAt,
-      scan,
-    })
-  ) {
-    return { ok: false, reason: "SCAN_STALE" };
-  }
-
-  const mainRes = await input.admin.getMainTheme();
-  if (!mainRes.ok) {
-    return {
-      ok: false,
-      reason: mainRes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE",
-    };
-  }
-  const main = mainRes.value;
-  if (!main) return { ok: false, reason: "NO_MAIN_THEME" };
-  if (main.id !== scan.themeId || (main.updatedAt !== null && main.updatedAt > scan.completedAt)) {
-    return { ok: false, reason: "SCAN_STALE" };
-  }
-  canvasThemeRefusal(main);
+  if (!fresh.ok) return { ok: false, reason: fresh.reason };
+  const main = fresh.main;
 
   const manifest = await getScanManifest(scan.id);
   if (!manifest) return { ok: false, reason: "MANIFEST_MISSING" };
@@ -234,13 +270,7 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
     if (!fixable.has(f.findingType)) refuse("NOT_FIXABLE_TYPE");
     else if (f.spanStart === null || f.spanEnd === null || f.spanSha256 === null) refuse("NO_SPAN");
     else if (!isAllowedFixPath(f.filename)) refuse("PATH_NOT_ALLOWED");
-    else if (
-      ignores.fingerprints.has(
-        fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber),
-      ) ||
-      (f.appName !== null && ignores.appNames.has(f.appName))
-    )
-      refuse("IGNORED");
+    else if (isFindingIgnored(f, ignores)) refuse("IGNORED");
     else if (!f.appName) refuse("APP_UNKNOWN");
     else if (embedApps.has(f.appName)) refuse("APP_HAS_LIVE_EMBED");
     else if (!confirmed.has(f.appName)) refuse("APP_NOT_CONFIRMED");
@@ -355,6 +385,19 @@ async function unwrap<T>(
   return { ok: false, message: res.message };
 }
 
+/**
+ * Gates re-checked inside the worker (audit logic 11): the flag is still on
+ * and the shop is still on Professional. A downgrade mid-run stops the run.
+ */
+export async function runGateFailure(run: {
+  shopId: string;
+}): Promise<"FLAG_OFF" | "NOT_PROFESSIONAL" | null> {
+  if (!isCleanCopyEnabled()) return "FLAG_OFF";
+  const shop = await db.shop.findUnique({ where: { id: run.shopId }, select: { plan: true } });
+  if (shop?.plan !== PLANS.PROFESSIONAL) return "NOT_PROFESSIONAL";
+  return null;
+}
+
 async function loadActiveRun(runId: string) {
   const run = await getFixRunWithItems(runId);
   if (!run || !(ACTIVE_FIX_RUN_STATUSES as readonly string[]).includes(run.status)) return null;
@@ -387,7 +430,8 @@ export async function ensureCopyTheme(
 ): Promise<{ copyThemeId: string } | { skipped: true }> {
   const run = await loadActiveRun(runId);
   if (!run) return { skipped: true };
-  if (!isCleanCopyEnabled()) return failRun(runId, "FLAG_OFF");
+  const gate = await runGateFailure(run);
+  if (gate) return failRun(runId, gate);
   if (run.copyThemeId) return { copyThemeId: run.copyThemeId };
 
   await setFixRunActiveStatus(runId, "duplicating");
@@ -466,6 +510,9 @@ type PlannedWrite = {
  * with pending items, in one upsert (<= 50 files). Safe to re-run: decided
  * items are skipped, and a file already at an item's recorded expected md5
  * is a write that landed before a crash (marked removed, not FILE_CHANGED).
+ * A file whose items recorded an expected md5 but that is now at neither
+ * that md5 nor the scanned one may hold an unverified write: POST_WRITE_MISMATCH
+ * and do-not-publish (audit H1).
  */
 export async function writeCleanCopy(
   admin: CleanCopyAdmin,
@@ -474,7 +521,8 @@ export async function writeCleanCopy(
 ): Promise<{ written: number } | { skipped: true }> {
   const run = await loadActiveRun(runId);
   if (!run) return { skipped: true };
-  if (!isCleanCopyEnabled()) return failRun(runId, "FLAG_OFF");
+  const gate = await runGateFailure(run);
+  if (gate) return failRun(runId, gate);
   const copyThemeId = run.copyThemeId;
   if (!copyThemeId) return failRun(runId, "NO_COPY");
   if (copyThemeId === run.sourceThemeId) return failRun(runId, "COPY_IS_SOURCE");
@@ -497,36 +545,48 @@ export async function writeCleanCopy(
 
   const decisions: ItemDecision[] = [];
   const writes: PlannedWrite[] = [];
+  let unverifiedWrite = false;
   const decideAll = (items: RunItem[], status: ItemDecision["status"], reasonCode: string) =>
     items.forEach((i) => decisions.push({ itemId: i.id, status, reasonCode }));
 
   for (const [filename, items] of byFile) {
-    const file = preFiles.get(filename);
-    if (!file || file.content === null || file.checksumMd5 === null) {
+    const file = preFiles.get(filename) ?? null;
+    const checksum = file?.checksumMd5 ?? null;
+    const preMd5 = items[0].preMd5;
+
+    // Crash-retry: an expected md5 was recorded, so an upsert may have run.
+    const recorded = items.filter((i) => i.postMd5 !== null);
+    if (recorded.length > 0) {
+      if (checksum !== null && checksum === recorded[0].postMd5) {
+        // The write landed before its items were marked.
+        for (const i of items) {
+          decisions.push(
+            i.postMd5 === checksum
+              ? { itemId: i.id, status: "removed", reasonCode: null }
+              : { itemId: i.id, status: "skipped", reasonCode: "FILE_CHANGED" },
+          );
+        }
+        continue;
+      }
+      if (checksum === null || checksum !== preMd5) {
+        // Neither the scanned file nor our result: unverified (audit H1).
+        decideAll(items, "failed", "POST_WRITE_MISMATCH");
+        unverifiedWrite = true;
+        continue;
+      }
+      // Still the scanned file: the upsert never landed. Write it normally.
+    }
+
+    if (!file || file.content === null || checksum === null) {
       decideAll(items, "skipped", "FILE_CHANGED");
       continue;
     }
-
-    // Crash-retry: the write landed before its items were marked.
-    const recorded = items.filter((i) => i.postMd5 !== null);
-    if (recorded.length > 0 && file.checksumMd5 === recorded[0].postMd5) {
-      for (const i of items) {
-        if (i.postMd5 === file.checksumMd5) {
-          decisions.push({ itemId: i.id, status: "removed", reasonCode: null });
-        } else {
-          decisions.push({ itemId: i.id, status: "skipped", reasonCode: "FILE_CHANGED" });
-        }
-      }
-      continue;
-    }
-
-    const preMd5 = items[0].preMd5;
-    if (!preMd5 || items.some((i) => i.preMd5 !== preMd5) || file.checksumMd5 !== preMd5) {
+    if (!preMd5 || items.some((i) => i.preMd5 !== preMd5) || checksum !== preMd5) {
       decideAll(items, "skipped", "FILE_CHANGED");
       continue;
     }
     const content = file.content;
-    if (md5(content) !== file.checksumMd5) {
+    if (md5(content) !== checksum) {
       decideAll(items, "skipped", "CHECKSUM_UNVERIFIABLE");
       continue;
     }
@@ -585,9 +645,14 @@ export async function writeCleanCopy(
     });
   }
 
+  if (unverifiedWrite) await setFixRunDoNotPublish(runId);
   await decideFixItems(runId, decisions);
   if (writes.length === 0) return { written: 0 };
   for (const w of writes) await recordExpectedPostMd5(runId, w.itemIds, w.expectedMd5);
+
+  // The run may have been failed (STALE sweep, onFailure) since we loaded it
+  // (audit sec 7): never write for a run that is no longer active.
+  if (!(await isFixRunActive(runId))) return { skipped: true };
 
   const up = await unwrap(
     runId,
@@ -598,10 +663,25 @@ export async function writeCleanCopy(
     }),
     "upsert",
   );
-  const upsertFailed = !up.ok;
-  if (!up.ok) logger.warn("clean-copy upsert userErrors", { fixRunId: runId, message: up.message });
+  const userErrors = up.ok ? up.value.userErrors : [{ filename: null, code: "UNKNOWN" }];
+  if (userErrors.length > 0) {
+    logger.warn("clean-copy upsert userErrors", {
+      fixRunId: runId,
+      codes: userErrors.map((e) => e.code),
+    });
+  }
+  const failedFile = (filename: string) =>
+    userErrors.some((e) => e.filename === null || e.filename === filename);
 
+  /** True when the copy is no longer UNPUBLISHED (the merchant published it, audit M-a). */
+  const copyPublished = async (): Promise<boolean> => {
+    const t = await unwrap(runId, await admin.getTheme(copyThemeId), "read copy role");
+    return !t.ok || t.value === null || t.value.role !== "UNPUBLISHED";
+  };
+
+  // Always wait for a returned job, userErrors or not (audit M-e).
   let jobTimedOut = false;
+  let published = false;
   if (up.ok && !up.value.jobDone && up.value.jobId) {
     const attempts = opts.jobPollAttempts ?? 10;
     const delay = opts.jobPollDelayMs ?? 1500;
@@ -609,12 +689,33 @@ export async function writeCleanCopy(
     jobTimedOut = true;
     for (let i = 0; i < attempts; i++) {
       await sleep(delay);
+      if (await copyPublished()) {
+        published = true;
+        break;
+      }
       const job = await unwrap(runId, await admin.getJob(up.value.jobId), "job");
       if (job.ok && job.value.done) {
         jobTimedOut = false;
         break;
       }
     }
+  }
+  if (!published) published = await copyPublished();
+
+  if (published) {
+    // The copy went live while we were writing: nothing we wrote is verified.
+    await setFixRunDoNotPublish(runId);
+    await decideFixItems(
+      runId,
+      writes.flatMap((w) =>
+        w.itemIds.map((itemId) => ({
+          itemId,
+          status: "failed" as const,
+          reasonCode: "COPY_PUBLISHED_DURING_WRITE",
+        })),
+      ),
+    );
+    return failRun(runId, "COPY_PUBLISHED_DURING_WRITE");
   }
 
   // Post-read: the file's checksum is the truth, whatever the upsert said.
@@ -628,7 +729,7 @@ export async function writeCleanCopy(
   );
   const postFiles = new Map((post.ok ? post.value : []).map((f) => [f.filename, f]));
   const outcomes: ItemDecision[] = [];
-  let mismatch = false;
+  let doNotPublish = false;
   for (const w of writes) {
     const now = postFiles.get(w.filename)?.checksumMd5 ?? null;
     let status: ItemDecision["status"] = "failed";
@@ -636,17 +737,19 @@ export async function writeCleanCopy(
     if (now === w.expectedMd5) {
       status = "removed";
       reasonCode = null;
-    } else if (now === w.preMd5 && upsertFailed) {
+    } else if (now === w.preMd5 && failedFile(w.filename) && !jobTimedOut) {
       reasonCode = "UPSERT_FAILED";
     } else if (now === w.preMd5 && jobTimedOut) {
+      // The job may still change the copy after we stop looking (audit M-f).
       reasonCode = "JOB_TIMEOUT";
+      doNotPublish = true;
     } else {
       reasonCode = "POST_WRITE_MISMATCH";
-      mismatch = true;
+      doNotPublish = true;
     }
     for (const itemId of w.itemIds) outcomes.push({ itemId, status, reasonCode });
   }
-  if (mismatch) await setFixRunDoNotPublish(runId);
+  if (doNotPublish) await setFixRunDoNotPublish(runId);
   await decideFixItems(runId, outcomes);
   return { written: writes.length };
 }
