@@ -263,18 +263,103 @@ function lastBlockBefore(
 }
 
 /**
+ * Walk an HTML start tag from just after `<name` to just past its `>`,
+ * recording every quoted attribute value as [start, end) (quotes included).
+ * Liquid inside the tag or a value (`{{ ... }}`, `{% ... %}`) is skipped as a
+ * unit, so a quote inside it doesn't open or close a value; Liquid between
+ * attributes is recorded too. An unterminated value or tag runs to the end of
+ * the file (an unclosed Liquid tag in it: the walk stops there, conservative).
+ */
+function walkStartTag(content: string, from: number, values: Array<[number, number]>): number {
+  let quote: string | null = null;
+  let quoteStart = 0;
+  let i = from;
+  while (i < content.length) {
+    if (content[i] === "{" && (content[i + 1] === "{" || content[i + 1] === "%")) {
+      const close = content.indexOf(content[i + 1] === "{" ? "}}" : "%}", i + 2);
+      if (close === -1) {
+        if (quote === null) values.push([i, content.length]);
+        break;
+      }
+      // Liquid between attributes is not a fix target either (inside a quoted
+      // value, the value's own range covers it).
+      if (quote === null) values.push([i, close + 2]);
+      i = close + 2;
+      continue;
+    }
+    const ch = content[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        values.push([quoteStart, i + 1]);
+        quote = null;
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      quoteStart = i;
+    } else if (ch === ">") {
+      return i + 1;
+    }
+    i++;
+  }
+  if (quote !== null) values.push([quoteStart, content.length]);
+  return content.length;
+}
+
+/**
+ * The string literals inside one Liquid tag or output that starts at `at`
+ * (`{%` or `{{`). Liquid ends the tag at the first `%}` / `}}`, even inside
+ * quotes, so a literal that doesn't close by then runs to the tag end.
+ * Returns the tag end, or the file end when the tag never closes (then the
+ * whole rest is pushed as one range: nothing after it is certain).
+ */
+function liquidTagLiterals(content: string, at: number, ranges: Array<[number, number]>): number {
+  const closer = content[at + 1] === "{" ? "}}" : "%}";
+  const close = content.indexOf(closer, at + 2);
+  if (close === -1) {
+    // From inside the tag: the tag's own start keeps its specific refusal
+    // (UNTERMINATED_LIQUID_TAG for a render tag).
+    ranges.push([at + 2, content.length]);
+    return content.length;
+  }
+  let i = at + 2;
+  while (i < close) {
+    const ch = content[i];
+    if (ch === '"' || ch === "'") {
+      const q = content.indexOf(ch, i + 1);
+      const end = q === -1 || q >= close ? close : q + 1;
+      ranges.push([i, end]);
+      i = end;
+    } else i++;
+  }
+  return close + 2;
+}
+
+/**
  * [start, end) ranges where markup is not live code: Liquid comment, doc, raw,
  * schema, javascript and stylesheet blocks; `{%# %}` inline comments; HTML
  * comments; the bodies of `<script>` / `<style>` elements (so a
  * `document.write('<script src=...')` string is never treated as an element);
- * and the text-only or inert `<textarea>` / `<title>` / `<template>` / `<xmp>`
- * / `<noscript>` bodies.
+ * the text-only or inert `<textarea>` / `<title>` / `<template>` / `<xmp>`
+ * / `<noscript>` bodies; and (gc-tib.11) string literals inside any other
+ * Liquid tag or output and quoted HTML attribute values, so
+ * `{% assign x = '<script ...>' %}` or `<div data-html='<script ...>'>` is
+ * text, never an element.
  * One left-to-right pass; an unterminated region runs to the end of the file.
+ * The result is sorted and non-overlapping (inRanges relies on it).
  */
 export function nonCodeRanges(content: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const token =
-    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|<(script|style|textarea|title|template|xmp|noscript)(?=[\s>/])/gi;
+    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|\{[{%]|<([a-zA-Z][a-zA-Z0-9-]*)(?=[\s>/])/gi;
+  const BODY_ELEMENTS = new Set([
+    "script",
+    "style",
+    "textarea",
+    "title",
+    "template",
+    "xmp",
+    "noscript",
+  ]);
   let m: RegExpExecArray | null;
   while ((m = token.exec(content)) !== null) {
     const at = m.index;
@@ -290,15 +375,20 @@ export function nonCodeRanges(content: string): Array<[number, number]> {
       end = c === -1 ? content.length : c + 3;
       ranges.push([at, end]);
     } else if (m[2]) {
-      // Element body only: the tag itself is code (it may be the fix target).
-      const gt = content.indexOf(">", at);
-      if (gt === -1) break;
+      // The start tag itself is code (it may be the fix target); its quoted
+      // attribute values are not. Then, for text-only elements, the body.
+      const gtEnd = walkStartTag(content, at + m[0].length, ranges);
+      end = gtEnd;
       const name = m[2].toLowerCase();
-      const close = new RegExp(`</${name}`, "gi");
-      close.lastIndex = gt + 1;
-      const c = close.exec(content);
-      end = c ? c.index : content.length;
-      if (end > gt + 1) ranges.push([gt + 1, end]);
+      if (BODY_ELEMENTS.has(name) && gtEnd < content.length) {
+        const close = new RegExp(`</${name}`, "gi");
+        close.lastIndex = gtEnd;
+        const c = close.exec(content);
+        end = c ? c.index : content.length;
+        if (end > gtEnd) ranges.push([gtEnd, end]);
+      }
+    } else if (m[0] === "{{" || m[0] === "{%") {
+      end = liquidTagLiterals(content, at, ranges);
     } else {
       // {%# inline comment %}
       const c = content.indexOf("%}", at + 2);

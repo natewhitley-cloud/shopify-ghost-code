@@ -134,7 +134,11 @@ describe("span boundaries (audit A1-A11)", () => {
       });
     }
     // The element's own tag is not a body: <titles> is not <title>.
-    expect(nonCodeRanges(`<titles>${TAG}`)).toEqual([]);
+    // (gc-tib.11: the tag's attribute values are ranges now, so check the tag itself.)
+    const titles = `<titles>${TAG}`;
+    expect(removalSpanFor("GHOST_SCRIPT", titles, titles.indexOf("<script"))).toMatchObject({
+      ok: true,
+    });
   });
 
   it("A8: comment, raw, doc, inline-comment and script-string copies are never removed", () => {
