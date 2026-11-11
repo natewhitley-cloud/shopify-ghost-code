@@ -57,7 +57,10 @@ export type CreateFixRunResult =
   | { ok: false; reason: "RUN_ACTIVE"; activeRunId: string }
   | { ok: false; reason: "TRIAL_LIMIT"; used: number; limit: number };
 
-/** Item statuses that use up the trial limit: removed, or still in flight. */
+/**
+ * Item statuses that use up the trial limit: removed, or still in flight. An
+ * item with postMd5 recorded counts too, whatever its status (see below).
+ */
 const TRIAL_COUNTED_ITEM_STATUSES = ["removed", "pending"] as const;
 
 /**

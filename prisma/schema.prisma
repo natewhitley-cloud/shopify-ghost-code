@@ -362,9 +362,9 @@ model FixRun {
   // Set when the result page found the copy theme deleted (gc-tib.20 r1): the
   // copy can't be published any more, so no "don't publish" warning.
   copyGoneAt    DateTime?
-  // Made during the Professional free trial (gc-tib.22): its removed and
-  // pending items count against the trial limit, and it is never pruned
-  // while it holds one.
+  // Made during the Professional free trial (gc-tib.22): its items that are
+  // removed, pending, or sent to Shopify (postMd5 recorded) count against the
+  // trial limit, and it is never pruned while it holds one.
   duringTrial   Boolean   @default(false)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

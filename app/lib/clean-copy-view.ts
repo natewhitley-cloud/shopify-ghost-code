@@ -32,7 +32,7 @@ export const TRIAL_CLEAN_COPY_LIMIT = 5;
 // ---------------------------------------------------------------------------
 
 export type CleanCopyTrialView = {
-  /** Trial items used so far (removed, or in a run still going). */
+  /** Trial items used so far (removed, pending, or sent to Shopify: postMd5 recorded). */
   used: number;
   limit: number;
   /** ISO time the trial ends (00:00 UTC of the unlock day). */
