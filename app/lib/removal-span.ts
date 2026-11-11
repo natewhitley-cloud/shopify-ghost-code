@@ -25,7 +25,9 @@
  *     What the template itself writes is checked: string literals in
  *     `{{ }}`, echo and cycle; assign and capture literals and capture
  *     bodies, carried per variable name to where they print (the Taint
- *     class); and the markup that markup-making filters emit.
+ *     class); and the markup that markup-making filters emit. Variables an
+ *     `{% include %}` snippet assigns or captures into the caller's scope
+ *     are not seen either: a later print of them is unknown text too.
  *   - Tree-construction quirks beyond the tokenizer are approximated: inside
  *     svg/math/select (tracked by start/end tag pairs) a text-only body must
  *     hold no '<'; other insertion modes are assumed to be "in body".
@@ -718,10 +720,15 @@ function emittedFlags(content: string, a: number, b: number): number {
     const name = content.slice(nameStart, p);
     if (DECODING_FILTER.test(name)) decode = true;
     if (isMarkupFilter(name)) f |= F_MARKUP_OUT;
+    // r7: filters whose output holds quotes or spaces whatever their input.
+    if (name === "json" || name === "structured_data") f |= F_LIT_DQ;
+    if (name === "date") f |= F_LIT_EQWS;
     while (p < y && isStripWs(content.charCodeAt(p))) p++;
     if (hasQuote(content, p, y)) literals = true;
     if (content.charCodeAt(p) !== 58) {
       f |= stringFlags(content, p, y);
+      // join's default separator is a space.
+      if (name === "join") f |= F_LIT_EQWS;
       continue;
     }
     p++;
@@ -789,18 +796,73 @@ const NESTED_LIQUID_OK = new Set([
   "content_for",
 ]);
 
+/** A char of Ruby's VariableSignature `\(?[\w\-\.\[\]]\)?` (the middle class). */
+const isSigChar = (c: number) => isWordChar(c) || c === 45 || c === 46 || c === 91 || c === 93;
+const isSigOrParen = (c: number) => isSigChar(c) || c === 40 || c === 41;
+
 /**
- * F_LIT_* flags of an assign's literals (`x = 'a' | f: 'b'`, [a, b)): the
- * value may be output later, so it counts like an output (X9; the variable
- * is not tracked).
+ * The longest run matching Ruby's `(VariableSignature+)` that starts at i
+ * (capture.rb; greedy, nothing after it to backtrack for): its end, or i.
  */
-function assignFlags(content: string, a: number, b: number): number {
-  for (let i = a; i < b; i++) {
-    const c = content.charCodeAt(i);
-    if (c === 34 || c === 39) i = quoteEnd(content, i, b);
-    else if (c === 61) return emittedFlags(content, i + 1, b);
+function sigRunEnd(content: string, i: number, b: number): number {
+  let p = i;
+  for (;;) {
+    let u = p;
+    if (u < b && content.charCodeAt(u) === 40) u++;
+    if (!(u < b && isSigChar(content.charCodeAt(u)))) return p;
+    u++;
+    if (u < b && content.charCodeAt(u) === 41) u++;
+    p = u;
   }
-  return stringFlags(content, a, b);
+}
+
+/** The variable a capture's markup [a, b) names (capture.rb `(VariableSignature+)`, unanchored). */
+function captureName(content: string, a: number, b: number): string {
+  for (let i = a; i < b; i++) {
+    const end = sigRunEnd(content, i, b);
+    if (end > i) return content.slice(i, end);
+  }
+  return "";
+}
+
+/**
+ * An assign's markup [a, b) as Ruby reads it (assign.rb, lax and strict):
+ * `(VariableSignature+)\s*=\s*(.*)` unanchored, so the name is the leftmost
+ * run that a `=` follows, quotes or not (`junk q = 'v'` assigns q). Without
+ * a match the name is "" and the whole markup counts as the value.
+ *   - flags: F_LIT_* of the value's literals; it may be output later, so it
+ *     counts like an output (X9), and is kept per name (Taint).
+ *   - valueStart: where the value expression starts.
+ * Linear: a run of signature chars [r, N) matches from s when [s, N) has no
+ * "((", "))" or "()", does not start with ")" and does not end with "(";
+ * a shorter match would end before a signature char, never before `\s*=`.
+ */
+function assignParts(content: string, a: number, b: number) {
+  for (let i = a; i < b; ) {
+    if (!isSigOrParen(content.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    let s = i;
+    for (; i < b && isSigOrParen(content.charCodeAt(i)); i++) {
+      const c = content.charCodeAt(i);
+      const n = i + 1 < b ? content.charCodeAt(i + 1) : 0;
+      if ((c === 40 && (n === 40 || n === 41)) || (c === 41 && n === 41)) s = i + 1;
+    }
+    if (s < i && content.charCodeAt(s) === 41) s++;
+    if (s >= i || content.charCodeAt(i - 1) === 40) continue;
+    let j = i;
+    while (j < b && isRubyWs(content.charCodeAt(j))) j++;
+    if (j < b && content.charCodeAt(j) === 61) {
+      return {
+        name: content.slice(s, i),
+        // A '<' in junk before the name is not output; it still counts (refuse).
+        flags: emittedFlags(content, j + 1, b) | (stringFlags(content, a, s) & F_LIT_LTGT),
+        valueStart: j + 1,
+      };
+    }
+  }
+  return { name: "", flags: stringFlags(content, a, b), valueStart: a };
 }
 
 /**
@@ -848,29 +910,58 @@ const NO_VARIABLE_OUTPUT = new Set([
   "endpaginate",
 ]);
 
+/** Ruby's VariableSegment `[\w-]`. */
+const isSegChar = (c: number) => isWordChar(c) || c === 45;
+
 /**
- * Whether an output's markup [a, b) names anything outside string literals.
- * A `[` counts (M1, r6): Ruby's variable_lookup resolves `['x']` to x.
+ * The name run at i (r7, Ruby's VariableParser `[\w-]+\??`, ASCII `\w`):
+ * its end, or i when none starts there.
+ */
+function nameRunEnd(content: string, i: number, b: number): number {
+  let j = i;
+  while (j < b && isSegChar(content.charCodeAt(j))) j++;
+  if (j > i && j < b && content.charCodeAt(j) === 63) j++;
+  return j;
+}
+
+/** An integer literal (`1`, `-2`): Ruby's Expression parses it as a number, not a name. */
+const isIntLiteral = (s: string) => /^-?\d+$/.test(s);
+
+/** A name a print can read as itself (one VariableParser run, not a number); others are odd. */
+const isPlainName = (s: string) =>
+  s.length > 0 && nameRunEnd(s, 0, s.length) === s.length && !isIntLiteral(s);
+
+/**
+ * Whether an output's markup [a, b) names anything outside string literals:
+ * any name run that is not an integer (`-`, `1-` and `9q` are names, r7),
+ * or a `[` (M1, r6: Ruby's variable_lookup resolves `['x']` to x).
  */
 function namesSomething(content: string, a: number, b: number): boolean {
   for (let i = a; i < b; i++) {
     const c = content.charCodeAt(i);
     if (c === 34 || c === 39) i = quoteEnd(content, i, b);
-    else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 91) return true;
+    else if (c === 91) return true;
+    else if (isSegChar(c)) {
+      const j = nameRunEnd(content, i, b);
+      if (!isIntLiteral(content.slice(i, j))) return true;
+      i = j - 1;
+    }
   }
   return false;
 }
-
-const isNameStart = (c: number) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
-const isNameChar = (c: number) => isWordChar(c) || c === 45 || c === 63;
 
 /**
  * M2 (r6): what assigns and captures may have put in each variable, so a
  * later print carries it to wherever it lands. Hard limits, no value flow:
  *   - flags only grow (a reassign never clears: branches are not tracked);
- *   - a print reads every name it mentions outside string literals (filter
- *     names and keywords too); a top-level `['x']` reads x; any other
- *     top-level `[` lookup, and an include, read every variable;
+ *   - names are the exact keys Ruby uses: an assign's or capture's target
+ *     comes from assign.rb/capture.rb's regex (assignParts, captureName);
+ *     a target a print cannot read as itself (`x.y`, `a[0]`, `(q)`, `1`,
+ *     none) holding any of these flags is ambiguous;
+ *   - a print reads every name run (VariableParser `[\w-]+\??`, integers
+ *     excepted) outside string literals and not after a property `.` (a
+ *     range's `..` does not count; filter names and keywords are read too); a top-level `['x']` reads x; any other top-level
+ *     `[` lookup, and an include, read every variable;
  *   - a flag added inside a loop after that name (or every name) was read
  *     earlier in the outermost open loop is ambiguous: the earlier read runs
  *     again on the next iteration.
@@ -916,11 +1007,11 @@ class Taint {
         prev = c;
         continue;
       }
-      if (isNameStart(c)) {
-        let j = i + 1;
-        while (j < b && isNameChar(content.charCodeAt(j))) j++;
+      if (isSegChar(c)) {
+        const j = nameRunEnd(content, i, b);
+        const name = content.slice(i, j);
         // `.name` is a property of the value before it: that value's flags cover it.
-        if (prev !== 46) f |= this.lookup(content.slice(i, j));
+        if (prev !== 46 && !isIntLiteral(name)) f |= this.lookup(name);
         i = j - 1;
         prev = 97;
         continue;
@@ -934,7 +1025,9 @@ class Taint {
         if (q === 34 || q === 39) f |= this.lookup(content.slice(k + 1, quoteEnd(content, k, b)));
         else if (!(q >= 48 && q <= 57)) f |= this.readAll();
       }
-      if (!isRubyWs(c)) prev = c;
+      // A range's `..` is not a property dot: the name after it is read.
+      if (c === 46 && prev === 46) prev = 0;
+      else if (!isRubyWs(c)) prev = c;
     }
     return f;
   }
@@ -961,24 +1054,19 @@ class Taint {
   private addChecked(name: string, flags: number, readBefore: boolean): boolean {
     const soft = flags & SOFT_TAINT;
     if (soft === 0) return true;
-    if (readBefore) return false;
+    if (readBefore || !isPlainName(name)) return false;
     this.byName.set(name, (this.byName.get(name) ?? 0) | soft);
     this.all |= soft;
     return true;
   }
 }
 
-/** The variable an assign/capture/for markup [a, b) names: an identifier or a quoted name. */
+/** The variable a for/tablerow markup [a, b) names (for.rb `\A(VariableSegment+)\s+in`). */
 function boundName(content: string, a: number, b: number): { name: string; end: number } {
   let i = a;
   while (i < b && isRubyWs(content.charCodeAt(i))) i++;
-  const c = content.charCodeAt(i);
-  if (c === 34 || c === 39) {
-    const e = quoteEnd(content, i, b);
-    return { name: content.slice(i + 1, e), end: Math.min(e + 1, b) };
-  }
   let j = i;
-  while (j < b && isNameChar(content.charCodeAt(j))) j++;
+  while (j < b && isSegChar(content.charCodeAt(j))) j++;
   return { name: content.slice(i, j), end: j };
 }
 
@@ -1072,14 +1160,12 @@ function liquidTagLines(
       loops--;
     } else if ((word === "break" || word === "continue") && loops === 0) breaks = true;
     if (word === "assign") {
-      const v = boundName(content, m, eol);
-      const f = assignFlags(content, v.end, eol);
-      flags |= f & F_LIT_LTGT;
-      if (!taint.assign(v.name, f, content, v.end, eol)) return result(true);
+      const v = assignParts(content, m, eol);
+      flags |= v.flags & F_LIT_LTGT;
+      if (!taint.assign(v.name, v.flags, content, v.valueStart, eol)) return result(true);
     } else if (word === "capture") {
-      const v = boundName(content, m, eol);
       flags |= stringFlags(content, m, eol) & F_LIT_LTGT;
-      captures.push({ name: v.name, acc: 0 });
+      captures.push({ name: captureName(content, m, eol), acc: 0 });
     } else if (word === "endcapture") {
       const cap = captures.pop();
       if (cap && !taint.add(cap.name, cap.acc)) return result(true);
@@ -1390,7 +1476,7 @@ function liquidMap(content: string): LiquidMap {
         taint.loopOpen();
       }
       if (name === "capture") {
-        captures.push({ name: boundName(content, nameEnd, inB).name, acc: 0, tok: frame.tok });
+        captures.push({ name: captureName(content, nameEnd, inB), acc: 0, tok: frame.tok });
       }
       curPath = nextPath++;
       if (flags & F_MARKUP) effSynthetic();
@@ -1466,10 +1552,9 @@ function liquidMap(content: string): LiquidMap {
     } else if (name === "assign" || name === "layout") {
       // X9: an assigned literal holding '<' or '>' may be output anywhere later.
       if (name === "assign") {
-        const v = boundName(content, nameEnd, inB);
-        const f = assignFlags(content, v.end, inB);
-        if (f & F_LIT_LTGT && !hardTaint(q)) break;
-        if (!taint.assign(v.name, f, content, v.end, inB)) {
+        const v = assignParts(content, nameEnd, inB);
+        if (v.flags & F_LIT_LTGT && !hardTaint(q)) break;
+        if (!taint.assign(v.name, v.flags, content, v.valueStart, inB)) {
           amb(q);
           break;
         }
