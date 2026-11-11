@@ -4,6 +4,7 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
+import { CleanCopyRunLines } from "../components/CleanCopyRunLines";
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { ScanProgress } from "../components/ScanProgress";
@@ -24,6 +25,7 @@ import {
   scopedFindingsHeading,
 } from "../lib/app-removal-notice";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
+import { cleanCopyRunLines } from "../lib/clean-copy-view";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
@@ -106,6 +108,7 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
 } from "../models/finding.server";
+import { getRecentFixRunsForShop } from "../models/fix-run.server";
 import {
   getIgnoredFindingsForShop,
   ignoreFindingApp,
@@ -1692,8 +1695,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   }
 
+  // gc-tib.20: the way back to recent clean copies' result pages, on every
+  // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
+  const cleanCopyRuns = isCleanCopyEnabled()
+    ? cleanCopyRunLines(await getRecentFixRunsForShop(shop.id))
+    : [];
+
   return {
     cleanCopy,
+    cleanCopyRuns,
     // Shop domain (e.g. `my-store.myshopify.com`) — used to build the theme
     // code editor deep-link (`admin.shopify.com/store/{handle}/...`) client-side.
     shopDomain: session.shop,
@@ -2049,6 +2059,7 @@ export default function ScanDetail() {
     findingSummary,
     // Defaulted: loader data from before this field (or a stub) may not carry it.
     cleanCopy = { eligible: false, count: 0 },
+    cleanCopyRuns = [],
     canViewDetails,
     canUseDiffing,
     canExportPdf,
@@ -2460,6 +2471,8 @@ export default function ScanDetail() {
             This scan failed to complete. Please try running a new scan from the dashboard.
           </s-banner>
         )}
+
+        <CleanCopyRunLines lines={cleanCopyRuns} />
 
         {/* Security risk banners (gc-q5z8): known malicious code (one banner
             per domain, holding every finding's card, ignored or not), apps

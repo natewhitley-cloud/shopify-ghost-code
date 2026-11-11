@@ -494,7 +494,8 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
       } as unknown as ActionFunctionArgs);
 
       expect(result).toEqual({
-        error: "No published theme found. Please publish a theme before scanning.",
+        error:
+          "No published theme found. Please publish a theme before scanning. If you edit your theme with Canvas, GhostCode can't read it yet.",
       });
     });
 

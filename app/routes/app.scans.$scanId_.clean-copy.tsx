@@ -26,6 +26,7 @@ import {
   useSubmit,
 } from "react-router";
 
+import { CleanCopyRunLines } from "../components/CleanCopyRunLines";
 import { readChecked } from "../components/polaris-events";
 import {
   type CleanCopyCandidate,
@@ -34,6 +35,9 @@ import {
   type CandidateGroup,
   candidateBlockCopy,
   CLEAN_COPY_SCOPE,
+  cleanCopyRunLines,
+  cleanCopyRunPath,
+  type CleanCopyRunLine,
   findingRefusalCopy,
   groupCandidatesByApp,
   runRefusalCopy,
@@ -41,6 +45,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import { getFindingsForScan } from "../models/finding.server";
+import { getRecentFixRunsForShop } from "../models/fix-run.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanManifest } from "../models/scan-manifest.server";
 import { getScanById } from "../models/scan.server";
@@ -70,7 +75,6 @@ const sha256 = (text: string) => createHash("sha256").update(text, "utf8").diges
 const MAX_FIELD_CHARS = 200;
 
 const scanPath = (scanId: string) => `/app/scans/${encodeURIComponent(scanId)}`;
-const runPath = (runId: string) => `/app/clean-copy/${encodeURIComponent(runId)}`;
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -86,6 +90,8 @@ export type CleanCopySelectData = {
   omittedFiles: number;
   /** The per-copy file limit, for the omitted-files note. */
   fileLimit: number;
+  /** Links back to recent runs' result pages (gc-tib.20). */
+  runLines?: CleanCopyRunLine[];
 };
 
 export const loader = async ({
@@ -105,6 +111,7 @@ export const loader = async ({
   }
   const scan = await getScanById(scanId, { includeFindings: false });
   if (!scan || scan.shopId !== shop.id) return redirect(scanPath(scanId));
+  const runLines = cleanCopyRunLines(await getRecentFixRunsForShop(shop.id));
 
   const cleanAdmin = createCleanCopyAdmin(admin);
   // Read live, not from the session (audit M-h): a grant or revoke since the
@@ -118,6 +125,7 @@ export const loader = async ({
     refusal,
     omittedFiles: 0,
     fileLimit: MAX_FILES_PER_REQUEST,
+    runLines,
   });
 
   // The service's own freshness check (audit M-i): explain a stale scan, a
@@ -220,6 +228,7 @@ export const loader = async ({
     refusal: null,
     omittedFiles,
     fileLimit: MAX_FILES_PER_REQUEST,
+    runLines,
   };
 };
 
@@ -278,8 +287,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     grantedScopes: scopes.value,
     admin: cleanAdmin,
   });
-  if (result.ok) return redirect(runPath(result.runId));
-  if (result.reason === "RUN_ACTIVE") return redirect(runPath(result.activeRunId));
+  if (result.ok) return redirect(cleanCopyRunPath(result.runId));
+  if (result.reason === "RUN_ACTIVE") return redirect(cleanCopyRunPath(result.activeRunId));
   return {
     refusal: result.reason,
     findings: "findings" in result && result.findings ? result.findings : [],
@@ -401,9 +410,15 @@ function BlockedRow({ candidate, note }: { candidate: CleanCopyCandidate; note: 
 }
 
 export default function CleanCopySelect() {
-  const { scanId, groups, hasWriteScope, refusal, omittedFiles, fileLimit } = useLoaderData<
-    typeof loader
-  >() as CleanCopySelectData;
+  const {
+    scanId,
+    groups,
+    hasWriteScope,
+    refusal,
+    omittedFiles,
+    fileLimit,
+    runLines = [],
+  } = useLoaderData<typeof loader>() as CleanCopySelectData;
   const actionData = useActionData<typeof action>() as CleanCopySelectActionData | undefined;
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -448,6 +463,7 @@ export default function CleanCopySelect() {
       </Link>
       <div style={hairline} />
       <div style={groundStyle}>
+        <CleanCopyRunLines lines={runLines} />
         {shownRefusal && <s-banner tone="critical">{runRefusalCopy(shownRefusal)}</s-banner>}
         {scopeNote && <s-banner tone="warning">{scopeNote}</s-banner>}
         <p style={{ margin: 0, color: TEXT_SUBDUED, fontSize: "14px", lineHeight: "21px" }}>

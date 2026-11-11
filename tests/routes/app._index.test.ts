@@ -830,7 +830,7 @@ describe("app._index action", () => {
       const result = (await action(makeActionArgs())) as { error: string };
 
       expect(result.error).toBe(
-        "No published theme found. Please publish a theme before scanning.",
+        "No published theme found. Please publish a theme before scanning. If you edit your theme with Canvas, GhostCode can't read it yet.",
       );
       expect(mockDispatchScan).not.toHaveBeenCalled();
     });

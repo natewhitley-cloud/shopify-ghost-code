@@ -18,6 +18,7 @@
  */
 
 import db from "../db.server";
+import type { RecentCleanCopyRun } from "../lib/clean-copy-view";
 
 export const ACTIVE_FIX_RUN_STATUSES = ["pending", "duplicating", "writing"] as const;
 export type ActiveFixRunStatus = (typeof ACTIVE_FIX_RUN_STATUSES)[number];
@@ -125,6 +126,36 @@ export async function getFixRunWithItems(runId: string) {
     where: { id: runId },
     include: { items: { orderBy: [{ filename: "asc" }, { spanStart: "asc" }] } },
   });
+}
+
+/**
+ * The shop's kept runs, newest first, for the "last clean copy" lines on the
+ * scan and select pages (gc-tib.20). A stale active run reads as failed, as on
+ * its result page.
+ */
+export async function getRecentFixRunsForShop(
+  shopId: string,
+  now: Date = new Date(),
+): Promise<RecentCleanCopyRun[]> {
+  const runs = await db.fixRun.findMany({
+    where: { shopId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: FIX_RUNS_KEEP_PER_SHOP,
+    select: {
+      id: true,
+      status: true,
+      doNotPublish: true,
+      failureReason: true,
+      copyThemeId: true,
+      copyThemeName: true,
+      updatedAt: true,
+    },
+  });
+  return runs.map(({ updatedAt, ...run }) =>
+    isStaleActiveRun({ status: run.status, updatedAt }, now)
+      ? { ...run, status: "failed", failureReason: "STALE" }
+      : run,
+  );
 }
 
 /** An active run untouched for ACTIVE_RUN_STALE_MS (the status page shows it as stopped). */

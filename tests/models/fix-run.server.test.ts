@@ -23,6 +23,7 @@ import {
   decideFixItems,
   FIX_RUNS_KEEP_PER_SHOP,
   finalizeFixRun,
+  getRecentFixRunsForShop,
   isFixRunActive,
   isStaleActiveRun,
   markDoNotPublishIfWritten,
@@ -287,6 +288,50 @@ describe("audit M-j / M-d / sec 7", () => {
     await markFixRunFailed(clean, "INTERNAL_ERROR");
     runOf(clean).copyThemeId = "gid://shopify/OnlineStoreTheme/10";
     expect(await markDoNotPublishIfWritten(clean)).toBe(false);
+  });
+});
+
+describe("getRecentFixRunsForShop (gc-tib.20)", () => {
+  it("no runs: empty", async () => {
+    expect(await getRecentFixRunsForShop("shop-1")).toEqual([]);
+  });
+
+  it("this shop's runs only, newest first, as the lines need them", async () => {
+    const first = await created();
+    await markFixRunFailed(first, "SCAN_STALE");
+    await created("shop-2");
+    const second = await created();
+    runOf(second).doNotPublish = true;
+    const runs = await getRecentFixRunsForShop("shop-1");
+    expect(runs.map((r) => r.id)).toEqual([second, first]);
+    expect(runs[0]).toMatchObject({ status: "pending", doNotPublish: true });
+    expect(runs[1]).toMatchObject({ status: "failed", failureReason: "SCAN_STALE" });
+    expect(runs.every((r) => !("updatedAt" in r))).toBe(true);
+  });
+
+  it("a stale active run reads as failed STALE, as on its result page; a fresh one stays active", async () => {
+    const runId = await created();
+    const now = new Date((runOf(runId).updatedAt as Date).getTime() + ACTIVE_RUN_STALE_MS + 1);
+    const [stale] = await getRecentFixRunsForShop("shop-1", now);
+    expect(stale).toMatchObject({ id: runId, status: "failed", failureReason: "STALE" });
+    const [fresh] = await getRecentFixRunsForShop("shop-1");
+    expect(fresh).toMatchObject({ id: runId, status: "pending", failureReason: null });
+  });
+
+  it("reads at most the kept number of runs", async () => {
+    for (let i = 0; i < FIX_RUNS_KEEP_PER_SHOP + 3; i++)
+      fake.state.fixRuns.push({
+        id: `extra-${i}`,
+        shopId: "shop-1",
+        status: "completed",
+        doNotPublish: false,
+        failureReason: null,
+        copyThemeId: null,
+        copyThemeName: null,
+        createdAt: new Date(2026, 0, 1, 0, i),
+        updatedAt: new Date(2026, 0, 1, 0, i),
+      });
+    expect(await getRecentFixRunsForShop("shop-1")).toHaveLength(FIX_RUNS_KEEP_PER_SHOP);
   });
 });
 

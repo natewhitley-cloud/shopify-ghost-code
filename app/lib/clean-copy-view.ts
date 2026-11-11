@@ -10,6 +10,7 @@
  * code is "leftover code", never "ghost code".
  */
 
+import { CANVAS_THEME_HINT } from "./canvas-theme";
 import { themeIdToNumeric } from "./theme-editor-url";
 
 /**
@@ -192,7 +193,7 @@ const RUN_REFUSAL_COPY: Record<RunRefusalReason, string> = {
   SCAN_NOT_FOUND: "We couldn't find that scan. Go back to your scans and try again.",
   SCAN_STALE:
     "Your theme changed after this scan, so the results may be out of date. Run a new scan, then make a clean copy from the new results.",
-  NO_MAIN_THEME: "We couldn't find your live theme. Check Online Store > Themes and try again.",
+  NO_MAIN_THEME: `We couldn't find your live theme. Check Online Store > Themes and try again. ${CANVAS_THEME_HINT}`,
   ACCESS_DENIED:
     "Shopify didn't allow GhostCode to change themes for this store. Contact support if this keeps happening.",
   ADMIN_UNAVAILABLE: "We couldn't reach Shopify just now. Try again in a few minutes.",
@@ -490,4 +491,70 @@ export function previewUrl(
   const numeric = themeIdToNumeric(copyThemeGid);
   if (!numeric) return null;
   return `https://${shopDomain}/?preview_theme_id=${numeric}`;
+}
+
+// ---------------------------------------------------------------------------
+// Way back to a run's result page (gc-tib.20)
+// ---------------------------------------------------------------------------
+
+/** A recent run as the scan and select pages see it (stale active runs already read as failed). */
+export type RecentCleanCopyRun = {
+  id: string;
+  status: string;
+  doNotPublish: boolean;
+  failureReason: string | null;
+  copyThemeId: string | null;
+  copyThemeName: string | null;
+};
+
+export type CleanCopyRunLine = { runId: string; tone: SummaryTone; text: string };
+
+/** A copy that may still be in the theme library and must not be published. */
+function copyNeedsWarning(run: RecentCleanCopyRun): boolean {
+  if (run.copyThemeId === null || run.failureReason === "COPY_MISSING") return false;
+  return run.doNotPublish || run.failureReason === "COPY_PUBLISHED_DURING_WRITE";
+}
+
+function copyLabel(run: RecentCleanCopyRun): string {
+  return run.copyThemeName ? `the copy "${run.copyThemeName}"` : "this clean copy";
+}
+
+function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
+  const line = (tone: SummaryTone, text: string) => ({ runId: run.id, tone, text });
+  const named = run.copyThemeName ? `, "${run.copyThemeName}",` : "";
+  if (copyNeedsWarning(run)) {
+    // No live-theme claim: the scan page doesn't read the live theme.
+    return line(
+      "critical",
+      `We couldn't confirm every change in ${copyLabel(run)}. Don't publish it. If you already did, publish your previous theme again.`,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(ACTIVE_HEADINGS, run.status)) {
+    return line("info", "Your clean copy is in progress.");
+  }
+  if (run.status === "completed") return line("info", `Your last clean copy${named} is finished.`);
+  if (run.status === "partial") {
+    return line("info", `Your last clean copy${named} is finished, with some code left in.`);
+  }
+  if (run.status === "failed") return line("warning", "Your last clean copy didn't finish.");
+  return line("info", "See how your last clean copy went.");
+}
+
+/**
+ * The lines that link back to a run's result page: the newest run, plus the
+ * newest older run whose copy must not be published (a later run must not
+ * hide that warning). `runs` is newest first. A warning comes first.
+ */
+export function cleanCopyRunLines(runs: readonly RecentCleanCopyRun[]): CleanCopyRunLine[] {
+  const [latest, ...older] = runs;
+  if (!latest) return [];
+  const lines = [lastRunLine(latest)];
+  const unsafe = older.find(copyNeedsWarning);
+  if (unsafe) lines.unshift(lastRunLine(unsafe));
+  return lines;
+}
+
+/** The result page for a run (app/routes/app.clean-copy.$runId.tsx). */
+export function cleanCopyRunPath(runId: string): string {
+  return `/app/clean-copy/${encodeURIComponent(runId)}`;
 }

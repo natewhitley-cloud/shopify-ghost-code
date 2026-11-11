@@ -23,8 +23,12 @@ vi.mock("../../app/shopify.server", () => ({
   },
 }));
 
+const dbMock = vi.hoisted(() => ({
+  // gc-tib.20: the recent-runs read; no runs unless a test sets them.
+  fixRun: { findMany: vi.fn(async () => [] as unknown[]) },
+}));
 vi.mock("../../app/db.server", () => ({
-  default: {},
+  default: dbMock,
 }));
 
 // Checkout guard incidents (gc-1q1s.6): none unless a test sets them.
@@ -420,5 +424,81 @@ describe("scan page Clean copy entry point (rendered)", () => {
   it("shows no button when not eligible", async () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
     expect(await renderPage()).not.toContain("clean copy");
+  });
+});
+
+describe("gc-tib.20: the way back to a clean copy's result", () => {
+  type WithRuns = { cleanCopyRuns: Array<{ runId: string; tone: string; text: string }> };
+  const dbRun = (over: Record<string, unknown> = {}) => ({
+    id: "run-1",
+    status: "completed",
+    doNotPublish: false,
+    failureReason: null,
+    copyThemeId: "gid://shopify/OnlineStoreTheme/2",
+    copyThemeName: "Dawn - clean copy ab12",
+    updatedAt: new Date(),
+    ...over,
+  });
+
+  it("the loader reads this shop's recent runs and turns them into lines", async () => {
+    dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun()]);
+    const res = (await run()) as unknown as WithRuns;
+    expect(dbMock.fixRun.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { shopId: expect.any(String) } }),
+    );
+    expect(res.cleanCopyRuns).toEqual([expect.objectContaining({ runId: "run-1", tone: "info" })]);
+  });
+
+  it("shown on every plan and scan state (a downgrade must not hide a warning)", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+    dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun({ doNotPublish: true, status: "failed" })]);
+    const res = (await run()) as unknown as WithRuns;
+    expect(res.cleanCopyRuns.map((l) => l.tone)).toEqual(["critical"]);
+  });
+
+  it("flag off: no read, no lines", async () => {
+    vi.stubEnv("CLEAN_COPY_ENABLED", "false");
+    const res = (await run()) as unknown as WithRuns;
+    expect(dbMock.fixRun.findMany).not.toHaveBeenCalled();
+    expect(res.cleanCopyRuns).toEqual([]);
+  });
+
+  async function renderWith(rows: unknown[]): Promise<string> {
+    dbMock.fixRun.findMany.mockResolvedValueOnce(rows);
+    const data = await run();
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/scans/scan-1"],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  it("a finished copy: a quiet line with a View result link to the result page", async () => {
+    const html = await renderWith([dbRun()]);
+    expect(html).toContain(
+      "Your last clean copy, &quot;Dawn - clean copy ab12&quot;, is finished.",
+    );
+    expect(html).toMatch(/<a href="\/app\/clean-copy\/run-1"[^>]*>View result<\/a>/);
+    expect(html).not.toMatch(/<s-banner tone="info"><s-paragraph>Your last clean copy/);
+  });
+
+  it("a do-not-publish copy: a critical banner with the link", async () => {
+    const html = await renderWith([dbRun({ status: "failed", doNotPublish: true })]);
+    expect(html).toMatch(
+      /<s-banner tone="critical"><s-paragraph>We couldn(&#x27;|')t confirm every change in the copy[^<]*<a href="\/app\/clean-copy\/run-1"[^>]*>View result<\/a>/,
+    );
+  });
+
+  it("no runs: nothing rendered", async () => {
+    expect(await renderWith([])).not.toContain("View result");
   });
 });

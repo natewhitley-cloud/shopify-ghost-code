@@ -158,7 +158,7 @@ export function createFakeDb() {
       }
       return { id };
     },
-    findMany: async ({ where, skip = 0 }: { where: Row; skip?: number }) =>
+    findMany: async ({ where, skip = 0, take }: { where: Row; skip?: number; take?: number }) =>
       state.fixRuns
         .filter((r) => matches(r, where))
         .sort(
@@ -166,7 +166,7 @@ export function createFakeDb() {
             (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime() ||
             String(b.id).localeCompare(String(a.id)),
         )
-        .slice(skip)
+        .slice(skip, take === undefined ? undefined : skip + take)
         .map((r) => ({ ...r })),
     deleteMany: async ({ where }: { where: Row }) => {
       const doomed = state.fixRuns.filter((r) => matches(r, where)).map((r) => r.id);

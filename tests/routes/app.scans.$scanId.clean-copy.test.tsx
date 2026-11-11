@@ -19,7 +19,11 @@ import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../app/shopify.server", () => ({ authenticate: { admin: vi.fn() } }));
-const dbMock = vi.hoisted(() => ({ scan: { findFirst: vi.fn() } }));
+const dbMock = vi.hoisted(() => ({
+  scan: { findFirst: vi.fn() },
+  // gc-tib.20: the recent-runs read; no runs unless a test sets them.
+  fixRun: { findMany: vi.fn(async () => [] as unknown[]) },
+}));
 vi.mock("../../app/db.server", () => ({ default: dbMock }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
 vi.mock("../../app/models/scan.server", () => ({
@@ -719,5 +723,49 @@ describe("audit M-i: the loader uses the service's freshness check", () => {
     expect(res.refusal).toBe("SCAN_STALE");
     expect(res.groups).toEqual([]);
     expect(readFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe("gc-tib.20: the way back to a clean copy's result", () => {
+  const dbRun = (over: Record<string, unknown> = {}) => ({
+    id: "run-9",
+    status: "failed",
+    doNotPublish: true,
+    failureReason: "VERIFY_FAILED",
+    copyThemeId: "gid://shopify/OnlineStoreTheme/2",
+    copyThemeName: "Dawn - clean copy zz99",
+    updatedAt: new Date(),
+    ...over,
+  });
+
+  it("the loader returns the lines with the candidates", async () => {
+    dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun()]);
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.groups.length).toBeGreaterThan(0);
+    expect(res.runLines).toEqual([expect.objectContaining({ runId: "run-9", tone: "critical" })]);
+  });
+
+  it("a refused page still shows the lines (a warning must not depend on the refusal)", async () => {
+    dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun()]);
+    mockScan.mockResolvedValue({ ...SCAN, status: "FAILED" });
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBe("SCAN_STALE");
+    expect(res.runLines).toHaveLength(1);
+  });
+
+  it("renders the warning with a View result link above the refusal", () => {
+    const html = render({
+      ...DATA,
+      refusal: "SCAN_STALE",
+      runLines: [{ runId: "run-9", tone: "critical", text: "Don't publish it." }],
+    });
+    expect(html).toMatch(
+      /<s-banner tone="critical"><s-paragraph>Don(&#x27;|')t publish it\. <a href="\/app\/clean-copy\/run-9"[^>]*>View result<\/a>/,
+    );
+    expect(html.indexOf("View result")).toBeLessThan(html.indexOf(runRefusalCopy("SCAN_STALE")));
+  });
+
+  it("no lines: no link", () => {
+    expect(render(DATA)).not.toContain("View result");
   });
 });

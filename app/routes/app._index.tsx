@@ -30,6 +30,7 @@ import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
 import type { RemovalNotice } from "../lib/app-removal-notice";
 import { getPlanFeatures } from "../lib/billing.server";
+import { CANVAS_THEME_HINT } from "../lib/canvas-theme";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
   computeLaneSummary,
@@ -187,6 +188,9 @@ const HOME_SECURITY_TYPES: readonly FindingType[] = [
   FindingType.APP_INCIDENT_ADVISORY,
   FindingType.MENU_INJECTION,
 ];
+
+/** The scan action's error when no published theme is found (gc-tib.12: with the Canvas hint). */
+export const NO_PUBLISHED_THEME_ERROR = `No published theme found. Please publish a theme before scanning. ${CANVAS_THEME_HINT}`;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -1078,7 +1082,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Default: fetch the shop's published (MAIN) theme.
     const mainTheme = await fetchMainTheme(admin);
     if (!mainTheme) {
-      return { error: "No published theme found. Please publish a theme before scanning." };
+      return { error: NO_PUBLISHED_THEME_ERROR };
     }
     // mainTheme.id is already the full GID string (e.g. gid://shopify/Theme/123456).
     themeId = mainTheme.id;
@@ -1823,7 +1827,7 @@ export default function Dashboard() {
               ) : (
                 <s-paragraph>
                   No published theme was detected. Publish a theme in your Shopify admin before
-                  starting your first scan.
+                  starting your first scan. {CANVAS_THEME_HINT}
                 </s-paragraph>
               )}
               <s-button
