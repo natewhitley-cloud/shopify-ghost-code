@@ -97,6 +97,12 @@ describe("scan-time span isolation (audit r6)", () => {
         key === "blocksThrowFor" ? a.filter((f) => f.findingType === "GHOST_SNIPPET") : a;
       expect(affected.length).toBeGreaterThan(0);
       expect(affected.every((f) => f.spanStart === undefined)).toBe(true);
+      // A liquidBlockRanges throw must not cost A's script/style spans (audit r7 S5).
+      if (key === "blocksThrowFor") {
+        const unaffected = a.filter((f) => f.findingType !== "GHOST_SNIPPET");
+        expect(unaffected.length).toBeGreaterThan(0);
+        expect(unaffected.every((f) => typeof f.spanStart === "number")).toBe(true);
+      }
       expect(
         fixableIn(findings, "sections/b.liquid").every((f) => typeof f.spanStart === "number"),
       ).toBe(true);

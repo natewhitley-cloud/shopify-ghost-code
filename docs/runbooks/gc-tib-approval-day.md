@@ -48,6 +48,10 @@ marked STOP means don't go further until it's resolved.
      say the live theme changed (`LIVE_THEME_CHANGED_COPY`). If it does, `themeDuplicate`
      bumps the live theme's `updatedAt`. STOP: turn the flag off and fix `liveThemeState`
      before anyone else sees it.
+   - Before starting: the select page should offer all 13 seeded leftovers. Fewer means
+     the scan stored no span for some; scan-time span failures are not logged (the scan
+     engine never logs), so compare against the scan's findings and STOP to investigate
+     before running.
    - The result reads "13 of 13" (or similar). In Online Store > Themes, the copy is a
      draft and the live theme's "Last saved" is unchanged. In the code editor the copy
      has the lines removed and the live theme still has them.
@@ -73,8 +77,9 @@ marked STOP means don't go further until it's resolved.
 
 - Unset `CLEAN_COPY_ENABLED` AND clear `CLEAN_COPY_SHOPS` (an allowlisted shop stays on
   while it's listed), then redeploy the env. Preflight refuses new runs. A run already in
-  progress stops at its next gate (duplicate or write step) before any write; its
-  copy-ready poll may still make read-only Admin calls.
+  progress stops at its next gate (duplicate or write step); a write step that already
+  passed its gate can still finish its upserts (seconds), and the copy-ready poll may
+  still make read-only Admin calls.
 - Runs already finished keep their copies in merchants' theme libraries (unpublished).
   Their result pages still open, and the scan page's "View result" lines (with any
   "don't publish" warning) stay visible with the flag off or the shop off the

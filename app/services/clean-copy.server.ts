@@ -731,6 +731,7 @@ export async function writeCleanCopy(
       decideAll(items, "skipped", "VALIDATION_FAILED:CHECK_FAILED");
       logger.warn("clean-copy-file-check-failed", {
         runId,
+        filename,
         cause: error instanceof Error ? error.name : "unknown",
       });
     }
