@@ -1,35 +1,28 @@
 # Handoff: gc-tib Clean copy build (2026-11-10 / 11)
 
-## RESUME HERE
-- **Why we're building:** Shopify replied on the write_themes exemption (ticket 71890683, Cy D., 2026-11-10). They want a screencast or screenshots of the app using the scopes. Nathan chose to build the feature first, then send a real dev-store demo. He will NOT create a dev-store app for now ("figure out a way"), so the demo makes the copy through the Shopify CLI, signed in as store staff.
-- **Branch:** `feat/gc-tib-clean-copy`, worktree `~/shopify/gc-tib`, HEAD = this handoff commit on top of `ca6f240`. **NOT pushed. No deploys (Nathan, 2026-11-10).** Push to main = prod deploy.
+## RESUME HERE (updated 2026-11-11 session 2)
+- **Why we're building:** Shopify replied on the write_themes exemption (ticket 71890683, Cy D., 2026-11-10). They want a screencast or screenshots of the app using the scopes. The demo makes the copy through the Shopify CLI, signed in as store staff (no dev-store app, per Nathan).
+- **Branch:** `feat/gc-tib-clean-copy`, worktree `~/shopify/gc-tib`. **NOT pushed. No deploys (Nathan, 2026-11-10).** Push to main = prod deploy.
 - **No .env in the worktree, on purpose:** the repo .env points at the PROD DB.
-- **Audit state:** round 1 (2 HIGH, 11 MED) is all fixed in ca6f240. Round 2 found no HIGH, so the audit loop is done. Open items are beads gc-tib.13-.18: 1 MEDIUM, 4 LOW, 1 probe.
-- **Next session, in order:**
-  1. Fix gc-tib.13 (MEDIUM) plus the cheap LOWs gc-tib.14, .15, .16. These are copy/state fixes in `app/lib/clean-copy-view.ts`, `app/routes/app.clean-copy.$runId.tsx` and `app/services/clean-copy.server.ts`. Each fix gets a regression test, then the full gate.
-  2. Move the demo scripts from `.cache/demo/` (gitignored) to `scripts/demo/` and commit them. Files: `cli-admin.ts`, `run-demo.ts`, `scan-local.ts`, `dry-run.ts`. Add a small test of the CLI adapter's write guard.
-  3. Re-run the demo on the fixed code:
-     ```
-     DATABASE_URL=postgresql://nathanwhitley@localhost:5432/ghostcode_cleancopy_demo CLEAN_COPY_ENABLED=true DEMO_STORE=nw-dev-store-2.myshopify.com npx vite-node --config vitest.config.ts .cache/demo/run-demo.ts
-     ```
-     This creates one more unpublished copy on nw-dev-store-2. Then re-render the screens:
-     ```
-     cd ~/shopify/gc-preview-harness/cleancopy && ~/shopify/gc-tib/node_modules/.bin/vitest run --config vitest.config.ts && CHROMIUM_PATH=... node shoot.mjs
-     ```
-     Polish nits:
-     - "Open in code editor" renders as a default blue underlined link.
-     - The copy name ends in a run-id suffix ("test-data - clean copy ffewpawe").
-  4. Draft the reply to ticket 71890683, for Nathan to review and send:
-     - the screenshot sequence: prod GhostCode scan results, the Clean copy select page, the result page, then Shopify admin (theme library, preview, code editor, live theme untouched)
-     - a plain statement that the write step in the recording ran through a dev harness using staff CLI credentials, because the app record can't call themeDuplicate/themeFilesUpsert before approval; production makes exactly those two calls with write_themes
-     - Nathan captures the admin screenshots himself.
+- **This session (all committed, gate green: 12,128 tests + lint/format/typecheck/build):**
+  - ec5e562: gc-tib.13-.16 fixed (banners follow the live theme; only a MAIN copy counts as published; any failure after a landed write flags do-not-publish). Beads closed.
+  - 58499be: demo scripts now in `scripts/demo/` (cli-admin, run-demo, scan-local, dry-run) + `tests/scripts/demo-cli-admin.test.ts` (CLI write guard). Harness now imports `scripts/demo/cli-admin`.
+  - d1e3ab1: editor links use `<s-link>`.
+  - Demo re-run on fixed code: 13/13 removed into unpublished copy "test-data - clean copy pa4zrdal" (153007784113); live theme pulled before/after, byte-identical (291 files). Screenshots re-rendered in `~/shopify/gc-preview-harness/cleancopy/png/`.
+  - Ticket reply DRAFT: `memory/shopify-ticket-71890683-reply-draft.md` (Nathan reviews, takes admin screenshots 4-7, sends).
+  - Adversarial audit of this batch: see "Audit r3" below.
+- **Next:**
+  1. Nathan: admin screenshots + send the reply.
+  2. Theme library on nw-dev-store-2 now holds 3 GhostCode copies (probe 153006309553, ffewpawe 153006604465, pa4zrdal 153007784113). Nathan deletes the old two whenever; keep pa4zrdal for the screenshots.
+  3. Remaining beads: gc-tib.17 (Admin API probe: does themeDuplicate bump MAIN updatedAt), gc-tib.18 (LOW), gc-tib.8-.11 (r1 LOWs), gc-tib.12 Canvas RELEASE BLOCKER, gc-tib.6 legal publish before deploy.
+  4. Copy-name run-id suffix nit: kept on purpose (it is the adoption key for crash-retry).
 
 ## Done means (whole gc-tib)
 - [x] Slices 1-5 built, gate green (12,106 tests + lint/format/typecheck/build at ca6f240).
 - [x] Slice 6: legal drafts done. Product-strategy doc updated (5641cff).
 - [x] Batch adversarial audit: round 1 fixed, round 2 has no HIGH.
-- [ ] Round-2 MEDIUM gc-tib.13 fixed.
-- [ ] Demo screenshots on the fixed code + reply to Shopify drafted (gc-tib.7).
+- [x] Round-2 MEDIUM gc-tib.13 fixed (ec5e562), plus LOWs .14-.16.
+- [x] Demo screenshots on the fixed code + reply to Shopify drafted (gc-tib.7); [ ] Nathan sends it.
 - [ ] Waiting on approval/later decisions: write_themes added to shopify.app.toml optional_scopes (only after approval); legal published; Canvas detection gc-tib.12 (release blocker); CLEAN_COPY_ENABLED turned on; deploy.
 
 ## Commits on the branch (oldest first)
