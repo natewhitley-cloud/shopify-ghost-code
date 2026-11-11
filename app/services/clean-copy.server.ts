@@ -905,6 +905,8 @@ export async function writeCleanCopy(
       reasonCode = null;
     } else if (now === w.preMd5 && failedFile(w.filename) && !jobTimedOut) {
       reasonCode = "UPSERT_FAILED";
+      // An earlier attempt's upsert of this file may still land (audit r8 F4).
+      if (earlierUpsertMayLand.includes(w.filename)) doNotPublish = true;
     } else if (now === w.preMd5 && jobTimedOut) {
       // The job may still change the copy after we stop looking (audit M-f).
       reasonCode = "JOB_TIMEOUT";

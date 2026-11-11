@@ -880,15 +880,23 @@ const pendingRemovalSpans = new WeakMap<CreateFindingInput, () => RemovalSpanFie
  * for that file (gc-mlnk 3: built once per file, not once per detector).
  * scanThemeFiles makes one per file per scan and passes it to each detector,
  * so nothing outlives the scan; a detector called alone gets its own.
- * `failed` records a throw from a shared parse, so no other detector retries it.
+ * `rangesFailed` / `blocksFailed` record a throw from that parse, so no other
+ * detector retries it; a blocks throw only costs the snippet detector, which
+ * is the only one that needs blocks (audit r8 F5).
  */
 type SharedSpanParse = {
   ranges: Array<[number, number]> | null;
   blocks: Array<[number, number]> | null;
-  failed: boolean;
+  rangesFailed: boolean;
+  blocksFailed: boolean;
 };
 
-const newSpanParse = (): SharedSpanParse => ({ ranges: null, blocks: null, failed: false });
+const newSpanParse = (): SharedSpanParse => ({
+  ranges: null,
+  blocks: null,
+  rangesFailed: false,
+  blocksFailed: false,
+});
 
 /**
  * Per-file span locator for one fixable detector: registers a lazy span on
@@ -905,16 +913,24 @@ function removalSpanLocator(file: ThemeFile, shared: SharedSpanParse = newSpanPa
   let failed = false;
   return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
     pendingRemovalSpans.set(finding, () => {
-      if (failed || shared.failed) return {};
+      const needsBlocks = type === "GHOST_SNIPPET";
+      if (failed || shared.rangesFailed || (needsBlocks && shared.blocksFailed)) return {};
       let located: ReturnType<typeof removalSpanFor>;
       try {
         let ranges: Array<[number, number]>;
         try {
           ranges = shared.ranges ??= nonCodeRanges(content);
-          if (type === "GHOST_SNIPPET") shared.blocks ??= liquidBlockRanges(content);
         } catch (error) {
-          shared.failed = true;
+          shared.rangesFailed = true;
           throw error;
+        }
+        if (needsBlocks) {
+          try {
+            shared.blocks ??= liquidBlockRanges(content);
+          } catch (error) {
+            shared.blocksFailed = true;
+            throw error;
+          }
         }
         located = removalSpanFor(type, content, matchStart, ranges, shared.blocks ?? undefined);
       } catch {

@@ -13,7 +13,7 @@
  *   - Only the newest FIX_RUNS_KEEP_PER_SHOP runs per shop are kept (pruned on
  *     create; items cascade), except trial runs holding a trial removal.
  *   - Trial limit (gc-tib.22): a run made during the free trial is created only
- *     while the shop's trial items (removed, or pending in a trial run) plus
+ *     while the shop's trial items (removed, pending, or sent to Shopify) plus
  *     the new items stay within the limit, checked under the same lock. Only
  *     run creation adds pending items, so the count can't be raced.
  *   - A terminal run is never revived, and a decided item is never re-decided:
@@ -61,8 +61,11 @@ export type CreateFixRunResult =
 const TRIAL_COUNTED_ITEM_STATUSES = ["removed", "pending"] as const;
 
 /**
- * The shop's items that count against the trial limit (gc-tib.22): removed or
- * pending items of runs made during a trial. At most the limit, so small.
+ * The shop's items that count against the trial limit (gc-tib.22): items of
+ * runs made during a trial that are removed, still pending, or whose upsert
+ * may have been sent (an expected md5 was recorded before it), whatever they
+ * ended as. A write that failed or timed out after sending can still be in
+ * the copy, so it counts (audit r8 F1, hard limit). At most the limit, so small.
  */
 async function trialCountedItems(
   client: Pick<typeof db, "fixItem">,
@@ -70,8 +73,8 @@ async function trialCountedItems(
 ): Promise<Array<{ fixRunId: string }>> {
   return client.fixItem.findMany({
     where: {
-      status: { in: [...TRIAL_COUNTED_ITEM_STATUSES] },
       fixRun: { shopId, duringTrial: true },
+      OR: [{ status: { in: [...TRIAL_COUNTED_ITEM_STATUSES] } }, { postMd5: { not: null } }],
     },
     select: { fixRunId: true },
   });

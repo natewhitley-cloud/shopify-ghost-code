@@ -136,12 +136,18 @@ export function subscriptionTrialEnd(
   if (typeof trialDays !== "number" || !Number.isInteger(trialDays) || trialDays < 0) {
     return undefined;
   }
-  if (typeof createdAt !== "string") return undefined;
+  // An explicit Z or offset only: a zoneless time would be read in the
+  // server's own time zone (audit r8 F3).
+  if (typeof createdAt !== "string" || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(createdAt)) {
+    return undefined;
+  }
   const created = new Date(createdAt).getTime();
   if (Number.isNaN(created)) return undefined;
   if (trialDays === 0) return null;
-  const end = created + trialDays * DAY_MS;
-  return new Date(Math.ceil(end / DAY_MS) * DAY_MS);
+  const end = Math.ceil((created + trialDays * DAY_MS) / DAY_MS) * DAY_MS;
+  // A huge trialDays overflows the Date range: malformed, never "no trial".
+  const date = new Date(end);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 /**

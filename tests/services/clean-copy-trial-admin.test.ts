@@ -154,3 +154,27 @@ describe("getProfessionalSubscription", () => {
     });
   });
 });
+
+describe("audit r8 F3: malformed trial fields never read as 'no trial'", () => {
+  it("a trialDays that overflows the Date range is malformed", () => {
+    expect(subscriptionTrialEnd("2026-11-10T00:00:00Z", 1e9)).toBeUndefined();
+  });
+
+  it.each(["2026-11-10T10:00:00", "2026-11-10"])("a zoneless createdAt %s is malformed", (c) => {
+    expect(subscriptionTrialEnd(c, 7)).toBeUndefined();
+  });
+
+  it("an explicit offset is accepted (20:00 at -07:00 is 03:00Z the next day)", () => {
+    expect(subscriptionTrialEnd("2026-11-10T20:00:00-07:00", 7)?.toISOString()).toBe(
+      "2026-11-19T00:00:00.000Z",
+    );
+  });
+
+  it("the adapter turns an overflow into TRANSIENT", async () => {
+    shop.subscriptions = [pro({ trialDays: 1e9 })];
+    expect(await admin.getProfessionalSubscription()).toMatchObject({
+      ok: false,
+      error: "TRANSIENT",
+    });
+  });
+});

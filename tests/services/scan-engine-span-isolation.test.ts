@@ -161,3 +161,17 @@ describe("gc-mlnk 3: one span parse per file per scan", () => {
     expect(holder.rangesCalls.get("A")).toBe(2);
   });
 });
+
+describe("audit r8 F5: a liquidBlockRanges throw only costs snippet spans", () => {
+  it("preconnect findings after the snippet detector keep their spans", () => {
+    const PRE = `<link rel="preconnect" href="https://static.klaviyo.com">`;
+    const content = `<html><head>\n${PRE}\n${SCRIPT}\n</head><body><p>AAA</p>\n${RENDER}\n</body></html>`;
+    holder.blocksThrowFor = "AAA";
+    const { findings } = scanThemeFiles([{ filename: "layout/theme.liquid", content }]);
+    const pre = findings.filter((f) => f.findingType === "GHOST_PRECONNECT");
+    const snip = findings.filter((f) => f.findingType === "GHOST_SNIPPET");
+    expect(pre.length).toBeGreaterThan(0);
+    expect(pre.every((f) => typeof f.spanStart === "number")).toBe(true);
+    expect(snip.every((f) => f.spanStart === undefined)).toBe(true);
+  });
+});

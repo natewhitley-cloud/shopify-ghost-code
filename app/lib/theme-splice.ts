@@ -193,8 +193,19 @@ function spansJoiningText(content: string, spans: readonly RemovalSpan[]): Set<n
   while (i < spans.length) {
     let j = i;
     while (j + 1 < spans.length && spans[j + 1].start === spans[j].end) j++;
+    const before = content[spans[i].start - 1] ?? "";
     const after = content[spans[j].end] ?? "";
-    if ((isRefChar(after) || after === ";") && endsInOpenReference(content, spans[i].start)) {
+    const continues = isRefChar(after) || after === ";";
+    // Liquid output next to the cut renders text we can't see (audit r8 F6):
+    // `}}` before reference text, or an open reference / `&` before `{{`, is
+    // refused as if it joined.
+    const outputBefore = before === "}" && continues;
+    const outputAfter = after === "{" && (isRefChar(before) || before === "&");
+    if (
+      (continues && endsInOpenReference(content, spans[i].start)) ||
+      outputBefore ||
+      outputAfter
+    ) {
       for (let k = i; k <= j; k++) out.add(k);
     }
     i = j + 1;

@@ -68,3 +68,24 @@ describe("JOINS_TEXT", () => {
     expect(performance.now() - t).toBeLessThan(2000);
   });
 });
+
+describe("audit r8 F6: Liquid output next to the cut", () => {
+  it.each([
+    ["<p>{{ '&l' }}", "t;</p>"],
+    ["<p>{{ x }}", ";</p>"],
+    ["<p>&l", "{{ 't;' }}</p>"],
+    ["<p>&", "{{ y }}</p>"],
+  ])("refuses %j + element + %j", (before, after) => {
+    expect(cut(before, after).refused.map((r) => r.reason)).toEqual(["JOINS_TEXT"]);
+  });
+
+  it.each([
+    ["<p>{{ x }}\n", "t;</p>"],
+    ["<p>{{ x }}", " t;</p>"],
+    ["<p>\n", "{{ y }}</p>"],
+    ["<p>>", "{{ y }}</p>"],
+    ["<p>x ", "{{ y }}</p>"],
+  ])("allows %j + element + %j", (before, after) => {
+    expect(cut(before, after).refused.map((r) => r.reason)).toEqual([]);
+  });
+});

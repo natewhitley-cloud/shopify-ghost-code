@@ -259,3 +259,47 @@ describe("preflight and request during the trial", () => {
     });
   });
 });
+
+describe("audit r8 F1: an item whose upsert was sent counts, however it ended", () => {
+  async function runFive() {
+    const res = await requestCleanCopy(pf());
+    if (!res.ok) throw new Error(res.reason);
+    await runAll(res.runId);
+    const run = fake.state.fixRuns.find((r) => r.id === res.runId)!;
+    if (["pending", "duplicating", "writing"].includes(run.status as string)) run.status = "failed";
+    return res.runId;
+  }
+
+  it("POST_WRITE_MISMATCH (Shopify reformatted the file): all 5 still count", async () => {
+    shop.upsertTransform = (_f, c) => `${c} `;
+    const id = await runFive();
+    const items = fake.state.fixItems.filter((i) => i.fixRunId === id);
+    expect(items.every((i) => i.status === "failed" && i.postMd5)).toBe(true);
+    expect(await requestCleanCopy(pf({ findingIds: [ALL_IDS[0]] }))).toEqual({
+      ok: false,
+      reason: "TRIAL_LIMIT",
+    });
+  });
+
+  it("JOB_TIMEOUT (the job may land later): still counts", async () => {
+    shop.jobPollsUntilDone = 1_000;
+    // The job is async: the files haven't changed when we stop waiting.
+    shop.upsertTransform = (f) => THEME_FILES[f];
+    const id = await runFive();
+    const items = fake.state.fixItems.filter((i) => i.fixRunId === id);
+    expect(items.some((i) => i.reasonCode === "JOB_TIMEOUT")).toBe(true);
+    expect(await requestCleanCopy(pf({ findingIds: [ALL_IDS[0]] }))).toMatchObject({
+      reason: "TRIAL_LIMIT",
+    });
+  });
+
+  it("a write refused before anything was sent (no expected md5) does not count", async () => {
+    const res = await requestCleanCopy(pf());
+    if (!res.ok) throw new Error(res.reason);
+    for (const i of fake.state.fixItems) i.spanSha256 = "0".repeat(64);
+    await runAll(res.runId);
+    fake.state.fixRuns[0].status = "failed";
+    expect(fake.state.fixItems.every((i) => i.postMd5 === null)).toBe(true);
+    expect((await preflightCleanCopy(pf())).ok).toBe(true);
+  });
+});

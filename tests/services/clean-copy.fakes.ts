@@ -28,6 +28,10 @@ function matches(row: Row, where: Row | undefined): boolean {
       if (matches(row, cond as Row)) return false;
       continue;
     }
+    if (key === "OR") {
+      if (!(cond as Row[]).some((c) => matches(row, c))) return false;
+      continue;
+    }
     const value = row[key];
     if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
       const c = cond as { in?: unknown[]; lt?: Date; not?: unknown };

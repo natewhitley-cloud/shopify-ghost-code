@@ -118,7 +118,7 @@ const CANDIDATE_BLOCK_COPY: Record<CandidateBlockReason, string> = {
   PATH_NOT_ALLOWED: "This file is one we don't edit in a clean copy.",
   FILE_CHANGED: "This file changed after your scan. Run a new scan to include it.",
   NEEDS_NEW_SCAN:
-    "We now check this kind of code more carefully than when this scan ran. Run a new scan to include it.",
+    "We can't confirm this code is safe to remove from this scan. Run a new scan to include it.",
 };
 
 const GENERIC_BLOCK_COPY = "This code can't be removed in a clean copy.";

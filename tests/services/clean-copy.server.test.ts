@@ -833,6 +833,41 @@ describe("crash-retry inside duplicate and write", () => {
     expect(runOf(runId).doNotPublish).toBe(true);
   });
 
+  it("earlier attempt may have sent the upsert, this one fails it: do-not-publish (audit r8 F4)", async () => {
+    const runId = await startRun(["f-other"]);
+    const dup = (await ensureCopyTheme(admin, runId)) as { copyThemeId: string };
+    await checkCopyReady(admin, runId, dup.copyThemeId, false);
+    shop.overrides.CleanCopyUpsert = () => new Error("ECONNRESET");
+    await expect(writeCleanCopy(admin, runId)).rejects.toThrow();
+    shop.overrides = {};
+    shop.upsertRejects.add("snippets/other.liquid");
+    shop.upsertUserErrors = [
+      { code: "INVALID", filename: "snippets/other.liquid", message: "rejected" },
+    ];
+    await writeCleanCopy(admin, runId, { sleep: async () => {} });
+    expect(itemsOf(runId)["f-other"]).toMatchObject({
+      status: "failed",
+      reasonCode: "UPSERT_FAILED",
+    });
+    expect(runOf(runId).doNotPublish).toBe(true);
+  });
+
+  it("a first-attempt UPSERT_FAILED keeps the copy publishable", async () => {
+    const runId = await startRun(["f-other"]);
+    const dup = (await ensureCopyTheme(admin, runId)) as { copyThemeId: string };
+    await checkCopyReady(admin, runId, dup.copyThemeId, false);
+    shop.upsertRejects.add("snippets/other.liquid");
+    shop.upsertUserErrors = [
+      { code: "INVALID", filename: "snippets/other.liquid", message: "rejected" },
+    ];
+    await writeCleanCopy(admin, runId, { sleep: async () => {} });
+    expect(itemsOf(runId)["f-other"]).toMatchObject({
+      status: "failed",
+      reasonCode: "UPSERT_FAILED",
+    });
+    expect(runOf(runId).doNotPublish).toBe(false);
+  });
+
   it("no expected md5 recorded and the file is refused: publishable flag stays off", async () => {
     const runId = await startRun(["f-other"]);
     const dup = (await ensureCopyTheme(admin, runId)) as { copyThemeId: string };
