@@ -267,6 +267,7 @@ model Shop {
   speedReports        SpeedReport[]
   storefrontGuardState StorefrontGuardState?
   storefrontIncidents  StorefrontIncident[]
+  fixRuns              FixRun[]
 }
 
 // Ledger of merchant-facing emails (gc-syz.1), one row per summary email since
@@ -336,6 +337,60 @@ model StorefrontGuardState {
 // Checkout guard incident (gc-1q1s.4): one row per (shop, signal), reopened in
 // place. Hostnames and fixed labels only. Cascades from Shop; deleteShopData
 // also deletes it explicitly.
+// ---------------------------------------------------------------------------
+// Clean copy (gc-tib): one FixRun per merchant "Make a clean copy" click.
+// The run duplicates the MAIN theme and removes the selected findings' spans in
+// the unpublished copy only; MAIN is never written and never published by us.
+// Holds theme ids, filenames, offsets and hashes only: no code text, no
+// personal data. Cascades from Shop (shop/redact deletes the Shop row), like
+// ScanManifest; the run model keeps only the newest runs per shop.
+// ---------------------------------------------------------------------------
+model FixRun {
+  id            String    @id @default(cuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  // The scan the selection came from (no FK: scans are pruned independently).
+  scanId        String
+  // MAIN theme GID at fix time, and the unpublished copy we created.
+  sourceThemeId String
+  copyThemeId   String?
+  copyThemeName String?
+  copyCreatedAt DateTime?
+  // pending | duplicating | writing | completed | partial | failed
+  status        String    @default("pending")
+  // Machine reason for failed runs (e.g. SCAN_STALE, ACCESS_DENIED).
+  failureReason String?
+  // Set when a post-write check failed: the merchant must not publish the copy.
+  doNotPublish  Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  completedAt   DateTime?
+  items         FixItem[]
+
+  @@index([shopId, createdAt])
+}
+
+model FixItem {
+  id         String  @id @default(cuid())
+  fixRunId   String
+  fixRun     FixRun  @relation(fields: [fixRunId], references: [id], onDelete: Cascade)
+  findingId  String
+  filename   String
+  spanStart  Int
+  spanEnd    Int
+  spanSha256 String
+  // Shopify checksumMd5 of the copy's file before and after our write.
+  preMd5     String?
+  postMd5    String?
+  // pending | removed | skipped | failed
+  status     String  @default("pending")
+  // e.g. FILE_CHANGED, SPAN_MISMATCH, VALIDATION_FAILED, POST_WRITE_MISMATCH
+  reasonCode String?
+
+  @@unique([fixRunId, findingId])
+  @@index([fixRunId])
+}
+
 model StorefrontIncident {
   id              String    @id @default(cuid())
   shopId          String
@@ -739,6 +794,11 @@ model Finding {
   severity    Severity
   appName     String?
   description String
+  // Clean-copy removal span (gc-tib): UTF-16 [start, end) of the whole element
+  // and sha256 of its text. Only the 4 fixable types; null = not fixable.
+  spanStart   Int?
+  spanEnd     Int?
+  spanSha256  String?
   createdAt   DateTime    @default(now())
 
   @@index([scanId])

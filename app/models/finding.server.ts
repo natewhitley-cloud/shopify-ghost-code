@@ -16,6 +16,14 @@ export type CreateFindingInput = {
   severity: Severity;
   appName?: string;
   description: string;
+  /**
+   * Clean-copy removal span (gc-tib): UTF-16 [start, end) of the whole element
+   * plus the sha256 of its text. Set only for the 4 fixable types when the
+   * element boundaries are certain; no code text is stored (spike D6).
+   */
+  spanStart?: number;
+  spanEnd?: number;
+  spanSha256?: string;
 };
 
 /**

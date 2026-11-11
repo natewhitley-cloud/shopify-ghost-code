@@ -60,6 +60,8 @@
  *                    Swiper v8 in one file and v11 in another)
  */
 
+import { createHash } from "node:crypto";
+
 import { FindingType, Severity } from "@prisma/client";
 
 import {
@@ -97,6 +99,7 @@ import {
   type MaliciousDomain,
 } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
+import { nonCodeRanges, removalSpanFor, type FixableFindingType } from "../lib/removal-span";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import {
   detectSuspiciousCode,
@@ -853,6 +856,30 @@ function buildThemeSettingGatedLines(content: string): Set<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Clean-copy removal spans (gc-tib)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-file span locator for the 4 fixable detectors. Non-code ranges are built
+ * once per file on the first fixable match (most files have none).
+ */
+function removalSpanLocator(content: string) {
+  let ranges: Array<[number, number]> | null = null;
+  return (type: FixableFindingType, matchStart: number) => {
+    ranges ??= nonCodeRanges(content);
+    const r = removalSpanFor(type, content, matchStart, ranges);
+    if (!r.ok) return {};
+    return {
+      spanStart: r.span.start,
+      spanEnd: r.span.end,
+      spanSha256: createHash("sha256")
+        .update(content.slice(r.span.start, r.span.end), "utf8")
+        .digest("hex"),
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
 
@@ -874,6 +901,7 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   // maps the match position back to a line.
   // Built on the first attributed script only: most files have none.
   let settingGatedLines: Set<number> | null = null;
+  const spanAt = removalSpanLocator(file.content);
   for (const { tag, offset } of extractTags(file.content, "<script")) {
     const match = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (!match) continue;
@@ -907,6 +935,7 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
       description: resolved.overriddenTracker
         ? `External script left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
         : `External script from ${resolved.appName} (${url})`,
+      ...spanAt("GHOST_SCRIPT", offset),
     });
   }
 
@@ -948,6 +977,7 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   // are still matched. lineNumberAtOffset maps the match position back to a line.
   // Built on the first attributed stylesheet only: most files have none.
   let settingGatedLines: Set<number> | null = null;
+  const spanAt = removalSpanLocator(file.content);
   for (const { tag, offset } of extractTags(file.content, "<link")) {
     const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (!match) continue;
@@ -984,6 +1014,7 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
       description: resolved.overriddenTracker
         ? `External stylesheet left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
         : `External stylesheet from ${resolved.appName} (${url})`,
+      ...spanAt("GHOST_STYLE", offset),
     });
   }
 
@@ -1026,6 +1057,7 @@ export function detectGhostSnippets(
   // Precompute lines inside always-false conditionals ({% if false %} /
   // {% unless true %}) so dead-code render/include statements are not flagged.
   const alwaysFalseSkipLines = buildAlwaysFalseConditionalSkipLines(file.content);
+  const spanAt = removalSpanLocator(file.content);
 
   const processSnippetMatch = (snippetName: string, matchIndex: number) => {
     const lineNumber = lineNumberAtOffset(file.content, matchIndex);
@@ -1046,6 +1078,7 @@ export function detectGhostSnippets(
       severity,
       appName,
       description: `Liquid render/include of known ${appName} snippet '${snippetName}'`,
+      ...spanAt("GHOST_SNIPPET", matchIndex),
     });
   };
 
@@ -5534,6 +5567,7 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
   // PRECONNECT_TAG to the bounded tag text. Multi-line <link> tags (e.g. from
   // Prettier-formatted theme files) are still matched. lineNumberAtOffset maps
   // each match offset back to a 1-based line number for skip-set checking.
+  const spanAt = removalSpanLocator(file.content);
   for (const { tag, offset } of extractTags(file.content, "<link")) {
     const match = execTagPattern(tag, PRECONNECT_TAG);
     if (!match) continue;
@@ -5573,6 +5607,7 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
       severity,
       appName,
       description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
+      ...spanAt("GHOST_PRECONNECT", offset),
     });
   }
 
