@@ -24,6 +24,8 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 const dbMock = vi.hoisted(() => ({
+  // gc-tib.21: the freshness check's "latest successful scan of this theme".
+  scan: { findFirst: vi.fn() },
   // gc-tib.20: the recent-runs read; no runs unless a test sets them.
   fixRun: { findMany: vi.fn(async () => [] as unknown[]) },
 }));
@@ -66,7 +68,19 @@ vi.mock("../../app/models/scan.server", () => ({
   // Per-scan "viewed on the scan page" stamp, mocked at the model boundary so
   // the REAL journey-milestone service (never-throws wrapper) runs.
   claimScanViewStamp: vi.fn(),
+  // gc-tib.21: the clean copy freshness check (the service's own) reads these.
+  SUCCESSFUL_SCAN_STATUSES: ["COMPLETED", "PARTIAL"],
 }));
+
+// gc-tib.21: the entry point runs the service's freshness check (one Admin MAIN
+// read) and needs a scan-time md5 per file. MAIN is the scan's theme,
+// unchanged since the scan, unless a test says otherwise.
+const cleanAdmin = vi.hoisted(() => ({ getMainTheme: vi.fn() }));
+vi.mock("../../app/services/clean-copy-admin.server", async (importActual) => ({
+  ...(await importActual<typeof import("../../app/services/clean-copy-admin.server")>()),
+  createCleanCopyAdmin: () => cleanAdmin,
+}));
+vi.mock("../../app/models/scan-manifest.server", () => ({ getScanManifest: vi.fn() }));
 
 // gc-frda: app-removal reads (queries covered in tests/models/app-removal.server.test.ts).
 // No removal by default; the original implementations survive vi.resetAllMocks.
@@ -159,6 +173,7 @@ import {
   getTopFindingsInGroup,
 } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
+import { getScanManifest } from "../../app/models/scan-manifest.server";
 import {
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
@@ -231,6 +246,13 @@ const withSpan = (
   ...over,
 });
 
+// Every file the fixtures use, each with a scan-time md5.
+const MANIFEST_FILES = [
+  "layout/theme.liquid",
+  "config/settings_data.json",
+  ...Array.from({ length: 60 }, (_, i) => `snippets/s${String(i).padStart(2, "0")}.liquid`),
+];
+
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 
@@ -289,6 +311,26 @@ beforeEach(() => {
   });
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   vi.mocked(loadGuardHome).mockResolvedValue({ incidents: [], status: null });
+  // gc-tib.21 defaults: this scan is the theme's latest, MAIN is its theme and
+  // unchanged since, and every file has a scan-time md5.
+  dbMock.scan.findFirst.mockResolvedValue({ id: SCAN.id });
+  cleanAdmin.getMainTheme.mockResolvedValue({
+    ok: true,
+    value: {
+      id: SCAN.themeId,
+      name: "Dawn",
+      role: "MAIN",
+      processing: false,
+      processingFailed: false,
+      updatedAt: new Date("2026-03-20T10:04:00Z"),
+    },
+  });
+  vi.mocked(getScanManifest).mockResolvedValue({
+    scanId: SCAN.id,
+    themeId: SCAN.themeId,
+    createdAt: SCAN.completedAt,
+    entries: MANIFEST_FILES.map((f) => [f, "md5", 1, 0, null]),
+  } as never);
 });
 
 afterEach(() => {
@@ -358,9 +400,8 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
   });
 
   it("not on an older scan: no button, no findings read", async () => {
-    (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "scan-2", completedAt: new Date("2026-03-21T10:00:00Z"), themeName: "Dawn" },
-    ]);
+    // The service's own "latest successful scan of this theme" (gc-tib.21).
+    dbMock.scan.findFirst.mockResolvedValue({ id: "scan-2" });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
     const res = (await run()) as unknown as Entry;
     expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
@@ -390,6 +431,78 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
     (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, liveAppHooks: null });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
     expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
+  });
+});
+
+describe("gc-tib.21: no button the select page would refuse", () => {
+  const eligible = async () => ((await run()) as unknown as Entry).cleanCopy;
+  const main = (over: Record<string, unknown>) => ({
+    ok: true,
+    value: {
+      id: SCAN.themeId,
+      name: "Dawn",
+      role: "MAIN",
+      processing: false,
+      processingFailed: false,
+      updatedAt: new Date("2026-03-20T10:04:00Z"),
+      ...over,
+    },
+  });
+
+  beforeEach(() => {
+    mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
+  });
+
+  it("the theme was edited after the scan (theme editor save): no button", async () => {
+    cleanAdmin.getMainTheme.mockResolvedValue(
+      main({ updatedAt: new Date("2026-03-20T10:06:00Z") }),
+    );
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
+  it("the live theme is a different theme: no button", async () => {
+    cleanAdmin.getMainTheme.mockResolvedValue(main({ id: "gid://shopify/Theme/999" }));
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
+  it("no live theme: no button", async () => {
+    cleanAdmin.getMainTheme.mockResolvedValue({ ok: true, value: null });
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
+  it("a failed or throwing Admin read hides the button and never fails the page", async () => {
+    cleanAdmin.getMainTheme.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "x" });
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+    cleanAdmin.getMainTheme.mockRejectedValue(new Error("network"));
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
+  it("findings in a file the scan has no md5 for don't count; no manifest: no button", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      withSpan("a"),
+      withSpan("b", "GHOST_SCRIPT", { filename: "snippets/no-md5.liquid" }),
+    ]);
+    vi.mocked(getScanManifest).mockResolvedValue({
+      scanId: SCAN.id,
+      themeId: SCAN.themeId,
+      createdAt: SCAN.completedAt,
+      entries: [
+        ["layout/theme.liquid", "md5", 1, 0, null],
+        ["snippets/no-md5.liquid", "", 1, 0, null],
+      ],
+    } as never);
+    expect(await eligible()).toEqual({ eligible: true, count: 1 });
+    vi.mocked(getScanManifest).mockResolvedValue(null as never);
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
+  it("no Admin read off the flag or off Professional", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    await run();
+    vi.stubEnv("CLEAN_COPY_ENABLED", "false");
+    mockGetShopMetadata.mockResolvedValue(SHOP);
+    await run();
+    expect(cleanAdmin.getMainTheme).not.toHaveBeenCalled();
   });
 });
 

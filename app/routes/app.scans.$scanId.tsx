@@ -55,6 +55,7 @@ import type { RemovalSafety } from "../lib/finding-safety";
 import { FINDING_TYPE_LABELS } from "../lib/finding-type-labels";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
+import { logger } from "../lib/logger.server";
 import { skippedCategoryLabels } from "../lib/optional-scopes";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
@@ -75,7 +76,7 @@ import {
   type AdvisoryRisk,
   type MenuRisk,
 } from "../lib/security-risk";
-import { isScanStaleAfterThemeChange, staleResultsUpgradeAsk } from "../lib/stale-results";
+import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { GUARD_ALSO_SEEN_LEAD } from "../lib/storefront-guard-copy";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
@@ -114,7 +115,8 @@ import {
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
 import type { ShopIgnores } from "../models/ignored-finding.server";
-import { getCompletedScansForShop, getScanById } from "../models/scan.server";
+import { getScanManifest } from "../models/scan-manifest.server";
+import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -123,8 +125,8 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import { appLeftoverFindings, parseLiveAppHooks } from "../services/app-removal.server";
-import { MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
-import { findingBlockReason } from "../services/clean-copy.server";
+import { createCleanCopyAdmin, MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
+import { checkCleanCopyFreshness, findingBlockReason } from "../services/clean-copy.server";
 import {
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
@@ -1262,7 +1264,7 @@ async function loadRemovalContext(
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const { scanId } = params;
 
   if (!scanId) {
@@ -1663,34 +1665,59 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Exposed to the component so it knows whether to issue the useFetcher call.
   const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
-  // gc-tib: the Clean copy entry point. The findings read runs only with the
-  // flag on and on Professional, so every other shop pays nothing for it.
-  // gc-tib.10: the count uses the service's own rule (ignored, live-embed,
-  // disallowed-path and unknown-app findings don't count), and the button
-  // shows only on the latest successful scan, before the theme changed. The
-  // select page still runs the full check (live theme, file contents).
+  // gc-tib: the Clean copy entry point. The reads run only with the flag on,
+  // on Professional, for a successful scan with known embed status, so every
+  // other shop pays nothing for them.
+  // gc-tib.10 / gc-tib.21: the button shows only when the select page would
+  // offer what it counts: the service's own freshness check (latest scan of
+  // the theme, no publish since, MAIN unchanged since the scan: one Admin
+  // read), the service's own block rule, the select page's file cap, and a
+  // scan-time md5 for the file. Never throws: a failed read hides the button.
   let cleanCopy = { eligible: false, count: 0 };
-  if (isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL && isSuccessfulScan(scan.status)) {
-    const embedApps = parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null;
-    const themeChanged = isScanStaleAfterThemeChange({
-      autoRescan: false,
-      lastThemePublishAt: shop.lastThemePublishAt,
-      scan,
-    });
-    if (embedApps !== null && !themeChanged) {
-      const [latest] = await getCompletedScansForShop(shop.id, { limit: 1 });
-      if (latest?.id === scan.id) {
-        const removable = (await getFindingsForScan(scan.id)).filter(
+  const embedApps =
+    isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL && isSuccessfulScan(scan.status)
+      ? (parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null)
+      : null;
+  if (embedApps !== null) {
+    try {
+      const fresh = await checkCleanCopyFreshness({
+        shopId: shop.id,
+        lastThemePublishAt: shop.lastThemePublishAt,
+        scan: {
+          id: scan.id,
+          themeId: scan.themeId,
+          status: scan.status,
+          completedAt: scan.completedAt,
+        },
+        admin: createCleanCopyAdmin(admin),
+      });
+      if (fresh.ok) {
+        const [findings, manifest] = await Promise.all([
+          getFindingsForScan(scan.id),
+          getScanManifest(scan.id),
+        ]);
+        const removable = findings.filter(
           (f) => findingBlockReason(f, ignores, embedApps) === null,
         );
-        // The select page shows the first MAX_FILES_PER_REQUEST files (sorted);
-        // count only what it can offer (audit r4).
+        // The select page shows the first MAX_FILES_PER_REQUEST files (sorted),
+        // then refuses a file the scan has no md5 for (audit r4, gc-tib.21).
         const shownFiles = new Set(
           [...new Set(removable.map((f) => f.filename))].sort().slice(0, MAX_FILES_PER_REQUEST),
         );
-        const count = removable.filter((f) => shownFiles.has(f.filename)).length;
+        const withMd5 = new Set(
+          (manifest?.entries ?? []).filter((e) => Boolean(e[1])).map((e) => e[0]),
+        );
+        const count = removable.filter(
+          (f) => shownFiles.has(f.filename) && withMd5.has(f.filename),
+        ).length;
         cleanCopy = { eligible: count > 0, count };
       }
+    } catch (error) {
+      logger.warn("clean-copy entry check failed", {
+        shopId: shop.id,
+        scanId: scan.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
