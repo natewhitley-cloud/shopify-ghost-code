@@ -45,17 +45,13 @@ import { getScanManifest } from "../models/scan-manifest.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { parseLiveAppHooks } from "../services/app-removal.server";
-import {
-  createCleanCopyAdmin,
-  isAllowedFixPath,
-  MAX_FILES_PER_REQUEST,
-} from "../services/clean-copy-admin.server";
+import { createCleanCopyAdmin, MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
 import {
   checkCleanCopyFreshness,
+  findingBlockReason,
   MAX_SELECTED_FINDINGS,
   requestCleanCopy,
 } from "../services/clean-copy.server";
-import { isFindingIgnored } from "../services/finding-aggregation.server";
 import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -148,16 +144,12 @@ export const loader = async ({
 
   // Reasons known without reading a file, in the service's order.
   type Draft = { finding: (typeof findings)[number]; blocked: CandidateBlockReason | null };
-  const drafts: Draft[] = findings.map((finding) => {
-    let blocked: CandidateBlockReason | null = null;
-    if (finding.spanStart === null || finding.spanEnd === null || finding.spanSha256 === null) {
-      blocked = "NO_SPAN";
-    } else if (!isAllowedFixPath(finding.filename)) blocked = "PATH_NOT_ALLOWED";
-    else if (isFindingIgnored(finding, ignores)) blocked = "IGNORED";
-    else if (!finding.appName) blocked = "APP_UNKNOWN";
-    else if (embedApps.has(finding.appName)) blocked = "APP_HAS_LIVE_EMBED";
-    return { finding, blocked };
-  });
+  // The service's own rule (gc-tib.10). `findings` are fixable types only, so
+  // NOT_FIXABLE_TYPE can't come back.
+  const drafts: Draft[] = findings.map((finding) => ({
+    finding,
+    blocked: findingBlockReason(finding, ignores, embedApps) as CandidateBlockReason | null,
+  }));
 
   // Read the affected MAIN files once (at most MAX_FILES_PER_REQUEST).
   const filenames = [...new Set(drafts.filter((d) => !d.blocked).map((d) => d.finding.filename))]

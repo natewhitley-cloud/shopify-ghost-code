@@ -106,6 +106,43 @@ export type FindingRefusal =
   | "APP_NOT_CONFIRMED"
   | "MANIFEST_MD5_MISSING";
 
+/** Why a finding can't go in a clean copy, known without reading a file. */
+export type FindingBlockReason =
+  | "NOT_FIXABLE_TYPE"
+  | "NO_SPAN"
+  | "PATH_NOT_ALLOWED"
+  | "IGNORED"
+  | "APP_UNKNOWN"
+  | "APP_HAS_LIVE_EMBED";
+
+/**
+ * The one rule chain for "can this finding be removed", shared by preflight,
+ * the select page and the scan page's count (gc-tib.10). Null = removable so
+ * far (preflight still checks the app confirmation and the manifest).
+ */
+export function findingBlockReason(
+  f: {
+    findingType: string;
+    filename: string;
+    appName: string | null;
+    spanStart: number | null;
+    spanEnd: number | null;
+    spanSha256: string | null;
+  } & Parameters<typeof isFindingIgnored>[0],
+  ignores: Parameters<typeof isFindingIgnored>[1],
+  embedApps: ReadonlySet<string>,
+): FindingBlockReason | null {
+  if (!(FIXABLE_FINDING_TYPES as readonly string[]).includes(f.findingType)) {
+    return "NOT_FIXABLE_TYPE";
+  }
+  if (f.spanStart === null || f.spanEnd === null || f.spanSha256 === null) return "NO_SPAN";
+  if (!isAllowedFixPath(f.filename)) return "PATH_NOT_ALLOWED";
+  if (isFindingIgnored(f, ignores)) return "IGNORED";
+  if (!f.appName) return "APP_UNKNOWN";
+  if (embedApps.has(f.appName)) return "APP_HAS_LIVE_EMBED";
+  return null;
+}
+
 export type PreflightResult =
   | {
       ok: true;
@@ -256,7 +293,6 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
   ]);
   const byId = new Map(findings.map((f) => [f.id, f]));
   const confirmed = new Set(input.confirmedApps);
-  const fixable = new Set<string>(FIXABLE_FINDING_TYPES);
 
   const refusals: Array<{ findingId: string; reason: FindingRefusal }> = [];
   const items: FixItemInput[] = [];
@@ -268,14 +304,12 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
       continue;
     }
     const preMd5 = md5ByPath.get(f.filename) ?? null;
-    if (!fixable.has(f.findingType)) refuse("NOT_FIXABLE_TYPE");
-    else if (f.spanStart === null || f.spanEnd === null || f.spanSha256 === null) refuse("NO_SPAN");
-    else if (!isAllowedFixPath(f.filename)) refuse("PATH_NOT_ALLOWED");
-    else if (isFindingIgnored(f, ignores)) refuse("IGNORED");
-    else if (!f.appName) refuse("APP_UNKNOWN");
-    else if (embedApps.has(f.appName)) refuse("APP_HAS_LIVE_EMBED");
-    else if (!confirmed.has(f.appName)) refuse("APP_NOT_CONFIRMED");
+    const blocked = findingBlockReason(f, ignores, embedApps);
+    if (blocked) refuse(blocked);
+    else if (!f.appName || !confirmed.has(f.appName)) refuse("APP_NOT_CONFIRMED");
     else if (!preMd5) refuse("MANIFEST_MD5_MISSING");
+    // Never true here (findingBlockReason refused it); narrows the span types.
+    else if (f.spanStart === null || f.spanEnd === null || f.spanSha256 === null) refuse("NO_SPAN");
     else {
       items.push({
         findingId: f.id,

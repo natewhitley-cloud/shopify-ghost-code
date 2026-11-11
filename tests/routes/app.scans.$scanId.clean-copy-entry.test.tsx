@@ -156,6 +156,7 @@ import {
 } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
+  getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
   getLatestSuccessfulScanNonMaliciousCount,
   getScanById,
@@ -203,14 +204,27 @@ const SCAN = {
   cappedCategories: [] as string[],
   unreachableCategories: [] as string[],
   skippedFiles: [] as string[],
+  // gc-tib.10: the live-embed status the count needs ("Live App" still has an embed on).
+  liveAppHooks: { embedApps: ["Live App"], scriptTagApps: null } as unknown,
 };
 
-const withSpan = (id: string, findingType = "GHOST_SCRIPT") => ({
+const withSpan = (
+  id: string,
+  findingType = "GHOST_SCRIPT",
+  over: Record<string, unknown> = {},
+) => ({
   id,
   findingType,
+  filename: "layout/theme.liquid",
+  appName: "Ghost App",
+  lineNumber: 3,
+  severity: "MEDIUM",
+  createdAt: new Date("2026-03-20T10:05:00Z"),
+  codeSnippet: "<script src='x'></script>",
   spanStart: 10,
   spanEnd: 60,
   spanSha256: "hash",
+  ...over,
 });
 
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
@@ -239,6 +253,10 @@ beforeEach(() => {
   (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue(SCAN);
   (claimPromptSlot as ReturnType<typeof vi.fn>).mockResolvedValue(true);
   (getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  // This scan is the shop's latest successful scan unless a test says otherwise.
+  (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: "scan-1", completedAt: SCAN.completedAt, themeName: "Dawn" },
+  ]);
   (getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>).mockResolvedValue(10);
   (getFindingSummary as ReturnType<typeof vi.fn>).mockResolvedValue({
     total: 3,
@@ -315,6 +333,49 @@ describe("scan page Clean copy entry point (loader)", () => {
   it("not eligible for a scan with no findings", async () => {
     const res = (await run()) as unknown as Entry;
     expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+  });
+});
+
+describe("gc-tib.10: the count matches what the select page can offer", () => {
+  it("ignored, live-embed, disallowed-path and unknown-app findings don't count", async () => {
+    (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fingerprints: new Set(),
+      appNames: new Set(["Ignored App"]),
+    });
+    mockGetFindingsForScan.mockResolvedValue([
+      withSpan("ok"),
+      withSpan("ignored", "GHOST_SCRIPT", { appName: "Ignored App" }),
+      withSpan("embed", "GHOST_SCRIPT", { appName: "Live App" }),
+      withSpan("path", "GHOST_SCRIPT", { filename: "config/settings_data.json" }),
+      withSpan("unknown", "GHOST_SCRIPT", { appName: null }),
+    ]);
+    const res = (await run()) as unknown as Entry;
+    expect(res.cleanCopy).toEqual({ eligible: true, count: 1 });
+  });
+
+  it("not on an older scan: no button, no findings read", async () => {
+    (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "scan-2", completedAt: new Date("2026-03-21T10:00:00Z"), themeName: "Dawn" },
+    ]);
+    mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
+    const res = (await run()) as unknown as Entry;
+    expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+    expect(unfilteredFindingReads()).toBe(0);
+  });
+
+  it("not after the theme was published since the scan", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      lastThemePublishAt: new Date("2026-03-21T00:00:00Z"),
+    });
+    mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
+    expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
+  });
+
+  it("not when the scan's live-embed status is unknown", async () => {
+    (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, liveAppHooks: null });
+    mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
+    expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
   });
 });
 

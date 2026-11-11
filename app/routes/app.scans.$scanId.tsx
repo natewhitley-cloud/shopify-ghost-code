@@ -64,7 +64,6 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
-import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
@@ -75,7 +74,7 @@ import {
   type AdvisoryRisk,
   type MenuRisk,
 } from "../lib/security-risk";
-import { staleResultsUpgradeAsk } from "../lib/stale-results";
+import { isScanStaleAfterThemeChange, staleResultsUpgradeAsk } from "../lib/stale-results";
 import { GUARD_ALSO_SEEN_LEAD } from "../lib/storefront-guard-copy";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
@@ -113,7 +112,7 @@ import {
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
 import type { ShopIgnores } from "../models/ignored-finding.server";
-import { getScanById } from "../models/scan.server";
+import { getCompletedScansForShop, getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -121,7 +120,8 @@ import {
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
-import { appLeftoverFindings } from "../services/app-removal.server";
+import { appLeftoverFindings, parseLiveAppHooks } from "../services/app-removal.server";
+import { findingBlockReason } from "../services/clean-copy.server";
 import {
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
@@ -1662,13 +1662,27 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // gc-tib: the Clean copy entry point. The findings read runs only with the
   // flag on and on Professional, so every other shop pays nothing for it.
+  // gc-tib.10: the count uses the service's own rule (ignored, live-embed,
+  // disallowed-path and unknown-app findings don't count), and the button
+  // shows only on the latest successful scan, before the theme changed. The
+  // select page still runs the full check (live theme, file contents).
   let cleanCopy = { eligible: false, count: 0 };
-  if (isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL) {
-    const fixable = new Set<string>(FIXABLE_FINDING_TYPES);
-    const count = (await getFindingsForScan(scan.id)).filter(
-      (f) => fixable.has(f.findingType) && f.spanStart !== null && f.spanEnd !== null,
-    ).length;
-    cleanCopy = { eligible: count > 0, count };
+  if (isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL && isSuccessfulScan(scan.status)) {
+    const embedApps = parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null;
+    const themeChanged = isScanStaleAfterThemeChange({
+      autoRescan: false,
+      lastThemePublishAt: shop.lastThemePublishAt,
+      scan,
+    });
+    if (embedApps !== null && !themeChanged) {
+      const [latest] = await getCompletedScansForShop(shop.id, { limit: 1 });
+      if (latest?.id === scan.id) {
+        const count = (await getFindingsForScan(scan.id)).filter(
+          (f) => findingBlockReason(f, ignores, embedApps) === null,
+        ).length;
+        cleanCopy = { eligible: count > 0, count };
+      }
+    }
   }
 
   return {
