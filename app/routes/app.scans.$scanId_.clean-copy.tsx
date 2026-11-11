@@ -53,7 +53,7 @@ import { parseLiveAppHooks } from "../services/app-removal.server";
 import { createCleanCopyAdmin, MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
 import {
   checkCleanCopyFreshness,
-  findingBlockReason,
+  offerableCleanCopyFiles,
   MAX_SELECTED_FINDINGS,
   requestCleanCopy,
 } from "../services/clean-copy.server";
@@ -150,28 +150,22 @@ export const loader = async ({
   ]);
   const findings = allFindings.filter((f) => fixable.has(f.findingType));
 
-  // Reasons known without reading a file, in the service's order.
+  // Reasons known without reading a file, and the files shown: the service's
+  // own steps, shared with the scan page's count (gc-tib.10, gc-tib.21). The
+  // findings here are fixable types only, so NOT_FIXABLE_TYPE can't come back.
+  const offer = offerableCleanCopyFiles(findings, ignores, embedApps);
   type Draft = { finding: (typeof findings)[number]; blocked: CandidateBlockReason | null };
-  // The service's own rule (gc-tib.10). `findings` are fixable types only, so
-  // NOT_FIXABLE_TYPE can't come back.
-  const drafts: Draft[] = findings.map((finding) => {
-    const reason = findingBlockReason(finding, ignores, embedApps);
-    if (reason !== null && !(CANDIDATE_BLOCK_REASONS as readonly string[]).includes(reason)) {
-      throw new Error(`clean copy: no page copy for block reason ${reason}`);
+  const drafts: Draft[] = offer.drafts.map(({ finding, blocked }) => {
+    if (blocked !== null && !(CANDIDATE_BLOCK_REASONS as readonly string[]).includes(blocked)) {
+      throw new Error(`clean copy: no page copy for block reason ${blocked}`);
     }
-    return { finding, blocked: reason as CandidateBlockReason | null };
+    return { finding, blocked: blocked as CandidateBlockReason | null };
   });
 
   // Read the affected MAIN files once (at most MAX_FILES_PER_REQUEST).
-  const filenames = [...new Set(drafts.filter((d) => !d.blocked).map((d) => d.finding.filename))]
-    .sort()
-    .slice(0, MAX_FILES_PER_REQUEST);
+  const filenames = offer.shownFiles;
   const shown = new Set(filenames);
-  const omittedFiles = new Set(
-    drafts
-      .filter((d) => !d.blocked && !shown.has(d.finding.filename))
-      .map((d) => d.finding.filename),
-  ).size;
+  const omittedFiles = offer.omittedFiles;
 
   const contentByFile = new Map<string, string | null>();
   if (filenames.length > 0) {

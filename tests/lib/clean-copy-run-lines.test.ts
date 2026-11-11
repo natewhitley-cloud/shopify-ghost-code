@@ -24,6 +24,7 @@ const run = (over: Partial<RecentCleanCopyRun> = {}): RecentCleanCopyRun => ({
   copyThemeId: "gid://shopify/OnlineStoreTheme/2",
   copyThemeName: "Dawn - clean copy ab12",
   copyGoneAt: null,
+  completedAt: null,
   updatedAt: new Date(),
   ...over,
 });
@@ -226,6 +227,20 @@ describe("gc-e28n: polish", () => {
     expect(line(ago(FAILED_RUN_BANNER_MS - 1)).tone).toBe("warning");
     expect(line(ago(FAILED_RUN_BANNER_MS)).tone).toBe("info");
     expect(line(ago(FAILED_RUN_BANNER_MS)).text).toBe("Your last clean copy didn't finish.");
+  });
+
+  it("the clock runs from completedAt: a later write (copyGoneAt) doesn't restart it", () => {
+    const [line] = cleanCopyRunLines(
+      [
+        run({
+          status: "failed",
+          completedAt: ago(FAILED_RUN_BANNER_MS + 1),
+          updatedAt: ago(1000),
+        }),
+      ],
+      now,
+    );
+    expect(line.tone).toBe("info");
   });
 
   it("a don't-publish warning never goes quiet with age", () => {

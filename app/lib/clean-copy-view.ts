@@ -510,7 +510,9 @@ export type RecentCleanCopyRun = {
   copyThemeId: string | null;
   copyThemeName: string | null;
   copyGoneAt: Date | null;
-  /** When the run last changed (a failed run's banner turns quiet after a while). */
+  /** When the run finished (null for a stale run read as failed). */
+  completedAt: Date | null;
+  /** When the run last changed: the fallback for a missing completedAt. */
   updatedAt: Date;
 };
 
@@ -577,7 +579,9 @@ function lastRunLine(run: RecentCleanCopyRun, now: Date): CleanCopyRunLine {
   }
   if (run.status === "failed") {
     // A warning until the merchant has had time to read it, then quiet (gc-e28n).
-    const recent = now.getTime() - run.updatedAt.getTime() < FAILED_RUN_BANNER_MS;
+    // From when it failed: later writes (e.g. copyGoneAt) bump updatedAt (audit).
+    const failedAt = run.completedAt ?? run.updatedAt;
+    const recent = now.getTime() - failedAt.getTime() < FAILED_RUN_BANNER_MS;
     return line(recent ? "warning" : "info", "Your last clean copy didn't finish.");
   }
   return line("info", "See how your last clean copy went.");

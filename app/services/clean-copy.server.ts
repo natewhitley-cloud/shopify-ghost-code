@@ -143,6 +143,38 @@ export function findingBlockReason(
   return null;
 }
 
+type BlockableFinding = Parameters<typeof findingBlockReason>[0];
+
+/**
+ * What the select page offers before it reads any file, shared with the scan
+ * page's count (gc-tib.21 audit): each finding's block reason, then the first
+ * MAX_FILES_PER_REQUEST files (sorted) that hold a removable finding, and how
+ * many more files were left out. The select page then checks file contents;
+ * the scan page can only drop files with no scan-time md5.
+ */
+export function offerableCleanCopyFiles<F extends BlockableFinding>(
+  findings: readonly F[],
+  ignores: Parameters<typeof findingBlockReason>[1],
+  embedApps: ReadonlySet<string>,
+): {
+  drafts: Array<{ finding: F; blocked: FindingBlockReason | null }>;
+  shownFiles: string[];
+  omittedFiles: number;
+} {
+  const drafts = findings.map((finding) => ({
+    finding,
+    blocked: findingBlockReason(finding, ignores, embedApps),
+  }));
+  const files = [
+    ...new Set(drafts.filter((d) => !d.blocked).map((d) => d.finding.filename)),
+  ].sort();
+  return {
+    drafts,
+    shownFiles: files.slice(0, MAX_FILES_PER_REQUEST),
+    omittedFiles: Math.max(0, files.length - MAX_FILES_PER_REQUEST),
+  };
+}
+
 export type PreflightResult =
   | {
       ok: true;

@@ -15,15 +15,27 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 const url = process.env.GC_PG_TEST_URL;
 
-function safeTestUrl(raw: string | undefined): string | null {
+/**
+ * The URL, with a connection limit, only if it is a local gc_lock_test*
+ * database. Any query string is refused: Prisma reads `?host=` as the real
+ * host, so a hostname check alone could be bypassed (audit r1).
+ */
+export function safeTestUrl(raw: string | undefined): string | null {
   if (!raw) return null;
   const parsed = new URL(raw);
-  const local = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
   const dbName = parsed.pathname.replace(/^\//, "");
-  if (!local || !dbName.startsWith("gc_lock_test")) {
-    throw new Error("GC_PG_TEST_URL must be a local gc_lock_test* database");
+  if (
+    !["postgresql:", "postgres:"].includes(parsed.protocol) ||
+    !local ||
+    parsed.search !== "" ||
+    !/^gc_lock_test\w*$/.test(dbName)
+  ) {
+    throw new Error("GC_PG_TEST_URL must be a local gc_lock_test* database with no query string");
   }
-  return raw;
+  // Enough connections for every concurrent create to hold its own transaction.
+  parsed.searchParams.set("connection_limit", "20");
+  return parsed.toString();
 }
 
 const holder = vi.hoisted(() => ({ client: null as unknown }));
@@ -33,7 +45,11 @@ vi.mock("../../app/db.server", () => ({
   },
 }));
 
-import { createFixRun, type FixItemInput } from "../../app/models/fix-run.server";
+import {
+  ACTIVE_FIX_RUN_STATUSES,
+  createFixRun,
+  type FixItemInput,
+} from "../../app/models/fix-run.server";
 
 const testUrl = safeTestUrl(url);
 
@@ -54,18 +70,17 @@ const input = (shopId: string) => ({
   items: [item("f1")],
 });
 
-describe.skipIf(!testUrl)("createFixRun one-active-run lock (real Postgres)", () => {
+// retry: 0 so an intermittent race can't pass on the config's retry.
+describe.skipIf(!testUrl)("createFixRun one-active-run lock (real Postgres)", { retry: 0 }, () => {
   let prisma: PrismaClient;
   const shops: string[] = [];
 
   beforeAll(async () => {
-    // Enough connections for every concurrent create to hold its own transaction.
-    prisma = new PrismaClient({
-      datasources: { db: { url: `${testUrl}?connection_limit=20` } },
-    });
+    prisma = new PrismaClient({ datasources: { db: { url: testUrl as string } } });
     holder.client = prisma;
     for (const domain of ["lock-a.myshopify.com", "lock-b.myshopify.com"]) {
-      const shop = await prisma.shop.create({ data: { domain } });
+      // Upsert: a re-run against the same database must not hit the unique domain.
+      const shop = await prisma.shop.upsert({ where: { domain }, update: {}, create: { domain } });
       shops.push(shop.id);
     }
   });
@@ -81,7 +96,7 @@ describe.skipIf(!testUrl)("createFixRun one-active-run lock (real Postgres)", ()
 
   const activeRuns = (shopId: string) =>
     prisma.fixRun.count({
-      where: { shopId, status: { in: ["pending", "duplicating", "writing"] } },
+      where: { shopId, status: { in: [...ACTIVE_FIX_RUN_STATUSES] } },
     });
 
   it("10 concurrent creates for one shop: exactly one run, the rest RUN_ACTIVE naming it", async () => {
@@ -114,5 +129,28 @@ describe.skipIf(!testUrl)("createFixRun one-active-run lock (real Postgres)", ()
       await Promise.all(Array.from({ length: 6 }, () => createFixRun(input(shops[0]))));
       expect(await activeRuns(shops[0])).toBe(1);
     }
+  });
+});
+
+describe("safeTestUrl (the guard itself, always runs)", () => {
+  it("accepts a local gc_lock_test database and adds the connection limit", () => {
+    expect(safeTestUrl("postgresql://postgres@127.0.0.1:54329/gc_lock_test")).toBe(
+      "postgresql://postgres@127.0.0.1:54329/gc_lock_test?connection_limit=20",
+    );
+    expect(safeTestUrl("postgresql://postgres@[::1]:54329/gc_lock_test")).toContain("[::1]");
+    expect(safeTestUrl(undefined)).toBeNull();
+  });
+
+  it.each([
+    "postgresql://u:p@localhost/gc_lock_test?host=db.remote.example",
+    "postgresql://u:p@localhost/gc_lock_test?hostaddr=10.0.0.1",
+    "postgresql://u:p@localhost/gc_lock_test?sslmode=disable",
+    "postgresql://u:p@db.remote.example/gc_lock_test",
+    "postgresql://u:p@localhost.evil.com/gc_lock_test",
+    "postgresql://u:p@localhost/ghost_code",
+    "postgresql://u:p@localhost/gc_lock_test-prod",
+    "mysql://u:p@localhost/gc_lock_test",
+  ])("refuses %s", (url) => {
+    expect(() => safeTestUrl(url)).toThrow(/local gc_lock_test/);
   });
 });

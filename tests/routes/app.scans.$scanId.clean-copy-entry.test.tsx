@@ -496,6 +496,47 @@ describe("gc-tib.21: no button the select page would refuse", () => {
     expect(await eligible()).toEqual({ eligible: false, count: 0 });
   });
 
+  it("no Admin read for an unknown embed status or an unsuccessful scan", async () => {
+    (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, liveAppHooks: null });
+    await run();
+    for (const status of ["FAILED", "IN_PROGRESS", "PENDING"]) {
+      (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, status });
+      await run();
+    }
+    expect(cleanAdmin.getMainTheme).not.toHaveBeenCalled();
+  });
+
+  it("the 50-file cap comes before the md5 check, as on the select page", async () => {
+    // 51 files; the first (sorted) has no md5. The select page shows files
+    // 1-50 and refuses file 1, so the count is 49, never 50.
+    const files = Array.from(
+      { length: 51 },
+      (_, i) => `snippets/s${String(i).padStart(2, "0")}.liquid`,
+    );
+    mockGetFindingsForScan.mockResolvedValue(
+      files.map((filename, i) => withSpan(`f${i}`, "GHOST_SCRIPT", { filename })),
+    );
+    vi.mocked(getScanManifest).mockResolvedValue({
+      scanId: SCAN.id,
+      themeId: SCAN.themeId,
+      createdAt: SCAN.completedAt,
+      entries: files.map((f, i) => [f, i === 0 ? "" : "md5", 1, 0, null]),
+    } as never);
+    expect(await eligible()).toEqual({ eligible: true, count: 49 });
+  });
+
+  it("a failed findings or manifest read hides the button and never fails the page", async () => {
+    // Only the unfiltered read (the button's); the page's filtered reads still work.
+    mockGetFindingsForScan.mockImplementation(async (_id: string, filter?: unknown) => {
+      if (filter === undefined) throw new Error("db down");
+      return [];
+    });
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+    mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
+    vi.mocked(getScanManifest).mockRejectedValueOnce(new Error("db down"));
+    expect(await eligible()).toEqual({ eligible: false, count: 0 });
+  });
+
   it("no Admin read off the flag or off Professional", async () => {
     mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
     await run();

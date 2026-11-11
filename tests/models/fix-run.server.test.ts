@@ -357,6 +357,7 @@ describe("gc-tib.20 r1: query shape, never-throw lines, copy gone", () => {
         copyThemeId: true,
         copyThemeName: true,
         copyGoneAt: true,
+        completedAt: true,
         updatedAt: true,
       },
     });

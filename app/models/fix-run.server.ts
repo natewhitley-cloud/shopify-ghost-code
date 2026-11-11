@@ -168,6 +168,7 @@ export async function getRecentFixRunsForShop(
       copyThemeId: true,
       copyThemeName: true,
       copyGoneAt: true,
+      completedAt: true,
       updatedAt: true,
     },
   });

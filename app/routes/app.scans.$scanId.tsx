@@ -89,7 +89,7 @@ import {
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
-import { useScanPolling } from "../lib/use-scan-polling";
+import { isScanRunning, useScanPolling } from "../lib/use-scan-polling";
 import {
   parseWalkCoverage,
   walkCoverageBelowCaps,
@@ -125,8 +125,8 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import { appLeftoverFindings, parseLiveAppHooks } from "../services/app-removal.server";
-import { createCleanCopyAdmin, MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
-import { checkCleanCopyFreshness, findingBlockReason } from "../services/clean-copy.server";
+import { createCleanCopyAdmin } from "../services/clean-copy-admin.server";
+import { checkCleanCopyFreshness, offerableCleanCopyFiles } from "../services/clean-copy.server";
 import {
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
@@ -1696,19 +1696,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           getFindingsForScan(scan.id),
           getScanManifest(scan.id),
         ]);
-        const removable = findings.filter(
-          (f) => findingBlockReason(f, ignores, embedApps) === null,
-        );
-        // The select page shows the first MAX_FILES_PER_REQUEST files (sorted),
-        // then refuses a file the scan has no md5 for (audit r4, gc-tib.21).
-        const shownFiles = new Set(
-          [...new Set(removable.map((f) => f.filename))].sort().slice(0, MAX_FILES_PER_REQUEST),
-        );
+        // The select page's own steps (block rule, sorted 50-file cap), then
+        // its md5 check as far as the scan page can tell: a file with no
+        // scan-time md5 is refused there (gc-tib.21).
+        const offer = offerableCleanCopyFiles(findings, ignores, embedApps);
+        const shownFiles = new Set(offer.shownFiles);
         const withMd5 = new Set(
           (manifest?.entries ?? []).filter((e) => Boolean(e[1])).map((e) => e[0]),
         );
-        const count = removable.filter(
-          (f) => shownFiles.has(f.filename) && withMd5.has(f.filename),
+        const count = offer.drafts.filter(
+          (d) =>
+            d.blocked === null &&
+            shownFiles.has(d.finding.filename) &&
+            withMd5.has(d.finding.filename),
         ).length;
         cleanCopy = { eligible: count > 0, count };
       }
@@ -1725,9 +1725,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
   // Never throws: a failed read hides the lines, not the page (r1).
   // Not while this scan runs: the page polls every few seconds (gc-e28n).
-  const scanRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
   const cleanCopyRuns =
-    isCleanCopyEnabled() && !scanRunning ? await loadCleanCopyRunLines(shop.id) : [];
+    isCleanCopyEnabled() && !isScanRunning(scan.status) ? await loadCleanCopyRunLines(shop.id) : [];
 
   return {
     cleanCopy,
