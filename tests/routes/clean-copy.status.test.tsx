@@ -504,11 +504,31 @@ describe("audit r2 gc-tib.13 / gc-tib.15: banners follow the live theme", () => 
     expect(body).toContain("Delete it from Online Store > Themes before you try again.");
   });
 
-  it("failed run, live theme unchanged or unreadable: original copy", async () => {
+  it("failed run, live theme read as unchanged: original copy", async () => {
     mockRun.mockResolvedValue(failedRun());
     expect((await run()).summary.body).toContain(UNCHANGED);
+  });
+
+  it("r3: live theme unreadable: failed and do-not-publish banners make no live-theme claim", async () => {
     getMainTheme.mockRejectedValue(new Error("boom"));
+    for (const over of [{}, { doNotPublish: true }]) {
+      mockRun.mockResolvedValue(failedRun(over));
+      const { body } = (await run()).summary;
+      expect(body).not.toContain(UNCHANGED);
+      expect(body).toContain("Delete");
+    }
+    mockRun.mockResolvedValue(failedRun({ copyThemeId: null }));
     expect((await run()).summary.body).toContain(UNCHANGED);
+  });
+
+  it("r3: COPY_MISSING: no 'delete the copy', no copy name, no live-theme read", async () => {
+    mockRun.mockResolvedValue(failedRun({ failureReason: "COPY_MISSING" }));
+    const res = await run();
+    expect(res.summary.body).not.toContain("Delete");
+    expect(res.summary.body).toContain(UNCHANGED);
+    expect(res.run.copyThemeName).toBeNull();
+    expect(res.run.hasCopy).toBe(false);
+    expect(getMainTheme).not.toHaveBeenCalled();
   });
 
   it("a stale run with a published copy is checked too", async () => {

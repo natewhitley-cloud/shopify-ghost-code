@@ -25,6 +25,7 @@ const themes = [
   { id: 2, name: "Copy", role: "unpublished", processing: false },
   { id: 3, name: "Busy", role: "unpublished", processing: true },
   { id: 4, name: "Dev", role: "development", processing: false },
+  { id: 5, name: "NoFlag", role: "unpublished" },
 ];
 const file = (filename = "layout/theme.liquid") => ({ filename, content: "x" });
 const pushes = () =>
@@ -51,7 +52,8 @@ const upsert = (themeId: string, files = [file()], sourceThemeId = `${GID}1`) =>
 describe("demo CLI adapter write guard", () => {
   it("refuses the source theme, MAIN, processing, other roles and missing themes", async () => {
     expect(await upsert(`${GID}2`, [file()], `${GID}2`)).toMatchObject({ error: "WRITE_REFUSED" });
-    for (const id of [1, 3, 4, 99]) {
+    // 5: CLI output without a processing flag fails closed (r3).
+    for (const id of [1, 3, 4, 5, 99]) {
       expect(await upsert(`${GID}${id}`)).toMatchObject({ ok: false, error: "WRITE_REFUSED" });
     }
     expect(pushes()).toHaveLength(0);
@@ -66,6 +68,10 @@ describe("demo CLI adapter write guard", () => {
     for (const bad of ["config/settings_data.json", "layout/../config/x.liquid"]) {
       expect(isAllowedFixPath(bad)).toBe(false);
       expect(await upsert(`${GID}2`, [file(bad)])).toMatchObject({ error: "WRITE_REFUSED" });
+    }
+    // The CLI reads --only as a glob (r3).
+    for (const glob of ["snippets/*.liquid", "snippets/a?.liquid", "snippets/{a,b}.liquid"]) {
+      expect(await upsert(`${GID}2`, [file(glob)])).toMatchObject({ error: "WRITE_REFUSED" });
     }
     expect(pushes()).toHaveLength(0);
   });

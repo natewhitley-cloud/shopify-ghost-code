@@ -127,11 +127,16 @@ export function createCliCleanCopyAdmin(
       if (themeId === sourceThemeId) return fail("WRITE_REFUSED", "target is the source theme");
       if (files.length === 0 || files.length > MAX_FILES_PER_REQUEST)
         return fail("WRITE_REFUSED", "file count");
-      if (files.some((f) => !isAllowedFixPath(f.filename)))
+      // The CLI reads --only as a glob: refuse glob characters outright.
+      if (files.some((f) => !isAllowedFixPath(f.filename) || /[*?[\]{}!]/.test(f.filename)))
         return fail("WRITE_REFUSED", "path not allowed");
       const target = await getTheme(themeId);
       if (!target.ok || !target.value) return fail("WRITE_REFUSED", "target theme not found");
-      if (target.value.role !== "UNPUBLISHED" || target.value.processing) {
+      if (
+        target.value.id !== themeId ||
+        target.value.role !== "UNPUBLISHED" ||
+        target.value.processing !== false
+      ) {
         return fail("WRITE_REFUSED", `target role is ${target.value.role}`);
       }
       // ---- end guard ----

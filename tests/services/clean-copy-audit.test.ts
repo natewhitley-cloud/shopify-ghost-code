@@ -420,7 +420,12 @@ describe("r2 gc-tib.14: only a MAIN copy counts as published", () => {
     await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
       reason: "COPY_MISSING",
     });
-    expect(runOf(runId)).toMatchObject({ status: "failed", failureReason: "COPY_MISSING" });
+    // The copy is gone: no do-not-publish for a theme that no longer exists (r3).
+    expect(runOf(runId)).toMatchObject({
+      status: "failed",
+      failureReason: "COPY_MISSING",
+      doNotPublish: false,
+    });
     expect(itemsOf(runId)["f-other"]).toMatchObject({
       status: "failed",
       reasonCode: "COPY_MISSING",
@@ -463,7 +468,7 @@ describe("r2 gc-tib.14: only a MAIN copy counts as published", () => {
       String(v.id) === copyId && shop.count("CleanCopyUpsert") === 1
         ? new Error("THROTTLED")
         : undefined;
-    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.not.toHaveProperty("reason");
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toThrow(/read copy role/);
     expect(runOf(runId).status).toBe("writing");
   });
 });
@@ -505,5 +510,18 @@ describe("r2 gc-tib.16: a failure after a landed write flags doNotPublish", () =
     });
     expect(shop.count("CleanCopyUpsert")).toBe(0);
     expect(runOf(runId)).toMatchObject({ failureReason: "ACCESS_DENIED", doNotPublish: false });
+  });
+});
+
+describe("r3: a refused upsert wrote nothing, so no do-not-publish", () => {
+  it("copy moved off UNPUBLISHED before the write: WRITE_REFUSED, doNotPublish false", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    shop.themes.get(copyId)!.role = "DEVELOPMENT";
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "WRITE_REFUSED",
+    });
+    expect(shop.count("CleanCopyUpsert")).toBe(0);
+    expect(runOf(runId)).toMatchObject({ failureReason: "WRITE_REFUSED", doNotPublish: false });
   });
 });

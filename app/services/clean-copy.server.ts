@@ -357,17 +357,24 @@ async function failPendingItems(runId: string, reason: string): Promise<void> {
   });
 }
 
-async function failRunQuietly(runId: string, reason: string): Promise<void> {
+/**
+ * `nothingWritten`: the caller knows this attempt sent no write (the adapter
+ * guard refused the upsert), or the copy is gone, so do-not-publish would be a
+ * false claim (audit r3).
+ */
+type FailOpts = { nothingWritten?: boolean };
+
+async function failRunQuietly(runId: string, reason: string, opts: FailOpts = {}): Promise<void> {
   await failPendingItems(runId, reason);
   await markFixRunFailed(runId, reason);
   // A write may have landed unverified before this failure, e.g. ACCESS_DENIED
   // on the post-read or a mixed-userErrors upsert (audit M-d, r2 gc-tib.16).
-  await markDoNotPublishIfWritten(runId);
+  if (!opts.nothingWritten && reason !== "COPY_MISSING") await markDoNotPublishIfWritten(runId);
 }
 
 /** Mark the run failed (if still active) and stop. */
-async function failRun(runId: string, reason: string): Promise<never> {
-  await failRunQuietly(runId, reason);
+async function failRun(runId: string, reason: string, opts: FailOpts = {}): Promise<never> {
+  await failRunQuietly(runId, reason, opts);
   throw new CleanCopyFailure(reason);
 }
 
@@ -658,15 +665,16 @@ export async function writeCleanCopy(
   // (audit sec 7): never write for a run that is no longer active.
   if (!(await isFixRunActive(runId))) return { skipped: true };
 
-  const up = await unwrap(
-    runId,
-    await admin.upsertFiles({
-      themeId: copyThemeId,
-      sourceThemeId: run.sourceThemeId,
-      files: writes.map((w) => ({ filename: w.filename, content: w.content })),
-    }),
-    "upsert",
-  );
+  const upRes = await admin.upsertFiles({
+    themeId: copyThemeId,
+    sourceThemeId: run.sourceThemeId,
+    files: writes.map((w) => ({ filename: w.filename, content: w.content })),
+  });
+  // The guard refused before sending anything: this attempt wrote nothing.
+  if (!upRes.ok && upRes.error === "WRITE_REFUSED") {
+    return failRun(runId, "WRITE_REFUSED", { nothingWritten: true });
+  }
+  const up = await unwrap(runId, upRes, "upsert");
   const userErrors = up.ok ? up.value.userErrors : [{ filename: null, code: "UNKNOWN" }];
   if (userErrors.length > 0) {
     logger.warn("clean-copy upsert userErrors", {

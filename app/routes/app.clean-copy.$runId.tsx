@@ -82,7 +82,8 @@ export const loader = async ({
   // An active run nobody has touched for the stale threshold was lost: show it
   // as stopped (the next request's sweep fails it for real, audit M-j).
   const stale = isStaleActiveRun(run);
-  const hasCopy = run.copyThemeId !== null;
+  // COPY_MISSING: the copy was deleted, so never tell the merchant to delete it (r3).
+  const hasCopy = run.copyThemeId !== null && run.failureReason !== "COPY_MISSING";
   const summaryInput = {
     status: stale ? "failed" : run.status,
     doNotPublish: run.doNotPublish,
@@ -97,7 +98,7 @@ export const loader = async ({
   // merchant already published the copy. A failed read keeps the default copy
   // and never crashes. The stale-copy notice is only for a usable copy.
   let liveTheme: LiveThemeNotice = null;
-  if (!summary.active && run.copyThemeId) {
+  if (!summary.active && hasCopy && run.copyThemeId) {
     try {
       const main = await createCleanCopyAdmin(admin).getMainTheme();
       if (main.ok && main.value) {

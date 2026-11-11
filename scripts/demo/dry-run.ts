@@ -1,11 +1,16 @@
 /** DEMO ONLY (gc-tib.7): splice every removable finding out of a copy of THEME_DIR into OUT_DIR (local files only) and rescan. */
 import { cpSync, readdirSync, readFileSync, statSync, writeFileSync, rmSync } from "node:fs";
-import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 
 import { spliceSpans } from "../../app/lib/theme-splice";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
-const SRC = process.env.THEME_DIR!,
-  OUT = process.env.OUT_DIR!;
+const SRC = process.env.THEME_DIR ?? "";
+const OUT = resolve(process.env.OUT_DIR ?? "");
+// OUT is deleted below: only a fresh folder under the temp dir, never THEME_DIR.
+if (!SRC || !process.env.OUT_DIR || OUT === resolve(SRC) || !OUT.startsWith(`${tmpdir()}/`)) {
+  throw new Error("set THEME_DIR, and OUT_DIR to a folder under the temp dir");
+}
 rmSync(OUT, { recursive: true, force: true });
 cpSync(SRC, OUT, { recursive: true });
 const walk = (d: string): string[] =>
