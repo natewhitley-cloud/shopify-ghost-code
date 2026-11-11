@@ -34,7 +34,7 @@ Updated from market research (2026-03-22). Source data: `~/shopify/strategy/mark
 **Rules that keep it honest.**
 
 - **No score, ever.** If a number is wanted, it is a count of a real thing.
-- **Read-only.** We never edit the theme. Every row ends in where to look and how to fix it yourself.
+- **We never touch your live theme.** Read-only by default: every row ends in where to look and how to fix it yourself. On Professional, optional Clean copy (gc-tib) removes the leftover tags you select in an unpublished copy of your theme; you preview it and publish it yourself.
 - **Never "Clean" about something we did not check.** A password-protected storefront, a missing permission, a plan-gated check, or a scan that is older than a check reads "Not checked" or "None found", with the reason.
 - **Same list on every plan.** Counts are free; file, line and fix stay behind the existing preview gate.
 
@@ -155,9 +155,11 @@ Cross-reference existing 64 signatures against the 2,008 apps in the market rese
 
 Also: query 1-2 star reviews for "uninstall," "leftover," "code," "broken" to surface apps merchants explicitly complain about. One-time effort, likely nets 5-10 new high-confidence signatures.
 
-### Why not auto-removal?
+### Why not auto-removal? (revised 2026-11-10)
 
-Cleanify Code (the only prior competitor) was delisted — reviews mentioned false positive suggestions. Auto-removal amplifies every false positive from an annoyance into a production incident. Merchants already duplicate themes before manual edits out of fear. Ghost Code's value is _detection_, not modification. Make scan reports actionable enough (exact file, line, code block) that removal is easy for merchants or their devs. Revisit only after 500+ installs with zero false-positive reports.
+Original stance (2026-10): Cleanify Code (the only prior competitor) was delisted, with reviews mentioning false positive suggestions. Auto-removal amplifies every false positive from an annoyance into a production incident, so GhostCode stayed detection-only, revisit after 500+ installs with zero false-positive reports.
+
+Revised (gc-tib, unparked 2026-11-03): removal became table stakes (Store Safety, ThemeSweep, Residue all ship it), so GhostCode ships Clean copy with the false-positive risk designed out rather than waited out: Professional only and opt-in (optional write_themes); only the 4 safe-to-remove signature types; findings for apps with a live app embed are blocked and the merchant confirms each app is uninstalled; edits go to an unpublished duplicate, never the live theme; we never publish (the merchant previews and publishes); every write is checksum-gated and re-verified. Still no auto-removal on the live theme, ever.
 
 ---
 
