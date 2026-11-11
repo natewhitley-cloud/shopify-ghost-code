@@ -1675,7 +1675,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // scan-time md5 for the file. Never throws: a failed read hides the button.
   let cleanCopy = { eligible: false, count: 0 };
   const embedApps =
-    isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL && isSuccessfulScan(scan.status)
+    isCleanCopyEnabled(shop.domain) &&
+    shop.plan === PLANS.PROFESSIONAL &&
+    isSuccessfulScan(scan.status)
       ? (parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null)
       : null;
   if (embedApps !== null) {
@@ -1726,7 +1728,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Never throws: a failed read hides the lines, not the page (r1).
   // Not while this scan runs: the page polls every few seconds (gc-e28n).
   const cleanCopyRuns =
-    isCleanCopyEnabled() && !isScanRunning(scan.status) ? await loadCleanCopyRunLines(shop.id) : [];
+    isCleanCopyEnabled(shop.domain) && !isScanRunning(scan.status)
+      ? await loadCleanCopyRunLines(shop.id)
+      : [];
 
   return {
     cleanCopy,

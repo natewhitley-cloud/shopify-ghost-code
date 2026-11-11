@@ -24,7 +24,7 @@ marked STOP means don't go further until it's resolved.
      "Make a clean copy" button and no clean copy lines, and the Railway logs show no
      `clean-copy` errors.
 
-## B. Approval day
+## B. Approval day (approved 2026-11-11; legal published 2026-11-11, step 1 DONE)
 
 3. **Read the approval.** Note any conditions Shopify attaches (scope wording, usage
    limits, review steps). If it differs from "themeDuplicate + themeFilesUpsert into an
@@ -36,9 +36,10 @@ marked STOP means don't go further until it's resolved.
    - Check: the new app version in the Partner Dashboard lists write_themes as optional.
 5. **Decide how to turn it on (decision for Nathan).** `CLEAN_COPY_ENABLED=true` is
    global: every Professional shop gets the button at once.
-   - Option a (recommended): first add a small per-shop allowlist (e.g.
-     `CLEAN_COPY_SHOPS=nw-dev-store-2.myshopify.com`) so step 6 runs on the dev store
-     only. About an hour of work plus tests; not built yet.
+   - Option a (CHOSEN 2026-11-11, built): set
+     `CLEAN_COPY_SHOPS=nw-dev-store-2.myshopify.com` in Railway with `CLEAN_COPY_ENABLED`
+     unset, so step 6 runs on the dev store only. Exact `*.myshopify.com` domains,
+     comma-separated; `*` or a bare handle never matches.
    - Option b: flip the flag during a quiet window and run step 6 right away. The dev
      store must be on the Professional plan.
 6. **First live run on nw-dev-store-2.** Scan, then Make a clean copy, select, Allow

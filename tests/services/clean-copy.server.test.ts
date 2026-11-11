@@ -59,6 +59,7 @@ import {
   ensureCopyTheme,
   preflightCleanCopy,
   requestCleanCopy,
+  runGateFailure,
   writeCleanCopy,
   type PreflightInput,
 } from "../../app/services/clean-copy.server";
@@ -144,6 +145,40 @@ describe("preflightCleanCopy", () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
     expect(await preflightCleanCopy(pf())).toEqual({ ok: false, reason: "FLAG_OFF" });
     expect(shop.calls).toHaveLength(0);
+  });
+
+  describe("per-shop allowlist (CLEAN_COPY_SHOPS, approval-day step 5)", () => {
+    beforeEach(() => vi.stubEnv("CLEAN_COPY_ENABLED", ""));
+
+    it("global off + this shop listed -> passes the flag gate", async () => {
+      vi.stubEnv("CLEAN_COPY_SHOPS", "other.myshopify.com, Shop-1.myshopify.com");
+      const r = await preflightCleanCopy(pf());
+      expect(r).not.toEqual({ ok: false, reason: "FLAG_OFF" });
+      expect(await runGateFailure({ shopId: SHOP_ID })).toBeNull();
+    });
+
+    it("global off + another shop listed -> FLAG_OFF, no Admin call", async () => {
+      vi.stubEnv("CLEAN_COPY_SHOPS", "other.myshopify.com");
+      expect(await preflightCleanCopy(pf())).toEqual({ ok: false, reason: "FLAG_OFF" });
+      expect(await runGateFailure({ shopId: SHOP_ID })).toBe("FLAG_OFF");
+      expect(shop.calls).toHaveLength(0);
+    });
+
+    it("shop removed from the list mid-run -> the worker gate stops it", async () => {
+      vi.stubEnv("CLEAN_COPY_SHOPS", "shop-1.myshopify.com");
+      expect(await runGateFailure({ shopId: SHOP_ID })).toBeNull();
+      vi.stubEnv("CLEAN_COPY_SHOPS", "");
+      expect(await runGateFailure({ shopId: SHOP_ID })).toBe("FLAG_OFF");
+    });
+
+    it("unknown shop id -> FLAG_OFF (no domain to match)", async () => {
+      vi.stubEnv("CLEAN_COPY_SHOPS", "shop-1.myshopify.com");
+      expect(await runGateFailure({ shopId: "missing" })).toBe("FLAG_OFF");
+      expect(await preflightCleanCopy(pf({ shopId: "missing" }))).toEqual({
+        ok: false,
+        reason: "FLAG_OFF",
+      });
+    });
   });
 
   it("empty selection -> EMPTY_SELECTION", async () => {

@@ -186,8 +186,25 @@ export function isStorefrontGuardEmailLive(): boolean {
  * remove selected leftover tags in the unpublished copy. Deliberately NOT in
  * SOFT_LAUNCH_FLAGS (no FindingType). Off (unset or anything but "true") =
  * preflight refuses and the clean-copy worker exits before any Admin call.
- * Stays off until Shopify approves the write_themes exemption (spike §1).
+ * Shopify approved the write_themes exemption on 2026-11-11.
+ *
+ * Per-shop allowlist for the first live runs (approval-day runbook step 5):
+ * CLEAN_COPY_SHOPS is a comma-separated list of exact `*.myshopify.com`
+ * domains that get the feature while the global flag is off. Entries are
+ * trimmed and lower-cased; anything that is not a full myshopify domain
+ * (`*`, a bare handle, a custom domain) never matches, so the list can't act
+ * as a wildcard. Every gate passes the shop's domain, so removing a shop
+ * from the list stops its run at the worker's next gate check.
  */
-export function isCleanCopyEnabled(): boolean {
-  return process.env.CLEAN_COPY_ENABLED === "true";
+export function isCleanCopyEnabled(shopDomain: string | null | undefined): boolean {
+  if (process.env.CLEAN_COPY_ENABLED === "true") return true;
+  if (!shopDomain) return false;
+  const domain = shopDomain.trim().toLowerCase();
+  if (!MYSHOPIFY_DOMAIN.test(domain)) return false;
+  return (process.env.CLEAN_COPY_SHOPS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .some((s) => s === domain);
 }
+
+const MYSHOPIFY_DOMAIN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;

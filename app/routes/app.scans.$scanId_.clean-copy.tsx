@@ -105,7 +105,7 @@ export const loader = async ({
   if (!shop) throw new Response("Not found", { status: 404 });
 
   // Dark, Professional only, and only the shop's own scan; otherwise back to the scan page.
-  if (!isCleanCopyEnabled() || shop.plan !== PLANS.PROFESSIONAL) {
+  if (!isCleanCopyEnabled(shop.domain) || shop.plan !== PLANS.PROFESSIONAL) {
     return redirect(scanPath(scanId));
   }
   const scan = await getScanById(scanId, { includeFindings: false });

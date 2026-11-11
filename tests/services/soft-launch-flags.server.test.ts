@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   isAdvisoryCheckLive,
+  isCleanCopyEnabled,
   isHomepageMaliciousCheckLive,
   isRuntimeMaliciousCheckLive,
   isScriptTagSunsetLive,
@@ -171,5 +172,62 @@ describe("isHomepageMaliciousCheckLive (gc-0htk, gc-3y89 #6)", () => {
     if (runtime) process.env.RUNTIME_MALICIOUS_CHECK_LIVE_ENABLED = "true";
     if (scriptTags) process.env[FLAG] = "true";
     expect(isHomepageMaliciousCheckLive()).toBe(expected);
+  });
+});
+
+describe("isCleanCopyEnabled (gc-tib, per-shop allowlist)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const DOMAIN = "nw-dev-store-2.myshopify.com";
+
+  it('global flag "true" -> on for every shop, listed or not, even with no domain', () => {
+    vi.stubEnv("CLEAN_COPY_ENABLED", "true");
+    vi.stubEnv("CLEAN_COPY_SHOPS", "");
+    expect(isCleanCopyEnabled(DOMAIN)).toBe(true);
+    expect(isCleanCopyEnabled(null)).toBe(true);
+  });
+
+  it.each([[undefined], [""], ["1"], ["TRUE"], [" true"]])(
+    "global flag %j + no allowlist -> off",
+    (value) => {
+      if (value !== undefined) vi.stubEnv("CLEAN_COPY_ENABLED", value);
+      expect(isCleanCopyEnabled(DOMAIN)).toBe(false);
+    },
+  );
+
+  it.each([
+    [DOMAIN],
+    [` ${DOMAIN} `],
+    ["NW-DEV-STORE-2.myshopify.com"],
+    [`a.myshopify.com,${DOMAIN}`],
+    [`,, ${DOMAIN} ,`],
+  ])("global off + list %j -> on for the listed shop", (list) => {
+    vi.stubEnv("CLEAN_COPY_SHOPS", list);
+    expect(isCleanCopyEnabled(DOMAIN)).toBe(true);
+    expect(isCleanCopyEnabled(` ${DOMAIN.toUpperCase()} `)).toBe(true);
+    expect(isCleanCopyEnabled("other.myshopify.com")).toBe(false);
+  });
+
+  it.each([
+    ["*"],
+    ["*.myshopify.com"],
+    ["nw-dev-store-2"],
+    ["myshopify.com"],
+    [".myshopify.com"],
+    ["nw-dev-store-2.myshopify.com.evil.com"],
+    ["xnw-dev-store-2.myshopify.com"],
+    [""],
+    [","],
+  ])("list %j never enables nw-dev-store-2 (no wildcards, no partial match)", (list) => {
+    vi.stubEnv("CLEAN_COPY_SHOPS", list);
+    expect(isCleanCopyEnabled(DOMAIN)).toBe(false);
+  });
+
+  it("a shop domain that is not *.myshopify.com never matches, even if listed", () => {
+    vi.stubEnv("CLEAN_COPY_SHOPS", "shop.example.com,*,");
+    expect(isCleanCopyEnabled("shop.example.com")).toBe(false);
+    expect(isCleanCopyEnabled("*")).toBe(false);
+    expect(isCleanCopyEnabled("")).toBe(false);
+    expect(isCleanCopyEnabled(null)).toBe(false);
+    expect(isCleanCopyEnabled(undefined)).toBe(false);
   });
 });

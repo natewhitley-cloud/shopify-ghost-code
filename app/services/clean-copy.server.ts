@@ -270,15 +270,14 @@ export async function checkCleanCopyFreshness(input: {
 }
 
 export async function preflightCleanCopy(input: PreflightInput): Promise<PreflightResult> {
-  if (!isCleanCopyEnabled()) return { ok: false, reason: "FLAG_OFF" };
+  const shop = await db.shop.findUnique({
+    where: { id: input.shopId },
+    select: { domain: true, plan: true, lastThemePublishAt: true },
+  });
+  if (!isCleanCopyEnabled(shop?.domain)) return { ok: false, reason: "FLAG_OFF" };
   const findingIds = [...new Set(input.findingIds)];
   if (findingIds.length === 0) return { ok: false, reason: "EMPTY_SELECTION" };
   if (findingIds.length > MAX_SELECTED_FINDINGS) return { ok: false, reason: "TOO_MANY_FINDINGS" };
-
-  const shop = await db.shop.findUnique({
-    where: { id: input.shopId },
-    select: { plan: true, lastThemePublishAt: true },
-  });
   if (!shop) return { ok: false, reason: "SHOP_NOT_FOUND" };
   if (shop.plan !== PLANS.PROFESSIONAL) return { ok: false, reason: "NOT_PROFESSIONAL" };
   if (!input.grantedScopes.includes(WRITE_THEMES_SCOPE)) {
@@ -464,13 +463,16 @@ async function unwrap<T>(
 
 /**
  * Gates re-checked inside the worker (audit logic 11): the flag is still on
- * and the shop is still on Professional. A downgrade mid-run stops the run.
+ * (globally or for this shop's domain) and the shop is still on Professional. A downgrade mid-run stops the run.
  */
 export async function runGateFailure(run: {
   shopId: string;
 }): Promise<"FLAG_OFF" | "NOT_PROFESSIONAL" | null> {
-  if (!isCleanCopyEnabled()) return "FLAG_OFF";
-  const shop = await db.shop.findUnique({ where: { id: run.shopId }, select: { plan: true } });
+  const shop = await db.shop.findUnique({
+    where: { id: run.shopId },
+    select: { domain: true, plan: true },
+  });
+  if (!isCleanCopyEnabled(shop?.domain)) return "FLAG_OFF";
   if (shop?.plan !== PLANS.PROFESSIONAL) return "NOT_PROFESSIONAL";
   return null;
 }
