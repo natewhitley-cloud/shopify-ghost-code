@@ -42,15 +42,16 @@ describe("groupCandidatesByApp", () => {
       cand({ findingId: "a", appName: "Loox" }),
       cand({ findingId: "b", appName: "Klaviyo" }),
       cand({ findingId: "c", appName: null, blocked: "APP_UNKNOWN" }),
-      cand({ findingId: "d", appName: "Klaviyo", blocked: "APP_HAS_LIVE_EMBED" }),
+      cand({ findingId: "d", appName: "Hotjar", blocked: "APP_HAS_LIVE_EMBED" }),
       cand({ findingId: "e", appName: "Klaviyo", lineNumber: 3 }),
     ]);
-    expect(groups.map((g) => g.appName)).toEqual(["Klaviyo", "Loox", null]);
-    const klaviyo = groups[0];
+    expect(groups.map((g) => g.appName)).toEqual(["Hotjar", "Klaviyo", "Loox", null]);
+    const klaviyo = groups[1];
     // Within a group: by filename, then line.
     expect(klaviyo.selectable.map((c) => c.findingId)).toEqual(["e", "b"]);
-    expect(klaviyo.blocked.map((c) => c.findingId)).toEqual(["d"]);
-    expect(groups[2].selectable).toEqual([]);
+    expect(klaviyo.blocked).toEqual([]);
+    expect(groups[0].blocked.map((c) => c.findingId)).toEqual(["d"]);
+    expect(groups[3].selectable).toEqual([]);
   });
 
   it("returns an empty list for no candidates", () => {
