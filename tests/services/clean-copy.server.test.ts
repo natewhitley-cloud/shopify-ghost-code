@@ -807,5 +807,39 @@ describe("crash-retry inside duplicate and write", () => {
     shop.overrides = {};
     await writeCleanCopy(admin, runId);
     expect(itemsOf(runId)["f-other"].status).toBe("removed");
+    expect(runOf(runId).doNotPublish).toBe(false);
+  });
+
+  it("expected md5 recorded, file still scanned, but the retry won't write it: do-not-publish (gc-wkpc L7)", async () => {
+    const runId = await startRun(["f-other"]);
+    const dup = (await ensureCopyTheme(admin, runId)) as { copyThemeId: string };
+    await checkCopyReady(admin, runId, dup.copyThemeId, false);
+    // Attempt 1 records the expected md5, then the upsert request dies: it
+    // may or may not have reached Shopify.
+    shop.overrides.CleanCopyUpsert = () => new Error("ECONNRESET");
+    await expect(writeCleanCopy(admin, runId)).rejects.toThrow();
+    expect(itemsOf(runId)["f-other"].postMd5).toBeTruthy();
+    shop.overrides = {};
+    // Attempt 2 refuses the file (span no longer matches its recorded hash).
+    const item = fake.state.fixItems.find((i) => i.fixRunId === runId)!;
+    item.spanSha256 = "0".repeat(64);
+    await writeCleanCopy(admin, runId);
+    expect(itemsOf(runId)["f-other"]).toMatchObject({
+      status: "skipped",
+      reasonCode: "SPAN_MISMATCH",
+    });
+    expect(shop.count("CleanCopyUpsert")).toBe(1);
+    // Attempt 1's upsert could still land unchecked: the copy can't be trusted.
+    expect(runOf(runId).doNotPublish).toBe(true);
+  });
+
+  it("no expected md5 recorded and the file is refused: publishable flag stays off", async () => {
+    const runId = await startRun(["f-other"]);
+    const dup = (await ensureCopyTheme(admin, runId)) as { copyThemeId: string };
+    await checkCopyReady(admin, runId, dup.copyThemeId, false);
+    fake.state.fixItems.find((i) => i.fixRunId === runId)!.spanSha256 = "0".repeat(64);
+    await writeCleanCopy(admin, runId);
+    expect(itemsOf(runId)["f-other"].reasonCode).toBe("SPAN_MISMATCH");
+    expect(runOf(runId).doNotPublish).toBe(false);
   });
 });

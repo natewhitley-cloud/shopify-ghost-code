@@ -876,26 +876,47 @@ type RemovalSpanFields = { spanStart?: number; spanEnd?: number; spanSha256?: st
 const pendingRemovalSpans = new WeakMap<CreateFindingInput, () => RemovalSpanFields>();
 
 /**
+ * The parses a file's spans need, shared by every fixable detector's locator
+ * for that file (gc-mlnk 3: built once per file, not once per detector).
+ * scanThemeFiles makes one per file per scan and passes it to each detector,
+ * so nothing outlives the scan; a detector called alone gets its own.
+ * `failed` records a throw from a shared parse, so no other detector retries it.
+ */
+type SharedSpanParse = {
+  ranges: Array<[number, number]> | null;
+  blocks: Array<[number, number]> | null;
+  failed: boolean;
+};
+
+const newSpanParse = (): SharedSpanParse => ({ ranges: null, blocks: null, failed: false });
+
+/**
  * Per-file span locator for one fixable detector: registers a lazy span on
  * the finding and returns it. Non-code ranges and `{% liquid %}` block
- * ranges are built once per locator, on the first span actually computed.
- * Any throw while locating a span (guard, nonCodeRanges, liquidBlockRanges)
- * never fails the scan: that finding and every later one from this locator
- * get no span, and the file is not tried again by this detector. The flag
- * lives in the locator, so nothing outlives the file or the scan.
+ * ranges are built once per file (shared across detectors), on the first
+ * span actually computed. Any throw while locating a span (guard,
+ * nonCodeRanges, liquidBlockRanges) never fails the scan: that finding and
+ * every later one from this locator get no span, and the file is not tried
+ * again by this detector (a shared parse that threw is not tried again by
+ * any detector).
  */
-function removalSpanLocator(content: string) {
-  let ranges: Array<[number, number]> | null = null;
-  let blocks: Array<[number, number]> | null = null;
+function removalSpanLocator(file: ThemeFile, shared: SharedSpanParse = newSpanParse()) {
+  const content = file.content;
   let failed = false;
   return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
     pendingRemovalSpans.set(finding, () => {
-      if (failed) return {};
+      if (failed || shared.failed) return {};
       let located: ReturnType<typeof removalSpanFor>;
       try {
-        ranges ??= nonCodeRanges(content);
-        if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
-        located = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
+        let ranges: Array<[number, number]>;
+        try {
+          ranges = shared.ranges ??= nonCodeRanges(content);
+          if (type === "GHOST_SNIPPET") shared.blocks ??= liquidBlockRanges(content);
+        } catch (error) {
+          shared.failed = true;
+          throw error;
+        }
+        located = removalSpanFor(type, content, matchStart, ranges, shared.blocks ?? undefined);
       } catch {
         // Not logged here (this module never logs).
         failed = true;
@@ -940,7 +961,10 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
 }
 
 /** detectGhostScripts with spans left pending (scanThemeFiles computes them after the cap). */
-function ghostScriptsPendingSpans(file: ThemeFile): CreateFindingInput[] {
+function ghostScriptsPendingSpans(
+  file: ThemeFile,
+  spanParse?: SharedSpanParse,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <script ...> tag first (linear, non-backtracking), then apply
@@ -951,7 +975,7 @@ function ghostScriptsPendingSpans(file: ThemeFile): CreateFindingInput[] {
   // maps the match position back to a line.
   // Built on the first attributed script only: most files have none.
   let settingGatedLines: Set<number> | null = null;
-  const spanAt = removalSpanLocator(file.content);
+  const spanAt = removalSpanLocator(file, spanParse);
   for (const { tag, offset } of extractTags(file.content, "<script")) {
     const match = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (!match) continue;
@@ -1026,7 +1050,10 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
 }
 
 /** detectGhostStyles with spans left pending (scanThemeFiles computes them after the cap). */
-function ghostStylesPendingSpans(file: ThemeFile): CreateFindingInput[] {
+function ghostStylesPendingSpans(
+  file: ThemeFile,
+  spanParse?: SharedSpanParse,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
@@ -1037,7 +1064,7 @@ function ghostStylesPendingSpans(file: ThemeFile): CreateFindingInput[] {
   // are still matched. lineNumberAtOffset maps the match position back to a line.
   // Built on the first attributed stylesheet only: most files have none.
   let settingGatedLines: Set<number> | null = null;
-  const spanAt = removalSpanLocator(file.content);
+  const spanAt = removalSpanLocator(file, spanParse);
   for (const { tag, offset } of extractTags(file.content, "<link")) {
     const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (!match) continue;
@@ -1120,6 +1147,7 @@ export function detectGhostSnippets(
 function ghostSnippetsPendingSpans(
   file: ThemeFile,
   corroboratedApps: ReadonlySet<string>,
+  spanParse?: SharedSpanParse,
 ): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
@@ -1130,7 +1158,7 @@ function ghostSnippetsPendingSpans(
   // Precompute lines inside always-false conditionals ({% if false %} /
   // {% unless true %}) so dead-code render/include statements are not flagged.
   const alwaysFalseSkipLines = buildAlwaysFalseConditionalSkipLines(file.content);
-  const spanAt = removalSpanLocator(file.content);
+  const spanAt = removalSpanLocator(file, spanParse);
 
   const processSnippetMatch = (snippetName: string, matchIndex: number) => {
     const lineNumber = lineNumberAtOffset(file.content, matchIndex);
@@ -5632,7 +5660,10 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
 }
 
 /** detectGhostPreconnect with spans left pending (scanThemeFiles computes them after the cap). */
-function ghostPreconnectPendingSpans(file: ThemeFile): CreateFindingInput[] {
+function ghostPreconnectPendingSpans(
+  file: ThemeFile,
+  spanParse?: SharedSpanParse,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Precompute which line numbers to skip (inside comment blocks or on
@@ -5650,7 +5681,7 @@ function ghostPreconnectPendingSpans(file: ThemeFile): CreateFindingInput[] {
   // PRECONNECT_TAG to the bounded tag text. Multi-line <link> tags (e.g. from
   // Prettier-formatted theme files) are still matched. lineNumberAtOffset maps
   // each match offset back to a 1-based line number for skip-set checking.
-  const spanAt = removalSpanLocator(file.content);
+  const spanAt = removalSpanLocator(file, spanParse);
   for (const { tag, offset } of extractTags(file.content, "<link")) {
     const match = execTagPattern(tag, PRECONNECT_TAG);
     if (!match) continue;
@@ -6195,9 +6226,13 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
       if (lines.length > 0) menuLabelHits.push({ path: file.filename, lines, outputCount });
     }
 
-    findings.push(...withRemovalSpans(capped(ghostScriptsPendingSpans(file))));
-    findings.push(...withRemovalSpans(capped(ghostStylesPendingSpans(file))));
-    findings.push(...withRemovalSpans(capped(ghostSnippetsPendingSpans(file, corroboratedApps))));
+    // One shared span parse per file per scan (gc-mlnk 3).
+    const spanParse = newSpanParse();
+    findings.push(...withRemovalSpans(capped(ghostScriptsPendingSpans(file, spanParse))));
+    findings.push(...withRemovalSpans(capped(ghostStylesPendingSpans(file, spanParse))));
+    findings.push(
+      ...withRemovalSpans(capped(ghostSnippetsPendingSpans(file, corroboratedApps, spanParse))),
+    );
     findings.push(...capped(detectGhostSections(file, corroboratedApps)));
     findings.push(...capped(detectGhostHrefLang(file)));
     findings.push(...capped(detectDuplicateMetaTags(file, EARLY_EXIT_LIMIT)));
@@ -6211,7 +6246,7 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     findings.push(...capped(detectGhostCanonical(file, EARLY_EXIT_LIMIT)));
     findings.push(...capped(detectGhostTitle(file, EARLY_EXIT_LIMIT)));
     findings.push(...capped(detectGhostOg(file, EARLY_EXIT_LIMIT)));
-    findings.push(...withRemovalSpans(capped(ghostPreconnectPendingSpans(file))));
+    findings.push(...withRemovalSpans(capped(ghostPreconnectPendingSpans(file, spanParse))));
     findings.push(...capped(detectGhostFont(file)));
     findings.push(...capped(detectGhostAjax(file)));
 

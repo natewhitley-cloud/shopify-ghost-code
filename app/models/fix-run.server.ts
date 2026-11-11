@@ -11,7 +11,11 @@
  *     An active run untouched for ACTIVE_RUN_STALE_MS is failed STALE first, so
  *     a lost event can never block the shop forever.
  *   - Only the newest FIX_RUNS_KEEP_PER_SHOP runs per shop are kept (pruned on
- *     create; items cascade).
+ *     create; items cascade), except trial runs holding a trial removal.
+ *   - Trial limit (gc-tib.22): a run made during the free trial is created only
+ *     while the shop's trial items (removed, or pending in a trial run) plus
+ *     the new items stay within the limit, checked under the same lock. Only
+ *     run creation adds pending items, so the count can't be raced.
  *   - A terminal run is never revived, and a decided item is never re-decided:
  *     every transition is a conditional updateMany.
  *   - finalize never reports completed while an item is still pending.
@@ -50,10 +54,43 @@ export type FixItemInput = {
 
 export type CreateFixRunResult =
   | { ok: true; runId: string }
-  | { ok: false; reason: "RUN_ACTIVE"; activeRunId: string };
+  | { ok: false; reason: "RUN_ACTIVE"; activeRunId: string }
+  | { ok: false; reason: "TRIAL_LIMIT"; used: number; limit: number };
+
+/** Item statuses that use up the trial limit: removed, or still in flight. */
+const TRIAL_COUNTED_ITEM_STATUSES = ["removed", "pending"] as const;
+
+/**
+ * The shop's items that count against the trial limit (gc-tib.22): removed or
+ * pending items of runs made during a trial. At most the limit, so small.
+ */
+async function trialCountedItems(
+  client: Pick<typeof db, "fixItem">,
+  shopId: string,
+): Promise<Array<{ fixRunId: string }>> {
+  return client.fixItem.findMany({
+    where: {
+      status: { in: [...TRIAL_COUNTED_ITEM_STATUSES] },
+      fixRun: { shopId, duringTrial: true },
+    },
+    select: { fixRunId: true },
+  });
+}
+
+/** Trial items the shop has used so far (for the select page's "N of 5"). */
+export async function countTrialRemovals(shopId: string): Promise<number> {
+  return (await trialCountedItems(db, shopId)).length;
+}
 
 export async function createFixRun(
-  input: { shopId: string; scanId: string; sourceThemeId: string; items: FixItemInput[] },
+  input: {
+    shopId: string;
+    scanId: string;
+    sourceThemeId: string;
+    items: FixItemInput[];
+    /** Set while the shop is in its free trial: the most items it may use (gc-tib.22). */
+    trialLimit?: number;
+  },
   now: Date = new Date(),
 ): Promise<CreateFixRunResult> {
   const { shopId } = input;
@@ -91,11 +128,24 @@ export async function createFixRun(
     if (active)
       return { ok: false as const, reason: "RUN_ACTIVE" as const, activeRunId: active.id };
 
+    // After the stale sweep, so a lost run's items no longer count.
+    const trialItems = await trialCountedItems(tx, shopId);
+    const duringTrial = input.trialLimit !== undefined;
+    if (duringTrial && trialItems.length + input.items.length > (input.trialLimit as number)) {
+      return {
+        ok: false as const,
+        reason: "TRIAL_LIMIT" as const,
+        used: trialItems.length,
+        limit: input.trialLimit as number,
+      };
+    }
+
     const run = await tx.fixRun.create({
       data: {
         shopId,
         scanId: input.scanId,
         sourceThemeId: input.sourceThemeId,
+        duringTrial,
         items: {
           create: input.items.map((item) => ({
             findingId: item.findingId,
@@ -117,9 +167,13 @@ export async function createFixRun(
       skip: FIX_RUNS_KEEP_PER_SHOP,
       select: { id: true },
     });
-    if (old.length > 0) {
+    // A trial run holding a removal is never pruned: deleting it would hand
+    // the trial limit back (gc-tib.22). There are at most `limit` of them.
+    const keep = new Set(trialItems.map((i) => i.fixRunId));
+    const doomed = old.map((r) => r.id).filter((id) => !keep.has(id));
+    if (doomed.length > 0) {
       await tx.fixRun.deleteMany({
-        where: { shopId, id: { in: old.map((r) => r.id) }, NOT: { id: run.id } },
+        where: { shopId, id: { in: doomed }, NOT: { id: run.id } },
       });
     }
     return { ok: true as const, runId: run.id };

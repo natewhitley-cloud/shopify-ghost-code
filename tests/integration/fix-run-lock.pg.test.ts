@@ -122,6 +122,63 @@ describe.skipIf(!testUrl)("createFixRun one-active-run lock (real Postgres)", { 
     expect(await activeRuns(shops[1])).toBe(1);
   });
 
+  // gc-tib.22: the trial count and prune protection on real Postgres (the
+  // relation filter and the new column, not just the in-memory fake).
+  const trialInput = (shopId: string, n: number, prefix: string) => ({
+    shopId,
+    scanId: "scan-1",
+    sourceThemeId: "gid://shopify/OnlineStoreTheme/1",
+    items: Array.from({ length: n }, (_, i) => item(`${prefix}${i}`)),
+    trialLimit: 5,
+  });
+  const finishRemoved = async (runId: string) => {
+    await prisma.fixItem.updateMany({ where: { fixRunId: runId }, data: { status: "removed" } });
+    await prisma.fixRun.update({ where: { id: runId }, data: { status: "completed" } });
+  };
+
+  it("trial limit: 10 concurrent creates of 3 after 3 removed: none made (6 > 5)", async () => {
+    const first = await createFixRun(trialInput(shops[0], 3, "a"));
+    if (!first.ok) throw new Error(first.reason);
+    await finishRemoved(first.runId);
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, k) => createFixRun(trialInput(shops[0], 3, `b${k}-`))),
+    );
+    expect(results.every((r) => !r.ok && r.reason === "TRIAL_LIMIT")).toBe(true);
+    expect(await prisma.fixRun.count({ where: { shopId: shops[0] } })).toBe(1);
+    const run = await prisma.fixRun.findUnique({ where: { id: first.runId } });
+    expect(run?.duringTrial).toBe(true);
+  });
+
+  it("trial limit: concurrent creates of 2 after 3 removed: exactly one made", async () => {
+    const first = await createFixRun(trialInput(shops[0], 3, "a"));
+    if (!first.ok) throw new Error(first.reason);
+    await finishRemoved(first.runId);
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, k) => createFixRun(trialInput(shops[0], 2, `c${k}-`))),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const counted = await prisma.fixItem.count({
+      where: {
+        status: { in: ["removed", "pending"] },
+        fixRun: { shopId: shops[0], duringTrial: true },
+      },
+    });
+    expect(counted).toBe(5);
+  });
+
+  it("prune keeps a trial run holding removals past the newest 20", async () => {
+    const first = await createFixRun(trialInput(shops[0], 4, "p"));
+    if (!first.ok) throw new Error(first.reason);
+    await finishRemoved(first.runId);
+    for (let k = 0; k < 22; k++) {
+      const r = await createFixRun(input(shops[0]));
+      if (!r.ok) throw new Error(r.reason);
+      await prisma.fixRun.update({ where: { id: r.runId }, data: { status: "failed" } });
+    }
+    expect(await prisma.fixRun.findUnique({ where: { id: first.runId } })).not.toBeNull();
+    expect(await prisma.fixRun.count({ where: { shopId: shops[0] } })).toBe(21);
+  });
+
   it("repeated rounds never produce two active runs", async () => {
     for (let round = 0; round < 5; round++) {
       await prisma.fixItem.deleteMany({});

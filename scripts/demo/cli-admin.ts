@@ -167,5 +167,10 @@ export function createCliCleanCopyAdmin(
     async getGrantedScopes() {
       return fail("USER_ERROR", "the CLI demo has no app installation");
     },
+    // No installation, so no subscription: the demo acts as a paid
+    // Professional shop past its trial (gc-tib.22).
+    async getProfessionalSubscription() {
+      return { ok: true as const, value: { trialEndsAt: null } };
+    },
   };
 }

@@ -8,6 +8,9 @@
  * DARK: while CLEAN_COPY_ENABLED is off, and for any plan but Professional, the
  * loader redirects back to the scan page.
  *
+ * Free trial (gc-tib.22): the loader reads the subscription live; during the
+ * trial the page shows "N of 5 used" and won't submit more than the rest.
+ *
  * The loader reads the affected files from the MAIN theme only to show the
  * exact code that would be removed (`spanText`). It returns that text and
  * nothing else of the file, and only when the file still matches the scan.
@@ -37,14 +40,18 @@ import {
   CLEAN_COPY_SCOPE,
   cleanCopyRunPath,
   type CleanCopyRunLine,
+  type CleanCopyTrialView,
   findingRefusalCopy,
   groupCandidatesByApp,
   runRefusalCopy,
+  trialNotice,
+  trialOverSelectionNote,
+  trialRemaining,
 } from "../lib/clean-copy-view";
 import { PLANS } from "../lib/plans";
-import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
+import { FIXABLE_FINDING_TYPES, nonCodeRanges, removalSpanFor } from "../lib/removal-span";
 import { getFindingsForScan } from "../models/finding.server";
-import { loadCleanCopyRunLines } from "../models/fix-run.server";
+import { countTrialRemovals, loadCleanCopyRunLines } from "../models/fix-run.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanManifest } from "../models/scan-manifest.server";
 import { getScanById } from "../models/scan.server";
@@ -53,9 +60,11 @@ import { parseLiveAppHooks } from "../services/app-removal.server";
 import { createCleanCopyAdmin, MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
 import {
   checkCleanCopyFreshness,
+  cleanCopyTrial,
   offerableCleanCopyFiles,
   MAX_SELECTED_FINDINGS,
   requestCleanCopy,
+  TRIAL_CLEAN_COPY_LIMIT,
 } from "../services/clean-copy.server";
 import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { authenticate } from "../shopify.server";
@@ -91,6 +100,8 @@ export type CleanCopySelectData = {
   fileLimit: number;
   /** Links back to recent runs' result pages (gc-tib.20). */
   runLines?: CleanCopyRunLine[];
+  /** Set while the shop is in its free trial (gc-tib.22). */
+  trial?: CleanCopyTrialView | null;
 };
 
 export const loader = async ({
@@ -125,7 +136,20 @@ export const loader = async ({
     omittedFiles: 0,
     fileLimit: MAX_FILES_PER_REQUEST,
     runLines,
+    trial: null,
   });
+
+  // gc-tib.22: read live; an unreadable subscription refuses (fail closed).
+  const trialRes = await cleanCopyTrial(cleanAdmin);
+  if (!trialRes.ok) return refused(trialRes.reason);
+  const trial: CleanCopyTrialView | null =
+    trialRes.trial === null
+      ? null
+      : {
+          used: await countTrialRemovals(shop.id),
+          limit: TRIAL_CLEAN_COPY_LIMIT,
+          endsAt: trialRes.trial.endsAt.toISOString(),
+        };
 
   // The service's own freshness check (audit M-i): explain a stale scan, a
   // changed or Canvas theme instead of offering a button that will fail.
@@ -135,13 +159,13 @@ export const loader = async ({
     scan,
     admin: cleanAdmin,
   });
-  if (!fresh.ok) return refused(fresh.reason);
+  if (!fresh.ok) return { ...refused(fresh.reason), trial };
   const main = fresh.main;
   const manifest = await getScanManifest(scan.id);
-  if (!manifest) return refused("MANIFEST_MISSING");
+  if (!manifest) return { ...refused("MANIFEST_MISSING"), trial };
   const md5ByPath = new Map(manifest.entries.map((e) => [e[0], e[1]] as const));
   const embedApps = parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null;
-  if (embedApps === null) return refused("EMBED_STATUS_UNKNOWN");
+  if (embedApps === null) return { ...refused("EMBED_STATUS_UNKNOWN"), trial };
 
   const fixable = new Set<string>(FIXABLE_FINDING_TYPES);
   const [allFindings, ignores] = await Promise.all([
@@ -171,10 +195,37 @@ export const loader = async ({
   if (filenames.length > 0) {
     const filesRes = await cleanAdmin.readFiles(main.id, filenames);
     if (!filesRes.ok) {
-      return refused(filesRes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE");
+      return {
+        ...refused(filesRes.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE"),
+        trial,
+      };
     }
     for (const file of filesRes.value) contentByFile.set(file.filename, file.content);
   }
+
+  // gc-img6: re-run today's span rules on the live text, exactly as the
+  // worker will (removalSpanFor on the file's non-code ranges, built once per
+  // file), so a span stored by an older scan under older rules is not offered.
+  const rangesByFile = new Map<string, Array<[number, number]> | null>();
+  const passesSpanRules = (
+    findingType: string,
+    filename: string,
+    content: string,
+    start: number,
+    end: number,
+  ): boolean => {
+    try {
+      if (!rangesByFile.has(filename)) rangesByFile.set(filename, nonCodeRanges(content));
+      const ranges = rangesByFile.get(filename);
+      if (!ranges) return false;
+      const located = removalSpanFor(findingType, content, start, ranges);
+      return located.ok && located.span.start === start && located.span.end === end;
+    } catch {
+      // A throw refuses this file, like the worker's per-file check.
+      rangesByFile.set(filename, null);
+      return false;
+    }
+  };
 
   const candidates: CleanCopyCandidate[] = [];
   for (const { finding, blocked } of drafts) {
@@ -207,11 +258,21 @@ export const loader = async ({
       const text = content.slice(spanStart, spanEnd);
       if (sha256(text) === spanSha256) spanText = text;
     }
-    candidates.push(
-      spanText === null
-        ? { ...base, spanText: null, blocked: "FILE_CHANGED" }
-        : { ...base, spanText, blocked: null },
-    );
+    if (spanText === null) {
+      candidates.push({ ...base, spanText: null, blocked: "FILE_CHANGED" });
+    } else if (
+      !passesSpanRules(
+        finding.findingType,
+        finding.filename,
+        content as string,
+        spanStart!,
+        spanEnd!,
+      )
+    ) {
+      candidates.push({ ...base, spanText: null, blocked: "NEEDS_NEW_SCAN" });
+    } else {
+      candidates.push({ ...base, spanText, blocked: null });
+    }
   }
 
   return {
@@ -222,6 +283,7 @@ export const loader = async ({
     omittedFiles,
     fileLimit: MAX_FILES_PER_REQUEST,
     runLines,
+    trial,
   };
 };
 
@@ -257,6 +319,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const reject = (refusal: string) =>
     data<CleanCopySelectActionData>({ refusal, findings: [] }, { status: 400 });
+  // Before any Admin call (gc-g496): a shop without the flag costs nothing.
+  if (!isCleanCopyEnabled(shop.domain)) return reject("FLAG_OFF");
 
   const form = await request.formData();
   const findingIds = stringValues(form, "findingIds");
@@ -318,13 +382,17 @@ export function appsNeedingConfirmation(
     .map((g) => g.appName as string);
 }
 
-/** The submit rule: something selected and every app with a selection confirmed. */
+/**
+ * The submit rule: something selected, no more than the trial still allows
+ * (gc-tib.22), and every app with a selection confirmed.
+ */
 export function canSubmitSelection(
   groups: readonly CandidateGroup[],
   selected: ReadonlySet<string>,
   confirmed: ReadonlySet<string>,
+  remaining: number = Number.POSITIVE_INFINITY,
 ): boolean {
-  if (selected.size === 0) return false;
+  if (selected.size === 0 || selected.size > remaining) return false;
   return appsNeedingConfirmation(groups, selected).every((app) => confirmed.has(app));
 }
 
@@ -411,6 +479,7 @@ export default function CleanCopySelect() {
     omittedFiles,
     fileLimit,
     runLines = [],
+    trial = null,
   } = useLoaderData<typeof loader>() as CleanCopySelectData;
   const actionData = useActionData<typeof action>() as CleanCopySelectActionData | undefined;
   const navigation = useNavigation();
@@ -420,7 +489,10 @@ export default function CleanCopySelect() {
   const [scopeNote, setScopeNote] = useState<string | null>(null);
 
   const submitting = navigation.state === "submitting";
-  const canSubmit = canSubmitSelection(groups, selected, confirmed) && !submitting;
+  const remaining = trialRemaining(trial);
+  const overTrial = selected.size > remaining;
+  const canSubmit = canSubmitSelection(groups, selected, confirmed, remaining) && !submitting;
+  const trialBanner = trial ? trialNotice(trial) : null;
   const refusedFindings = new Map((actionData?.findings ?? []).map((f) => [f.findingId, f.reason]));
   const shownRefusal = actionData?.refusal ?? refusal;
 
@@ -459,6 +531,7 @@ export default function CleanCopySelect() {
         <CleanCopyRunLines lines={runLines} />
         {shownRefusal && <s-banner tone="critical">{runRefusalCopy(shownRefusal)}</s-banner>}
         {scopeNote && <s-banner tone="warning">{scopeNote}</s-banner>}
+        {trialBanner && <s-banner tone={trialBanner.tone}>{trialBanner.text}</s-banner>}
         <p style={{ margin: 0, color: TEXT_SUBDUED, fontSize: "14px", lineHeight: "21px" }}>
           {CLEAN_COPY_INTRO}
         </p>
@@ -522,6 +595,11 @@ export default function CleanCopySelect() {
             >
               {hasWriteScope ? CLEAN_COPY_SUBMIT : CLEAN_COPY_ALLOW_SCOPE}
             </s-button>
+            {overTrial && remaining > 0 && (
+              <p style={{ ...textSubdued, margin: "8px 0 0" }}>
+                {trialOverSelectionNote(remaining)}
+              </p>
+            )}
           </div>
         )}
       </div>

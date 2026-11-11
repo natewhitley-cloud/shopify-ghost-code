@@ -75,7 +75,21 @@ export function createFakeDb() {
         }
       : { ...run };
 
+  const itemRows = (where: Row) => {
+    // Relation filter on the parent run (e.g. only while it is active).
+    const { fixRun: runWhere, ...own } = where as Row & { fixRun?: Row };
+    return state.fixItems.filter(
+      (r) =>
+        matches(r, own) &&
+        (!runWhere || matches(state.fixRuns.find((run) => run.id === r.fixRunId) ?? {}, runWhere)),
+    );
+  };
+
   const fixItem = {
+    findMany: async ({ where }: { where: Row }) => {
+      await tick();
+      return itemRows(where).map((r) => ({ ...r }));
+    },
     updateMany: async ({ where, data }: { where: Row; data: Row }) => {
       await tick();
       // Relation filter on the parent run (e.g. only while it is active).
@@ -140,6 +154,7 @@ export function createFakeDb() {
         failureReason: null,
         doNotPublish: false,
         copyGoneAt: null,
+        duringTrial: false,
         createdAt: now,
         updatedAt: now,
         completedAt: null,
@@ -269,6 +284,13 @@ export class FakeShopify {
   upsertTransform: ((filename: string, content: string) => string) | null = null;
   /** currentAppInstallation.accessScopes handles. */
   grantedScopes: string[] = ["read_themes", "write_themes"];
+  /**
+   * currentAppInstallation.activeSubscriptions (gc-tib.22). Default: a paid
+   * Professional subscription whose trial ended long ago.
+   */
+  subscriptions: Json[] = [
+    { name: "Professional", status: "ACTIVE", createdAt: "2026-01-01T00:00:00Z", trialDays: 7 },
+  ];
   /** userErrors returned WITH the job by the next upserts (files still applied). */
   upsertUserErrors: Array<{ code: string; filename: string | null; message: string }> = [];
   /** Files named here are NOT applied by an upsert (Shopify rejected them). */
@@ -419,6 +441,8 @@ export class FakeShopify {
             },
           },
         };
+      case "CleanCopySubscriptions":
+        return { data: { currentAppInstallation: { activeSubscriptions: this.subscriptions } } };
       case "CleanCopyJob": {
         this.jobPolls++;
         this.onJobPoll?.();

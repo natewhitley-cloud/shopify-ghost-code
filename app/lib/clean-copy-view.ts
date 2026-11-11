@@ -19,6 +19,65 @@ import { themeIdToNumeric } from "./theme-editor-url";
  */
 export const CLEAN_COPY_SCOPE = "write_themes";
 
+/**
+ * gc-tib.22 (Nathan, 2026-11-11, pricing 1A): during the Professional free
+ * trial a shop can remove at most this many pieces of leftover code in total;
+ * the rest unlock on the first paid day. Lives here (client-safe) so the page
+ * and the service share it.
+ */
+export const TRIAL_CLEAN_COPY_LIMIT = 5;
+
+// ---------------------------------------------------------------------------
+// Free trial limit (gc-tib.22)
+// ---------------------------------------------------------------------------
+
+export type CleanCopyTrialView = {
+  /** Trial items used so far (removed, or in a run still going). */
+  used: number;
+  limit: number;
+  /** ISO time the trial ends (00:00 UTC of the unlock day). */
+  endsAt: string;
+};
+
+/** How many more items the trial allows (never below 0). */
+export function trialRemaining(trial: CleanCopyTrialView | null): number {
+  if (trial === null) return Number.POSITIVE_INFINITY;
+  return Math.max(0, trial.limit - trial.used);
+}
+
+/** "November 18": the unlock day, in UTC like the trial end itself. */
+export function trialUnlockDate(endsAt: string): string {
+  return new Date(endsAt).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** The select page's trial banner. */
+export function trialNotice(trial: CleanCopyTrialView): {
+  tone: "info" | "warning";
+  text: string;
+} {
+  const date = trialUnlockDate(trial.endsAt);
+  const remaining = trialRemaining(trial);
+  if (remaining === 0) {
+    return {
+      tone: "warning",
+      text: `You've used all ${trial.limit} free trial removals. Clean copy unlocks fully on ${date}, when your trial ends.`,
+    };
+  }
+  return {
+    tone: "info",
+    text: `During your free trial, you can remove up to ${trial.limit} pieces of leftover code. ${trial.used} of ${trial.limit} used. The rest unlock on ${date}, when your trial ends.`,
+  };
+}
+
+/** Shown under the button when the selection is over what the trial allows. */
+export function trialOverSelectionNote(remaining: number): string {
+  return `Your trial allows ${remaining} more. Select ${remaining} or fewer to continue.`;
+}
+
 // ---------------------------------------------------------------------------
 // Candidates (the selection page)
 // ---------------------------------------------------------------------------
@@ -31,6 +90,8 @@ export const CANDIDATE_BLOCK_REASONS = [
   "PATH_NOT_ALLOWED",
   /** The live file no longer matches the scan. */
   "FILE_CHANGED",
+  /** The stored span no longer passes today's span rules (gc-img6). */
+  "NEEDS_NEW_SCAN",
 ] as const;
 
 export type CandidateBlockReason = (typeof CANDIDATE_BLOCK_REASONS)[number];
@@ -56,6 +117,8 @@ const CANDIDATE_BLOCK_COPY: Record<CandidateBlockReason, string> = {
   IGNORED: "You ignored this finding. Un-ignore it to include it in a clean copy.",
   PATH_NOT_ALLOWED: "This file is one we don't edit in a clean copy.",
   FILE_CHANGED: "This file changed after your scan. Run a new scan to include it.",
+  NEEDS_NEW_SCAN:
+    "We now check this kind of code more carefully than when this scan ran. Run a new scan to include it.",
 };
 
 const GENERIC_BLOCK_COPY = "This code can't be removed in a clean copy.";
@@ -162,6 +225,7 @@ export const RUN_REFUSAL_REASONS = [
   "INTERNAL_ERROR",
   "DUPLICATE_FAILED",
   "COPY_PUBLISHED_DURING_WRITE",
+  "TRIAL_LIMIT",
 ] as const;
 
 export type RunRefusalReason = (typeof RUN_REFUSAL_REASONS)[number];
@@ -211,13 +275,14 @@ const RUN_REFUSAL_COPY: Record<RunRefusalReason, string> = {
   DISPATCH_FAILED: "We couldn't start your clean copy. Try again in a few minutes.",
   CANVAS_THEME: "Clean copy doesn't support Canvas themes yet.",
   NOTHING_REMOVED:
-    "We couldn't remove any of the code you selected. If those files changed after your scan, run a new scan and try again.",
+    "We couldn't remove any of the code you selected. Each piece is listed below with the reason. Where a file changed after your scan, run a new scan and try again.",
   INCOMPLETE: "Your clean copy stopped before it finished. Try again.",
   INTERNAL_ERROR: "Something went wrong while making your clean copy. Try again in a few minutes.",
   DUPLICATE_FAILED:
     "Shopify couldn't copy your theme. Your store may be at its theme limit. Delete themes you don't use from Online Store > Themes, then try again.",
   COPY_PUBLISHED_DURING_WRITE:
     "The copy was published while we were still removing code from it, so we stopped.",
+  TRIAL_LIMIT: `During your free trial, clean copies can remove up to ${TRIAL_CLEAN_COPY_LIMIT} pieces of leftover code in total. Select less, or make the rest after your trial ends.`,
 };
 
 const GENERIC_RUN_COPY = "We couldn't make your clean copy. Try again in a few minutes.";
@@ -241,12 +306,14 @@ export function runRefusalCopy(reason: string | null | undefined): string {
 const VALIDATION_FAILED_PREFIX = "VALIDATION_FAILED:";
 
 const VALIDATION_COPY: Record<string, string> = {
+  OUT_OF_BOUNDS: "Skipped. The code in this file no longer matches what the scan found.",
   OVERLAPPING_SPANS: "Skipped. This code overlaps another piece you selected.",
   IN_NON_CODE_REGION: "Skipped. This code sits inside a comment or a block we don't edit.",
   UNBALANCED_LIQUID: "Skipped. Removing it would break the Liquid code around it.",
   STRUCTURE_CHANGED:
     "Skipped. Removing code from this file would change how the rest of it reads, so we left the file alone.",
   CHECK_FAILED: "Skipped. We couldn't check this file safely, so we left it alone.",
+  JOINS_TEXT: "Skipped. Removing it would change the text right next to it.",
 };
 
 const VALIDATION_GENERIC = "Skipped. We couldn't confirm that removing this code was safe.";

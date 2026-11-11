@@ -23,6 +23,8 @@ const dbMock = vi.hoisted(() => ({
   scan: { findFirst: vi.fn() },
   // gc-tib.20: the recent-runs read; no runs unless a test sets them.
   fixRun: { findMany: vi.fn(async () => [] as unknown[]) },
+  // gc-tib.22: the shop's trial items; none unless a test sets them.
+  fixItem: { findMany: vi.fn(async () => [] as unknown[]) },
 }));
 vi.mock("../../app/db.server", () => ({ default: dbMock }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
@@ -135,6 +137,7 @@ function looxFinding(over: Record<string, unknown> = {}) {
 const getMainTheme = vi.fn();
 const readFiles = vi.fn();
 const getGrantedScopes = vi.fn();
+const getProfessionalSubscription = vi.fn();
 
 function loaderArgs(scanId = "scan-1"): LoaderFunctionArgs {
   return {
@@ -182,7 +185,14 @@ beforeEach(() => {
     ],
   });
   getGrantedScopes.mockResolvedValue({ ok: true, value: ["read_themes", "write_themes"] });
-  mockMakeAdmin.mockReturnValue({ getMainTheme, readFiles, getGrantedScopes });
+  // A paid Professional shop past its trial unless a test says otherwise.
+  getProfessionalSubscription.mockResolvedValue({ ok: true, value: { trialEndsAt: null } });
+  mockMakeAdmin.mockReturnValue({
+    getMainTheme,
+    readFiles,
+    getGrantedScopes,
+    getProfessionalSubscription,
+  });
   // This scan is the latest successful scan of its theme.
   dbMock.scan.findFirst.mockResolvedValue({ id: "scan-1" });
 });
@@ -769,5 +779,125 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
 
   it("no lines: no link", () => {
     expect(render(DATA)).not.toContain("View result");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-tib.22: free-trial limit on the select page; gc-g496: flag before Admin
+// ---------------------------------------------------------------------------
+
+describe("gc-tib.22: the trial on the select page", () => {
+  const ENDS = new Date("2026-11-18T00:00:00Z");
+
+  it("paid shop: no trial data", async () => {
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.trial).toBeNull();
+    expect(dbMock.fixItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it("in trial: used count, limit and end date", async () => {
+    getProfessionalSubscription.mockResolvedValue({ ok: true, value: { trialEndsAt: ENDS } });
+    dbMock.fixItem.findMany.mockResolvedValue([{ fixRunId: "r1" }, { fixRunId: "r1" }]);
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBeNull();
+    expect(res.trial).toEqual({ used: 2, limit: 5, endsAt: ENDS.toISOString() });
+    expect(res.groups.length).toBeGreaterThan(0);
+  });
+
+  it("a trial that already ended is not a trial", async () => {
+    getProfessionalSubscription.mockResolvedValue({
+      ok: true,
+      value: { trialEndsAt: new Date("2026-01-01T00:00:00Z") },
+    });
+    expect(((await run()) as CleanCopySelectData).trial).toBeNull();
+  });
+
+  it("unreadable subscription: refused ADMIN_UNAVAILABLE, nothing offered (fail closed)", async () => {
+    getProfessionalSubscription.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "" });
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBe("ADMIN_UNAVAILABLE");
+    expect(res.groups).toEqual([]);
+    expect(readFiles).not.toHaveBeenCalled();
+  });
+
+  it("no live Professional subscription: refused NOT_PROFESSIONAL", async () => {
+    getProfessionalSubscription.mockResolvedValue({ ok: true, value: null });
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBe("NOT_PROFESSIONAL");
+    expect(res.groups).toEqual([]);
+  });
+
+  it("a later refusal still carries the trial (the banner shows with it)", async () => {
+    getProfessionalSubscription.mockResolvedValue({ ok: true, value: { trialEndsAt: ENDS } });
+    mockManifest.mockResolvedValue(null);
+    const res = (await run()) as CleanCopySelectData;
+    expect(res.refusal).toBe("MANIFEST_MISSING");
+    expect(res.trial).toMatchObject({ used: 0, limit: 5 });
+  });
+
+  it("submit rule: no more than the trial allows", () => {
+    const all = new Set(["Klaviyo", "Loox"]);
+    expect(canSubmitSelection(GROUPS, new Set(["k1", "k2"]), all, 2)).toBe(true);
+    expect(canSubmitSelection(GROUPS, new Set(["k1", "k2", "l1"]), all, 2)).toBe(false);
+    expect(canSubmitSelection(GROUPS, new Set(["k1"]), all, 0)).toBe(false);
+  });
+
+  it("renders the trial banner, and the over-selection note only when over", () => {
+    const html = render({ ...DATA, trial: { used: 2, limit: 5, endsAt: ENDS.toISOString() } });
+    expect(html).toContain("2 of 5 used");
+    expect(html).toContain("November 18");
+    expect(html).not.toContain("Select 3 or fewer");
+  });
+
+  it("all used: a warning banner naming the unlock date", () => {
+    const html = render({ ...DATA, trial: { used: 5, limit: 5, endsAt: ENDS.toISOString() } });
+    expect(html).toContain("used all 5 free trial removals");
+    expect(html).toContain("November 18");
+  });
+
+  it("action passes TRIAL_LIMIT through with its copy", async () => {
+    mockRequest.mockResolvedValue({ ok: false, reason: "TRIAL_LIMIT", used: 5, limit: 5 });
+    const res = (await action(actionArgs(formOf(["a"], ["Klaviyo"])))) as CleanCopySelectActionData;
+    expect(res.refusal).toBe("TRIAL_LIMIT");
+    expect(runRefusalCopy("TRIAL_LIMIT")).toContain("up to 5 pieces of leftover code");
+  });
+});
+
+describe("gc-g496: the action checks the flag before any Admin call", () => {
+  it("flag off: FLAG_OFF and no scopes read", async () => {
+    vi.stubEnv("CLEAN_COPY_ENABLED", "");
+    const res = (await action(actionArgs(formOf(["a"])))) as unknown as DataResult;
+    expect(res.data.refusal).toBe("FLAG_OFF");
+    expect(getGrantedScopes).not.toHaveBeenCalled();
+    expect(mockMakeAdmin).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("gc-img6: the select page re-runs today's span rules on stored spans", () => {
+  const flat = (res: CleanCopySelectData) =>
+    res.groups.flatMap((g) => [...g.selectable, ...g.blocked]);
+
+  it("a stored span the rules no longer produce is not offered (NEEDS_NEW_SCAN)", async () => {
+    // Older rules stored only the opening tag; today's rules want the element.
+    const open = '<script src="https://static.klaviyo.com/a.js">';
+    const start = THEME_LIQUID.indexOf(open);
+    mockFindings.mockResolvedValue([
+      finding({ spanStart: start, spanEnd: start + open.length, spanSha256: sha256(open) }),
+      looxFinding(),
+    ]);
+    const res = (await run()) as CleanCopySelectData;
+    const k = flat(res).find((c) => c.findingId === "f-klaviyo");
+    expect(k).toMatchObject({ blocked: "NEEDS_NEW_SCAN", spanText: null });
+    expect(flat(res).find((c) => c.findingId === "f-loox")).toMatchObject({ blocked: null });
+    expect(candidateBlockCopy("NEEDS_NEW_SCAN")).toContain("Run a new scan");
+  });
+
+  it("a span that still passes is offered with its text", async () => {
+    const res = (await run()) as CleanCopySelectData;
+    expect(flat(res).find((c) => c.findingId === "f-klaviyo")).toMatchObject({
+      blocked: null,
+      spanText: KLAVIYO_SPAN,
+    });
   });
 });

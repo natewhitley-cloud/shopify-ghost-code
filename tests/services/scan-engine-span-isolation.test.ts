@@ -12,6 +12,7 @@ const holder = vi.hoisted(() => ({
   rangesThrowFor: null as string | null,
   blocksThrowFor: null as string | null,
   guardCalls: new Map<string, number>(),
+  rangesCalls: new Map<string, number>(),
 }));
 
 vi.mock("../../app/lib/removal-span", async (orig) => {
@@ -27,6 +28,8 @@ vi.mock("../../app/lib/removal-span", async (orig) => {
       return real.removalSpanFor(...args);
     },
     nonCodeRanges: (content: string) => {
+      const key = content.includes("AAA") ? "A" : "B";
+      holder.rangesCalls.set(key, (holder.rangesCalls.get(key) ?? 0) + 1);
       if (holder.rangesThrowFor && content.includes(holder.rangesThrowFor)) {
         throw new Error("ranges boom");
       }
@@ -64,6 +67,7 @@ afterEach(() => {
   holder.rangesThrowFor = null;
   holder.blocksThrowFor = null;
   holder.guardCalls.clear();
+  holder.rangesCalls.clear();
 });
 
 describe("scan-time span isolation (audit r6)", () => {
@@ -132,5 +136,28 @@ describe("scan-time span isolation (audit r6)", () => {
     const again = fixableIn(scanThemeFiles([FILES[0]]).findings, "layout/theme.liquid");
     expect(again.length).toBeGreaterThanOrEqual(3);
     expect(again.every((f) => typeof f.spanStart === "number")).toBe(true);
+  });
+});
+
+describe("gc-mlnk 3: one span parse per file per scan", () => {
+  it("nonCodeRanges runs once per file across the fixable detectors", () => {
+    const { findings } = scanThemeFiles(FILES);
+    // A has script, style and snippet findings: three detectors, one parse.
+    const types = new Set(fixableIn(findings, "layout/theme.liquid").map((f) => f.findingType));
+    expect(types.size).toBeGreaterThanOrEqual(3);
+    expect(holder.rangesCalls.get("A")).toBe(1);
+    expect(holder.rangesCalls.get("B")).toBe(1);
+  });
+
+  it("a nonCodeRanges throw is not retried by the next detector of that file", () => {
+    holder.rangesThrowFor = "AAA";
+    scanThemeFiles([FILES[0]]);
+    expect(holder.rangesCalls.get("A")).toBe(1);
+  });
+
+  it("the shared parse is per scan: a second scan parses again", () => {
+    scanThemeFiles([FILES[0]]);
+    scanThemeFiles([FILES[0]]);
+    expect(holder.rangesCalls.get("A")).toBe(2);
   });
 });

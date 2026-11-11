@@ -34,6 +34,7 @@ import { isFindingIgnored } from "./finding-aggregation.server";
 import { isCleanCopyEnabled } from "./soft-launch-flags.server";
 import { inngest } from "../../inngest/client";
 import db from "../db.server";
+import { TRIAL_CLEAN_COPY_LIMIT } from "../lib/clean-copy-view";
 import { logger } from "../lib/logger.server";
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES, nonCodeRanges, removalSpanFor } from "../lib/removal-span";
@@ -41,6 +42,7 @@ import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { spliceSpans } from "../lib/theme-splice";
 import {
   ACTIVE_FIX_RUN_STATUSES,
+  countTrialRemovals,
   createFixRun,
   decideFixItems,
   type FixItemInput,
@@ -63,6 +65,7 @@ import { SUCCESSFUL_SCAN_STATUSES } from "../models/scan.server";
 export const WRITE_THEMES_SCOPE = "write_themes";
 /** Upper bound on one selection (ids come from a form post). */
 export const MAX_SELECTED_FINDINGS = 500;
+export { TRIAL_CLEAN_COPY_LIMIT };
 
 const md5 = (text: string) => createHash("md5").update(text, "utf8").digest("hex");
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
@@ -92,7 +95,9 @@ export type RunRefusal =
   /** One or more selected findings refused; see `findings`. */
   | "FINDINGS_REFUSED"
   /** D9: Canvas themes are not supported yet (canvasThemeRefusal). */
-  | "CANVAS_THEME";
+  | "CANVAS_THEME"
+  /** gc-tib.22: the selection would take the trial past TRIAL_CLEAN_COPY_LIMIT. */
+  | "TRIAL_LIMIT";
 
 export type FindingRefusal =
   | "NOT_IN_SCAN"
@@ -182,6 +187,8 @@ export type PreflightResult =
       sourceThemeId: string;
       sourceThemeName: string;
       items: FixItemInput[];
+      /** Set while the shop is in its free trial (gc-tib.22). */
+      trialLimit?: number;
     }
   | {
       ok: false;
@@ -198,7 +205,34 @@ export type PreflightInput = {
   /** Access scopes granted to this installation (e.g. session.scope split). */
   grantedScopes: readonly string[];
   admin: CleanCopyAdmin;
+  now?: Date;
 };
+
+export type CleanCopyTrial =
+  | { ok: true; trial: { endsAt: Date } | null }
+  | { ok: false; reason: "NOT_PROFESSIONAL" | "ACCESS_DENIED" | "ADMIN_UNAVAILABLE" };
+
+/**
+ * Is the shop in its Professional free trial right now (gc-tib.22)? Read live
+ * from Shopify. Fails closed: an unreadable subscription refuses (never "not
+ * in trial"), and no active Professional subscription is NOT_PROFESSIONAL
+ * whatever the stored plan says.
+ */
+export async function cleanCopyTrial(
+  admin: CleanCopyAdmin,
+  now: Date = new Date(),
+): Promise<CleanCopyTrial> {
+  const sub = await admin.getProfessionalSubscription();
+  if (!sub.ok) {
+    return {
+      ok: false,
+      reason: sub.error === "ACCESS_DENIED" ? "ACCESS_DENIED" : "ADMIN_UNAVAILABLE",
+    };
+  }
+  if (sub.value === null) return { ok: false, reason: "NOT_PROFESSIONAL" };
+  const endsAt = sub.value.trialEndsAt;
+  return { ok: true, trial: endsAt !== null && endsAt > now ? { endsAt } : null };
+}
 
 export { canvasThemeRefusal };
 
@@ -283,6 +317,15 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
   if (!input.grantedScopes.includes(WRITE_THEMES_SCOPE)) {
     return { ok: false, reason: "SCOPE_MISSING" };
   }
+  const trial = await cleanCopyTrial(input.admin, input.now);
+  if (!trial.ok) return { ok: false, reason: trial.reason };
+  // An early, friendlier refusal; createFixRun re-checks under the shop lock.
+  if (
+    trial.trial !== null &&
+    (await countTrialRemovals(input.shopId)) + findingIds.length > TRIAL_CLEAN_COPY_LIMIT
+  ) {
+    return { ok: false, reason: "TRIAL_LIMIT" };
+  }
 
   const scan = await db.scan.findFirst({
     where: { id: input.scanId, shopId: input.shopId },
@@ -363,6 +406,7 @@ export async function preflightCleanCopy(input: PreflightInput): Promise<Preflig
     sourceThemeId: main.id,
     sourceThemeName: main.name,
     items,
+    ...(trial.trial !== null ? { trialLimit: TRIAL_CLEAN_COPY_LIMIT } : {}),
   };
 }
 
@@ -370,6 +414,7 @@ export type RequestCleanCopyResult =
   | { ok: true; runId: string }
   | Extract<PreflightResult, { ok: false }>
   | { ok: false; reason: "RUN_ACTIVE"; activeRunId: string }
+  | { ok: false; reason: "TRIAL_LIMIT"; used: number; limit: number }
   | { ok: false; reason: "DISPATCH_FAILED" };
 
 /** Preflight, create the run, and start the worker. For the slice-5 UI action. */
@@ -381,6 +426,7 @@ export async function requestCleanCopy(input: PreflightInput): Promise<RequestCl
     scanId: pre.scanId,
     sourceThemeId: pre.sourceThemeId,
     items: pre.items,
+    trialLimit: pre.trialLimit,
   });
   if (!created.ok) return created;
   try {
@@ -625,6 +671,9 @@ export async function writeCleanCopy(
   const decisions: ItemDecision[] = [];
   const writes: PlannedWrite[] = [];
   let unverifiedWrite = false;
+  // Files an earlier attempt recorded an expected md5 for but that still read
+  // as scanned: that attempt's upsert may yet land (gc-wkpc L7).
+  const earlierUpsertMayLand: string[] = [];
   const decideAll = (items: RunItem[], status: ItemDecision["status"], reasonCode: string) =>
     items.forEach((i) => decisions.push({ itemId: i.id, status, reasonCode }));
 
@@ -653,7 +702,8 @@ export async function writeCleanCopy(
         unverifiedWrite = true;
         continue;
       }
-      // Still the scanned file: the upsert never landed. Write it normally.
+      // Still the scanned file: the upsert hasn't landed. Write it normally.
+      earlierUpsertMayLand.push(filename);
     }
 
     if (!file || file.content === null || checksum === null) {
@@ -727,8 +777,14 @@ export async function writeCleanCopy(
         itemIds: accepted.map((i) => i.id),
       });
     } catch (error) {
-      decisions.length = mark;
-      decideAll(items, "skipped", "VALIDATION_FAILED:CHECK_FAILED");
+      // Keep the reasons already decided for this file (gc-wkpc L3); only the
+      // items not yet decided become CHECK_FAILED.
+      const decided = new Set(decisions.slice(mark).map((d) => d.itemId));
+      decideAll(
+        items.filter((i) => !decided.has(i.id)),
+        "skipped",
+        "VALIDATION_FAILED:CHECK_FAILED",
+      );
       logger.warn("clean-copy-file-check-failed", {
         runId,
         filename,
@@ -737,6 +793,10 @@ export async function writeCleanCopy(
     }
   }
 
+  // A file we won't write this attempt may still get the earlier attempt's
+  // upsert, unchecked: the copy can't be trusted (gc-wkpc L7).
+  const written = new Set(writes.map((w) => w.filename));
+  if (earlierUpsertMayLand.some((f) => !written.has(f))) unverifiedWrite = true;
   if (unverifiedWrite) await setFixRunDoNotPublish(runId);
   await decideFixItems(runId, decisions);
   if (writes.length === 0) return { written: 0 };

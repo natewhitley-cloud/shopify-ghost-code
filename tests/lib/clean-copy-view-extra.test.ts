@@ -15,6 +15,7 @@ import {
   runSummary,
   type CleanCopyCandidate,
 } from "../../app/lib/clean-copy-view";
+import type { SpliceRefusal } from "../../app/lib/theme-splice";
 
 function expectMerchantCopy(text: string) {
   expect(text.trim().length).toBeGreaterThan(0);
@@ -74,21 +75,26 @@ describe("fixItemReasonCopy", () => {
     expect(fixItemReasonCopy(null)).toBe("Removed.");
   });
 
-  it("every splice and span refusal gets plain copy that says it was skipped", () => {
-    for (const reason of [
-      "OUT_OF_BOUNDS",
-      "OVERLAPPING_SPANS",
-      "IN_NON_CODE_REGION",
-      "UNBALANCED_LIQUID",
-      "MALFORMED_TAG",
-      "LIQUID_TAG_IN_ELEMENT",
-      "SELF_CLOSING_SCRIPT",
-      "SCRIPT_BODY_NOT_EMPTY",
-      "NOT_AT_ELEMENT",
-    ]) {
+  // Exactly the codes the service writes after "VALIDATION_FAILED:" (gc-wkpc
+  // L6): every splice refusal, plus CHECK_FAILED. The Record makes tsc fail
+  // when SpliceRefusal gains a member this list lacks.
+  const WRITTEN_VALIDATION_CODES: Record<SpliceRefusal | "CHECK_FAILED", true> = {
+    OUT_OF_BOUNDS: true,
+    OVERLAPPING_SPANS: true,
+    IN_NON_CODE_REGION: true,
+    UNBALANCED_LIQUID: true,
+    JOINS_TEXT: true,
+    STRUCTURE_CHANGED: true,
+    CHECK_FAILED: true,
+  };
+
+  it("every code written under VALIDATION_FAILED gets its own skipped copy, not the generic", () => {
+    const generic = fixItemReasonCopy("VALIDATION_FAILED:SOMETHING_NEW");
+    for (const reason of Object.keys(WRITTEN_VALIDATION_CODES)) {
       const copy = fixItemReasonCopy(`VALIDATION_FAILED:${reason}`);
       expectMerchantCopy(copy);
       expect(copy.startsWith("Skipped.")).toBe(true);
+      expect(copy).not.toBe(generic);
     }
   });
 

@@ -29,6 +29,12 @@ export type SpliceRefusal =
   | "IN_NON_CODE_REGION"
   /** Span text has unbalanced Liquid delimiters; removing it would break the template. */
   | "UNBALANCED_LIQUID"
+  /**
+   * The cut would join the text on both sides into a character reference
+   * (`&l` + `t;` = `&lt;`), changing visible text (gc-f7ox). Every span of the
+   * touching cluster is refused.
+   */
+  | "JOINS_TEXT"
   /** The spliced file would parse differently around the cuts: every span in the file is refused. */
   | "STRUCTURE_CHANGED";
 
@@ -87,12 +93,18 @@ export function spliceSpans(content: string, spans: readonly RemovalSpan[]): Spl
   }
 
   const ranges = nonCodeRanges(content);
-  const accepted: RemovalSpan[] = [];
+  const candidates: RemovalSpan[] = [];
   inBounds.forEach((s, i) => {
     if (overlapping.has(i)) refused.push({ span: s, reason: "OVERLAPPING_SPANS" });
     else if (inRanges(ranges, s.start)) refused.push({ span: s, reason: "IN_NON_CODE_REGION" });
     else if (!liquidBalanced(content.slice(s.start, s.end)))
       refused.push({ span: s, reason: "UNBALANCED_LIQUID" });
+    else candidates.push(s);
+  });
+  const joining = spansJoiningText(content, candidates);
+  const accepted: RemovalSpan[] = [];
+  candidates.forEach((s, i) => {
+    if (joining.has(i)) refused.push({ span: s, reason: "JOINS_TEXT" });
     else accepted.push(s);
   });
 
@@ -152,6 +164,42 @@ export function spliceSpans(content: string, spans: readonly RemovalSpan[]): Spl
     return { content, removed: [], refused };
   }
   return { content: out, removed: accepted, refused };
+}
+
+const isRefChar = (c: string) => /^[#A-Za-z0-9]$/.test(c);
+
+/**
+ * Text before `at` ends in an open reference: `&`, then only name chars.
+ * Scans back with no window (numeric references allow any number of leading
+ * zeros); the scan stops at the first other char, and a span always ends in
+ * one (`>`), so the total over all cuts stays linear.
+ */
+function endsInOpenReference(content: string, at: number): boolean {
+  let x = at - 1;
+  while (x >= 0 && isRefChar(content[x])) x--;
+  return x >= 0 && content[x] === "&";
+}
+
+/**
+ * Indices (into the ascending `spans`) whose cut would join an open character
+ * reference before it with reference text after it (gc-f7ox). Touching spans
+ * (one ends where the next starts) cut as one, so they are judged as one
+ * cluster and refused together. A hard limit: no attempt to decide whether
+ * the joined text is a real entity name.
+ */
+function spansJoiningText(content: string, spans: readonly RemovalSpan[]): Set<number> {
+  const out = new Set<number>();
+  let i = 0;
+  while (i < spans.length) {
+    let j = i;
+    while (j + 1 < spans.length && spans[j + 1].start === spans[j].end) j++;
+    const after = content[spans[j].end] ?? "";
+    if ((isRefChar(after) || after === ";") && endsInOpenReference(content, spans[i].start)) {
+      for (let k = i; k <= j; k++) out.add(k);
+    }
+    i = j + 1;
+  }
+  return out;
 }
 
 /**

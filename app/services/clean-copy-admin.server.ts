@@ -28,6 +28,8 @@
  * operations below were validated against the 2026-07 Admin schema.
  */
 
+import { resolvePlanFromSubscription } from "../lib/billing.server";
+import { PLANS } from "../lib/plans";
 import { thrownGraphqlResponse } from "../lib/rate-limit-monitor.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -104,6 +106,42 @@ export interface CleanCopyAdmin {
   getJob(jobId: string): Promise<AdminResult<{ done: boolean }>>;
   /** Every access scope handle granted to this installation, read live. */
   getGrantedScopes(): Promise<AdminResult<string[]>>;
+  /**
+   * The installation's ACTIVE Professional subscription, read live (gc-tib.22),
+   * or null when there is none. A malformed subscription is TRANSIENT, never a
+   * guess.
+   */
+  getProfessionalSubscription(): Promise<AdminResult<ProfessionalSubscription | null>>;
+}
+
+export type ProfessionalSubscription = {
+  /** When the free trial ends; null when the subscription has no trial days. */
+  trialEndsAt: Date | null;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Trial end of an AppSubscription: `trialDays` whole days from `createdAt`
+ * (Admin API: "free trial days, starting at the subscription's creation
+ * date"), rounded UP to the next 00:00 UTC, because Shopify counts trial days
+ * in whole UTC calendar days. Rounding up keeps the trial limit on for at most
+ * one extra day, never lifts it early. Null for no trial; undefined when the
+ * fields are malformed.
+ */
+export function subscriptionTrialEnd(
+  createdAt: unknown,
+  trialDays: unknown,
+): Date | null | undefined {
+  if (typeof trialDays !== "number" || !Number.isInteger(trialDays) || trialDays < 0) {
+    return undefined;
+  }
+  if (typeof createdAt !== "string") return undefined;
+  const created = new Date(createdAt).getTime();
+  if (Number.isNaN(created)) return undefined;
+  if (trialDays === 0) return null;
+  const end = created + trialDays * DAY_MS;
+  return new Date(Math.ceil(end / DAY_MS) * DAY_MS);
 }
 
 /**
@@ -164,6 +202,8 @@ const UPSERT_MUTATION = `mutation CleanCopyUpsert($themeId: ID!, $files: [Online
 const JOB_QUERY = `query CleanCopyJob($id: ID!) { job(id: $id) { id done } }`;
 
 const ACCESS_SCOPES_QUERY = `query CleanCopyScopes { currentAppInstallation { accessScopes { handle } } }`;
+
+const SUBSCRIPTIONS_QUERY = `query CleanCopySubscriptions { currentAppInstallation { activeSubscriptions { name status createdAt trialDays } } }`;
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -417,6 +457,35 @@ export function createCleanCopyAdmin(admin: AdminApiContext): CleanCopyAdmin {
         ok: true,
         value: scopes.map((s) => s.handle).filter((h): h is string => typeof h === "string"),
       };
+    },
+
+    async getProfessionalSubscription() {
+      const res = await call(SUBSCRIPTIONS_QUERY);
+      if (!res.ok) return res;
+      const subs = (
+        res.value.currentAppInstallation as { activeSubscriptions?: unknown } | null | undefined
+      )?.activeSubscriptions;
+      if (!Array.isArray(subs)) return fail("TRANSIENT", "no active subscriptions list");
+      // The reconciler's own mapping (name + ACTIVE status) picks Professional.
+      const pro = subs.filter(
+        (s): s is Record<string, unknown> =>
+          typeof s === "object" &&
+          s !== null &&
+          resolvePlanFromSubscription(
+            typeof s.name === "string" ? s.name : undefined,
+            typeof s.status === "string" ? s.status : undefined,
+          ) === PLANS.PROFESSIONAL,
+      );
+      if (pro.length === 0) return { ok: true, value: null };
+      // Several (never expected): the latest trial end wins, so the limit
+      // stays on while any of them is in trial.
+      let trialEndsAt: Date | null = null;
+      for (const s of pro) {
+        const end = subscriptionTrialEnd(s.createdAt, s.trialDays);
+        if (end === undefined) return fail("TRANSIENT", "malformed subscription trial fields");
+        if (end !== null && (trialEndsAt === null || end > trialEndsAt)) trialEndsAt = end;
+      }
+      return { ok: true, value: { trialEndsAt } };
     },
   };
 }

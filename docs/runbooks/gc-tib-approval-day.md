@@ -48,6 +48,11 @@ marked STOP means don't go further until it's resolved.
      say the live theme changed (`LIVE_THEME_CHANGED_COPY`). If it does, `themeDuplicate`
      bumps the live theme's `updatedAt`. STOP: turn the flag off and fix `liveThemeState`
      before anyone else sees it.
+   - **Trial check first (gc-tib.22):** if nw-dev-store-2's Professional subscription
+     is still in its free trial, the select page shows "N of 5 used" and won't run 13.
+     That is the trial limit working, not a bug: either check the banner, run 5, and
+     confirm a 6th is refused (TRIAL_LIMIT), or wait until the trial ends for the 13-run.
+     No banner means the page read the shop as paid.
    - Before starting: the select page should offer all 13 seeded leftovers. Fewer means
      the scan stored no span for some; scan-time span failures are not logged (the scan
      engine never logs), so compare against the scan's findings and STOP to investigate

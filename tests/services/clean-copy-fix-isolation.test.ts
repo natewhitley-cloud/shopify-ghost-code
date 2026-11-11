@@ -156,13 +156,13 @@ describe("fix-time failure isolation across files (audit r7)", () => {
     expect(shop.count("CleanCopyUpsert")).toBe(0);
   });
 
-  it("an item already decided in the same file is rolled back to CHECK_FAILED by a later throw", async () => {
+  it("an item already decided in the same file keeps its own reason when a later item throws (gc-wkpc L3)", async () => {
     IDS = ["f-script-1", "f-script-2", "f-other"];
     holder.guardMode = "plan";
     holder.plan.set(spanOf("layout/theme.liquid", WIDGET, 0).spanStart, "refuse");
     holder.plan.set(spanOf("layout/theme.liquid", WIDGET, 1).spanStart, "throw");
     const o = await runToEnd();
-    expect(o.items["f-script-1"]).toMatchObject(CHECK_FAILED);
+    expect(o.items["f-script-1"]).toMatchObject({ status: "skipped", reasonCode: "SPAN_MISMATCH" });
     expect(o.items["f-script-2"]).toMatchObject(CHECK_FAILED);
     expect(o.items["f-other"].status).toBe("removed");
     expect(o.fin?.status).toBe("partial");
