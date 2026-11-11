@@ -1,6 +1,7 @@
 # Handoff: gc-tib Clean copy build (2026-11-10 / 11)
 
 ## RESUME HERE (updated 2026-11-11 session 2)
+- **2026-11-11: ticket 71890683 reply SENT by Nathan** (screenshots: 1-select, 2-result, 3-admin-themes in ~/shopify/gc-preview-harness/cleancopy/png/). Waiting on Shopify's write_themes decision. Still NOT pushed; open decisions: gc-tib.12 downgrade, gc-tib.20 UX.
 - **Why we're building:** Shopify replied on the write_themes exemption (ticket 71890683, Cy D., 2026-11-10). They want a screencast or screenshots of the app using the scopes. The demo makes the copy through the Shopify CLI, signed in as store staff (no dev-store app, per Nathan).
 - **Branch:** `feat/gc-tib-clean-copy`, worktree `~/shopify/gc-tib`. **NOT pushed. No deploys (Nathan, 2026-11-10).** Push to main = prod deploy.
 - **No .env in the worktree, on purpose:** the repo .env points at the PROD DB.

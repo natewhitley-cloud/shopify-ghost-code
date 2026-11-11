@@ -1,7 +1,7 @@
 # DRAFT: reply to Shopify ticket 71890683 (write_themes exemption)
 
-Status: DRAFT for Nathan to review, edit and send. Not sent.
-Attach: the screenshots listed below. Nathan captures the 4 admin screenshots (4-7).
+Status: SENT by Nathan 2026-11-11 (3 screenshots: select, result, admin theme library). Awaiting Shopify reply.
+Attach: 1-select-1280.png, 2-result-1280.png (attached 11-11); 3-admin-themes.png (admin theme library, taken 11-11).
 
 ---
 
@@ -22,13 +22,9 @@ GhostCode never edits or publishes the live theme. Before every write, the app c
 
 **Screenshots**
 
-1. GhostCode scan results on the live theme, showing the leftover code it found
-2. Clean copy: selecting the code to remove (1-select-1280.png)
-3. Clean copy: the result, 13 of 13 pieces removed from the copy (2-result-1280.png)
-4. Shopify admin, theme library: the live theme unchanged, the new unpublished copy "test-data - clean copy pa4zrdal"
-5. Shopify admin: preview of the copy
-6. Shopify admin, code editor on the copy: the removed lines are gone
-7. Shopify admin, code editor on the live theme: the same lines are still there
+1. Clean copy: selecting the leftover code to remove
+2. Clean copy: the result, 13 of 13 pieces removed from the unpublished copy
+3. Shopify admin, Online Store > Themes: the live theme "test-data" (last saved March 28, so untouched) and the new draft "test-data - clean copy pa4zrdal"
 
 **A note on how this was recorded**
 
