@@ -94,9 +94,13 @@ describe("GHOST_SCRIPT spans", () => {
   });
 
   it("refuses an unterminated opening tag and unbalanced quotes", () => {
-    expect(refusal(S, `<script src="https://cdn.app.io/a.js`, "<script")).toBe("MALFORMED_TAG");
+    // gc-tib.11 r2: an unclosed tag is ambiguous, so the rest of the file is
+    // text before the element parser runs (still refused, safer reason).
+    expect(refusal(S, `<script src="https://cdn.app.io/a.js`, "<script")).toBe(
+      "IN_NON_CODE_REGION",
+    );
     expect(refusal(S, `<script src="https://cdn.app.io/a.js></script>`, "<script")).toBe(
-      "MALFORMED_TAG",
+      "IN_NON_CODE_REGION",
     );
   });
 
@@ -107,7 +111,7 @@ describe("GHOST_SCRIPT spans", () => {
     const r = removalSpanFor(S, c, 0);
     if (r.ok) expect(c.slice(r.span.start, r.span.end)).toBe(c);
     const c2 = `<script src=https://cdn.app.io/a.js?{{ x ></script>`;
-    expect(refusal(S, c2, "<script")).toBe("MALFORMED_TAG");
+    expect(refusal(S, c2, "<script")).toBe("IN_NON_CODE_REGION");
   });
 
   it("refuses <script inside a JS string (document.write)", () => {

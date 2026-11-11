@@ -267,29 +267,36 @@ function isHtmlWs(ch: string | undefined): boolean {
   return ch === " " || ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r";
 }
 
-/** A Liquid block whose body is not code; it must open even inside a start tag. */
+/** A Liquid tag whose body is not code (sticky: tested at an exact offset). */
 const LIQUID_BLOCK_OPENER =
-  /^\{%-?\s*(?:comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|^\{%-?\s*#/i;
+  /\{%-?\s*(?:(?:comment|doc)\b[^%]*|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#/iy;
+
+function isLiquidBlockOpener(content: string, at: number): boolean {
+  LIQUID_BLOCK_OPENER.lastIndex = at;
+  return LIQUID_BLOCK_OPENER.test(content);
+}
 
 /**
- * Walk an HTML start tag from just after `<name` and record every attribute
- * value as [start, end): quoted (quotes included) or unquoted. A quote opens
- * a value only right after `=` (HTML: in `title=it's` the apostrophe is text),
- * as does any other character there (an unquoted value runs to whitespace or
- * `>`). Liquid outside a value is skipped as a unit and recorded (not a fix
- * target); inside a value it is part of the value.
+ * Walk an HTML start or end tag from just after `<name` (or `</name`) to just
+ * past its `>`, collecting attribute values as [start, end) (quoted, with the
+ * quotes, or unquoted) and Liquid between attributes.
  *
- * Returns where the main pass resumes: just past the tag's `>` (`closed`),
- * or, when a Liquid block opener (`{% comment %}`, `{% raw %}`, `{%#`...)
- * appears in the tag, its offset, so the main pass opens that block (Liquid
- * runs before HTML). An unterminated value or tag runs to the end of the file.
+ * Hard limit (gc-tib.11 audit r2): the walk does not try to model every way
+ * HTML and Liquid can interleave. A tag is AMBIGUOUS, and the caller then
+ * treats everything from the tag to the end of the file as text, when it
+ * holds a Liquid block opener (`{% comment %}`, `{% raw %}`, `{%#`...), a `<`
+ * outside a value, a quote that doesn't follow `=`, or when the tag, a value
+ * or a Liquid tag in it never closes. An unquoted value runs to whitespace or
+ * `>` and takes quotes and `<` with it, as in HTML.
+ * Ordinary markup (`class="{% if x %}a{% endif %}"`, `value={{ id }}`,
+ * `{% if x %}hidden{% endif %}`) is not ambiguous.
  */
-function walkStartTag(
+function walkTag(
   content: string,
   from: number,
-  values: Array<[number, number]>,
-): { end: number; closed: boolean } {
+): { end: number; values: Array<[number, number]> } | null {
   const len = content.length;
+  const values: Array<[number, number]> = [];
   let mode: "none" | "quoted" | "unquoted" = "none";
   let quote = "";
   let valueStart = 0;
@@ -298,18 +305,18 @@ function walkStartTag(
   while (i < len) {
     const ch = content[i];
     if (ch === "{" && (content[i + 1] === "{" || content[i + 1] === "%")) {
-      if (content[i + 1] === "%" && LIQUID_BLOCK_OPENER.test(content.slice(i, i + 40))) {
-        if (mode !== "none" && i > valueStart) values.push([valueStart, i]);
-        return { end: i, closed: false };
-      }
+      if (content[i + 1] === "%" && isLiquidBlockOpener(content, i)) return null;
       const close = content.indexOf(content[i + 1] === "{" ? "}}" : "%}", i + 2);
-      if (close === -1) {
-        values.push([mode === "none" ? i : valueStart, len]);
-        return { end: len, closed: false };
-      }
+      if (close === -1) return null;
       if (mode === "none") {
-        values.push([i, close + 2]);
-        afterEq = false;
+        if (afterEq) {
+          // Liquid right after `=` starts an unquoted value (`value={{ id }}`).
+          afterEq = false;
+          mode = "unquoted";
+          valueStart = i;
+        } else {
+          values.push([i, close + 2]);
+        }
       }
       i = close + 2;
       continue;
@@ -323,8 +330,9 @@ function walkStartTag(
       if (isHtmlWs(ch) || ch === ">") {
         values.push([valueStart, i]);
         mode = "none";
-        if (ch === ">") return { end: i + 1, closed: true };
+        if (ch === ">") return { end: i + 1, values };
       }
+      // Anything else, quotes and `<` included, is part of the value (HTML).
     } else if (isHtmlWs(ch)) {
       // Whitespace keeps `afterEq` (`a = "b"` is a value).
     } else if (afterEq) {
@@ -334,32 +342,72 @@ function walkStartTag(
         mode = "quoted";
         quote = ch;
       } else if (ch === ">") {
-        return { end: i + 1, closed: true };
+        return { end: i + 1, values };
+      } else if (ch === "<") {
+        return null;
       } else {
         mode = "unquoted";
       }
     } else if (ch === "=") {
       afterEq = true;
     } else if (ch === ">") {
-      return { end: i + 1, closed: true };
+      return { end: i + 1, values };
+    } else if (ch === "<" || ch === '"' || ch === "'") {
+      return null;
     }
     i++;
   }
-  if (mode !== "none") values.push([valueStart, len]);
-  return { end: len, closed: false };
+  return null;
+}
+
+/** Elements whose body is text up to their own close tag. */
+const BODY_ELEMENTS = new Set([
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "template",
+  "xmp",
+  "noscript",
+  "iframe",
+  "noembed",
+  "noframes",
+]);
+
+/**
+ * Where a text-only element's body ends: at `</name` followed by whitespace,
+ * `/` or `>` (so `</scriptx` doesn't end a script). A `<!--` in a script body
+ * before that (the HTML "escaped" states) makes the body run to the first
+ * close tag after the next `-->` (conservative).
+ */
+function bodyEnd(content: string, name: string, from: number): number {
+  const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi");
+  close.lastIndex = from;
+  let c = close.exec(content);
+  if (name === "script") {
+    const open = content.indexOf("<!--", from);
+    if (open !== -1 && (c === null || open < c.index)) {
+      const shut = content.indexOf("-->", open + 4);
+      if (shut === -1) return content.length;
+      close.lastIndex = shut + 3;
+      c = close.exec(content);
+    }
+  }
+  return c ? c.index : content.length;
 }
 
 const LIQUID_TAG_HEAD = /^\{%-?\s*liquid\b/i;
 
 /**
- * The string literals inside one Liquid tag or output that starts at `at`
- * (`{%` or `{{`). Liquid ends the tag at the first `%}` / `}}`, even inside
- * quotes, so a literal that doesn't close by then runs to the tag end. In a
- * `{% liquid %}` tag, `#` comment lines and `comment ... endcomment` lines are
- * text too (and their quotes don't pair with real strings).
+ * The text inside one Liquid tag or output that starts at `at` (`{%` or
+ * `{{`): its string literals. Liquid ends the tag at the first `%}` / `}}`,
+ * even inside quotes, so a literal that doesn't close by then runs to the tag
+ * end. In a `{% liquid %}` tag, statements are lines (the first one follows
+ * `liquid`); `#` lines and lines inside `comment`/`doc` blocks (nested,
+ * counted by depth) are text, and their quotes don't pair with real strings.
  * Returns the tag end, or the file end when the tag never closes (then the
- * rest of the file from inside the tag is one range: nothing after it is
- * certain; the tag's own start keeps its specific refusal).
+ * rest of the file from inside the tag is one range; the tag's own start
+ * keeps its specific refusal).
  */
 function liquidTagLiterals(content: string, at: number, ranges: Array<[number, number]>): number {
   const closer = content[at + 1] === "{" ? "}}" : "%}";
@@ -368,31 +416,41 @@ function liquidTagLiterals(content: string, at: number, ranges: Array<[number, n
     if (at + 2 < content.length) ranges.push([at + 2, content.length]);
     return content.length;
   }
-  const isLiquidTag = closer === "%}" && LIQUID_TAG_HEAD.test(content.slice(at, at + 16));
-  let inComment = false;
-  let i = at + 2;
-  while (i < close) {
-    if (isLiquidTag && (i === at + 2 || content[i - 1] === "\n")) {
-      // Line start inside {% liquid %}: comment lines are text.
-      let eol = content.indexOf("\n", i);
-      if (eol === -1 || eol > close) eol = close;
-      const stmt = content.slice(i, eol).trim();
-      const word = stmt.split(/\s+/)[0]?.toLowerCase() ?? "";
-      if (inComment || stmt.startsWith("#") || word === "comment") {
-        if (word === "comment" && !inComment) inComment = true;
-        else if (word === "endcomment") inComment = false;
-        if (eol > i) ranges.push([i, eol]);
-        i = eol < close ? eol + 1 : close;
-        continue;
-      }
+  const strings = (from: number, to: number) => {
+    let i = from;
+    while (i < to) {
+      const ch = content[i];
+      if (ch === '"' || ch === "'") {
+        const q = content.indexOf(ch, i + 1);
+        const end = q === -1 || q >= close ? close : q + 1;
+        ranges.push([i, end]);
+        i = end;
+      } else i++;
     }
-    const ch = content[i];
-    if (ch === '"' || ch === "'") {
-      const q = content.indexOf(ch, i + 1);
-      const end = q === -1 || q >= close ? close : q + 1;
-      ranges.push([i, end]);
-      i = end;
-    } else i++;
+    return i;
+  };
+  const head = closer === "%}" ? LIQUID_TAG_HEAD.exec(content.slice(at, at + 32)) : null;
+  if (!head) {
+    strings(at + 2, close);
+    return close + 2;
+  }
+  let depth = 0;
+  let lineStart = at + head[0].length;
+  while (lineStart < close) {
+    let eol = content.indexOf("\n", lineStart);
+    if (eol === -1 || eol > close) eol = close;
+    const stmt = content.slice(lineStart, eol).trim();
+    const word = (stmt.split(/\s+/)[0] ?? "").toLowerCase();
+    if (word === "comment" || word === "doc") depth++;
+    const text = depth > 0 || stmt.startsWith("#");
+    if ((word === "endcomment" || word === "enddoc") && depth > 0) depth--;
+    if (text) {
+      if (eol > lineStart) ranges.push([lineStart, eol]);
+      lineStart = eol + 1;
+    } else {
+      // A string that runs past the line end runs to the tag end.
+      lineStart = Math.max(strings(lineStart, eol), eol) + 1;
+    }
   }
   return close + 2;
 }
@@ -400,57 +458,71 @@ function liquidTagLiterals(content: string, at: number, ranges: Array<[number, n
 /**
  * [start, end) ranges where markup is not live code: Liquid comment, doc, raw,
  * schema, javascript and stylesheet blocks; `{%# %}` inline comments; HTML
- * comments; the bodies of `<script>` / `<style>` elements (so a
- * `document.write('<script src=...')` string is never treated as an element);
- * the text-only or inert `<textarea>` / `<title>` / `<template>` / `<xmp>`
- * / `<noscript>` bodies; and (gc-tib.11) string literals inside any other
- * Liquid tag or output and quoted HTML attribute values, so
- * `{% assign x = '<script ...>' %}` or `<div data-html='<script ...>'>` is
- * text, never an element.
+ * comments and bogus comments (`<!x`, `<?x`, `</` + non-letter, to the next
+ * `>`); the bodies of text-only elements (`<script>`, `<style>`, `<textarea>`,
+ * `<title>`, `<template>`, `<xmp>`, `<noscript>`, `<iframe>`, `<noembed>`,
+ * `<noframes>`; `<plaintext>` runs to the end of the file); string literals
+ * inside other Liquid tags and outputs, and comment lines in `{% liquid %}`;
+ * HTML attribute values. An ambiguous tag (see walkTag) makes the rest of the
+ * file text: a hard limit, not a guess.
  * One left-to-right pass; an unterminated region runs to the end of the file.
  * The result is sorted and non-overlapping (inRanges relies on it).
  */
 export function nonCodeRanges(content: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
+  const len = content.length;
   const token =
-    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|\{[{%]|<([a-zA-Z][^\t\n\f\r />]*)/gi;
-  const BODY_ELEMENTS = new Set([
-    "script",
-    "style",
-    "textarea",
-    "title",
-    "template",
-    "xmp",
-    "noscript",
-  ]);
+    /\{%-?\s*((?:comment|doc)\b[^%]*?|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|<[!?]|<\/(?![a-zA-Z])|\{[{%]|<(\/?)([a-zA-Z][^\t\n\f\r />]*)/gi;
   let m: RegExpExecArray | null;
   while ((m = token.exec(content)) !== null) {
     const at = m.index;
     let end: number;
     if (m[1]) {
-      const close = new RegExp(`\\{%-?\\s*end${m[1].toLowerCase()}\\s*-?%\\}`, "gi");
-      close.lastIndex = at + m[0].length;
-      const c = close.exec(content);
-      end = c ? c.index + c[0].length : content.length;
+      const kind = m[1].trim().split(/\s+/)[0].toLowerCase();
+      // comment and doc nest (Liquid 5.4+): count depth to the matching end.
+      const nests = kind === "comment" || kind === "doc";
+      const tagRe = new RegExp(
+        nests ? `\\{%-?\\s*(end)?${kind}\\b[^%]*?-?%\\}` : `\\{%-?\\s*(end)${kind}\\s*-?%\\}`,
+        "gi",
+      );
+      tagRe.lastIndex = at + m[0].length;
+      let depth = 1;
+      end = len;
+      let c: RegExpExecArray | null;
+      while ((c = tagRe.exec(content)) !== null) {
+        depth += c[1] ? -1 : 1;
+        if (depth === 0) {
+          end = c.index + c[0].length;
+          break;
+        }
+      }
       ranges.push([at, end]);
-    } else if (m[0].startsWith("<!--")) {
+    } else if (m[0] === "<!--") {
       const c = content.indexOf("-->", at + 4);
-      end = c === -1 ? content.length : c + 3;
+      end = c === -1 ? len : c + 3;
       ranges.push([at, end]);
-    } else if (m[2]) {
-      // The start tag itself is code (it may be the fix target); its
-      // attribute values are not. Then, for text-only elements, the body.
-      const name = m[2].toLowerCase();
-      const tag = walkStartTag(content, at + m[0].length, ranges);
+    } else if (m[0] === "<!" || m[0] === "<?" || m[0] === "</") {
+      // Bogus comment: to the next `>`.
+      const c = content.indexOf(">", at + 2);
+      end = c === -1 ? len : c + 1;
+      ranges.push([at, end]);
+    } else if (m[3] !== undefined) {
+      const isEnd = m[2] === "/";
+      const name = m[3].toLowerCase();
+      const tag = walkTag(content, at + m[0].length);
+      if (tag === null) {
+        // Ambiguous tag: nothing from here on is certain.
+        ranges.push([at, len]);
+        break;
+      }
+      ranges.push(...tag.values);
       end = tag.end;
-      if (BODY_ELEMENTS.has(name) && end < content.length) {
-        // A Liquid block opened inside the start tag: the body's start is
-        // unknown, so everything to the closing tag is text (conservative).
+      if (!isEnd && name === "plaintext") {
+        if (end < len) ranges.push([end, len]);
+        end = len;
+      } else if (!isEnd && BODY_ELEMENTS.has(name) && end < len) {
         const bodyStart = end;
-        const close = new RegExp(`</${name}`, "gi");
-        close.lastIndex = bodyStart;
-        const c = close.exec(content);
-        end = c ? c.index : content.length;
+        end = bodyEnd(content, name, bodyStart);
         if (end > bodyStart) ranges.push([bodyStart, end]);
       }
     } else if (m[0] === "{{" || m[0] === "{%") {
@@ -458,7 +530,7 @@ export function nonCodeRanges(content: string): Array<[number, number]> {
     } else {
       // {%# inline comment %}
       const c = content.indexOf("%}", at + 2);
-      end = c === -1 ? content.length : c + 2;
+      end = c === -1 ? len : c + 2;
       ranges.push([at, end]);
     }
     token.lastIndex = Math.max(end, at + 1);

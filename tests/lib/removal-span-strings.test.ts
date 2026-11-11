@@ -230,3 +230,86 @@ describe("gc-tib.11 audit r1: no span for text", () => {
     }
   });
 });
+
+describe("gc-tib.11 audit r2: ambiguous tags make the rest of the file text (hard limit)", () => {
+  const INNER = "<script src=//e.js></script>";
+  const refused = (content: string, needle = INNER) =>
+    expect(spanAt(content, needle)).toEqual({ ok: false, reason: "IN_NON_CODE_REGION" });
+  const fixed = (content: string, needle: string, type = "GHOST_SCRIPT") =>
+    expect(spanAt(content, needle, type)).toMatchObject({ ok: true });
+
+  it("HIGH 1: a Liquid block inside a start tag or value", () => {
+    refused(`<div a="{% comment %}x{% endcomment %}${INNER}">`);
+    refused(`<div a="{% raw %}x{% endraw %}${INNER}">`);
+    refused(`<div a='{%# x %}${INNER}'>`);
+    refused(`<div {% comment %}>{% endcomment %}${INNER}`);
+    refused(`<div {% raw %}x{% endraw %} ${INNER}`);
+    refused(`<div {%# c %} ${INNER}`);
+    refused(`<script {% comment %}></script>${INNER}{% endcomment %}>`);
+    refused(`<style {% raw %}></style>${INNER}{% endraw %}>`);
+    refused(`<div {%${" ".repeat(60)}comment %}>{% endcomment %}${INNER}`);
+  });
+
+  it("HIGH 2: Liquid right after '='", () => {
+    refused(`<div a={% if x %}'${INNER}'{% endif %}>`);
+    refused(`<div a={%- if x -%}"${INNER}"{%- endif -%}>`);
+    refused(`<div a={{ b }}'${INNER}'>`);
+    refused(`<div a={{ '"' }}${INNER}{{ '"' }}>`);
+  });
+
+  it("HIGH 3: '<' or a stray quote inside a tag, end tags, bogus comments", () => {
+    refused(`<div ${INNER}`);
+    refused(`<div x'${INNER}'>`);
+    refused(`<div x"${INNER}">`);
+    refused(`<div a＝'${INNER}'>`);
+    refused(`<div title=a <link rel="stylesheet" href="x.css">`, "<link");
+    refused(`</div ${INNER}`);
+    refused(`</div title='>${INNER}'>`);
+    refused(`</3${INNER}`);
+    refused(`<!x ${INNER}`);
+    refused(`<?x ${INNER}`);
+  });
+
+  it("MEDIUM 4: a body element ends only at its own close tag", () => {
+    refused(`<script>var a='</scriptx>${INNER}'</script>`);
+    refused(`<script>var a='</SCRIPTX>${INNER}'</script>`);
+  });
+
+  it("LOW: raw-text elements, script escapes, comment tags with arguments", () => {
+    for (const el of ["iframe", "noembed", "noframes"]) refused(`<${el}>${INNER}</${el}>`);
+    refused(`<plaintext>${INNER}`);
+    refused(`<script><!--<script></script>${INNER}--></script>`);
+    refused(`{% comment note %}${INNER}{% endcomment %}`);
+    // Nested Liquid comments (Liquid 5.4+) at the HTML level.
+    refused(`{% comment %}{% comment %}{% endcomment %}${INNER}{% endcomment %}`);
+    refused(`{% doc %}{% doc %}{% enddoc %}${INNER}{% enddoc %}`);
+  });
+
+  it("LOW: {% liquid %} comment depth, first-line statements, doc", () => {
+    const bare = (c: string) =>
+      expect(removalSpanFor("GHOST_SNIPPET", c, c.indexOf("render 'x'") - 2)).toEqual({
+        ok: false,
+        reason: "IN_NON_CODE_REGION",
+      });
+    bare("{% liquid\n  comment\n  comment\n  endcomment\n  render 'x'\n  endcomment\n%}");
+    bare("{% liquid comment\n  render 'x'\n  endcomment\n%}");
+    bare("{% liquid\n  doc\n  render 'x'\n  enddoc\n%}");
+  });
+
+  it("real theme markup is still fixable", () => {
+    fixed(`<script src="{{ 'x.js' | asset_url }}" defer="defer"></script>`, "<script");
+    fixed(`<link rel="preconnect" href="https://x" crossorigin>`, "<link", "GHOST_PRECONNECT");
+    fixed(`<input value={{ product.id }} class={{ c }}>\n${SCRIPT}`, SCRIPT);
+    fixed(`<div {% if x %}hidden{% endif %} class="a">\n${SCRIPT}`, SCRIPT);
+    fixed(`<div class="{% if x %}a{% else %}b{% endif %}">\n${SCRIPT}`, SCRIPT);
+    fixed(`<!DOCTYPE html>\n<html lang="{{ l }}">\n<head>\n${SCRIPT}`, SCRIPT);
+    fixed(`<script>if (a < b) { x = '</div>'; }</script>\n${SCRIPT}`, SCRIPT);
+    fixed(`</div>\n</section>\n${SCRIPT}`, SCRIPT);
+    fixed(`<br/>\n<img src="a.png" />\n${SCRIPT}`, SCRIPT);
+    // (An apostrophe in a comment line still makes liquidTagEnd refuse the block: gc-pb12.)
+    const block = "{% liquid\n  # a note\n  comment\n  x\n  endcomment\n  render 'x'\n%}";
+    expect(removalSpanFor("GHOST_SNIPPET", block, block.indexOf("  render"))).toMatchObject({
+      ok: true,
+    });
+  });
+});
