@@ -671,69 +671,81 @@ export async function writeCleanCopy(
       continue;
     }
 
-    const ranges = nonCodeRanges(content);
-    // One parse5 parse per file, on the first span (gc-t44r 3A).
-    const crossCheck = createSpanCrossCheck(content);
-    const located: RunItem[] = [];
-    for (const item of items) {
-      if (
-        !item.findingType ||
-        !(FIXABLE_FINDING_TYPES as readonly string[]).includes(item.findingType)
-      ) {
-        decisions.push({ itemId: item.id, status: "skipped", reasonCode: "NOT_FIXABLE_TYPE" });
-        continue;
+    // A throw while checking one file (guard, cross-check, splice) refuses
+    // that file only; the other files are still written (audit r6 L3).
+    const mark = decisions.length;
+    try {
+      const ranges = nonCodeRanges(content);
+      // One parse5 parse per file, on the first span (gc-t44r 3A).
+      const crossCheck = createSpanCrossCheck(content);
+      const located: RunItem[] = [];
+      for (const item of items) {
+        if (
+          !item.findingType ||
+          !(FIXABLE_FINDING_TYPES as readonly string[]).includes(item.findingType)
+        ) {
+          decisions.push({ itemId: item.id, status: "skipped", reasonCode: "NOT_FIXABLE_TYPE" });
+          continue;
+        }
+        const hashOk =
+          item.spanStart >= 0 &&
+          item.spanEnd <= content.length &&
+          item.spanStart < item.spanEnd &&
+          sha256(content.slice(item.spanStart, item.spanEnd)) === item.spanSha256;
+        const span = hashOk
+          ? removalSpanFor(item.findingType, content, item.spanStart, ranges)
+          : null;
+        if (!span?.ok || span.span.start !== item.spanStart || span.span.end !== item.spanEnd) {
+          decisions.push({ itemId: item.id, status: "skipped", reasonCode: "SPAN_MISMATCH" });
+          continue;
+        }
+        const confirmed = crossCheck(item.findingType, span.span);
+        if (!confirmed.ok) {
+          decisions.push({
+            itemId: item.id,
+            status: "skipped",
+            reasonCode: `VALIDATION_FAILED:${confirmed.reason}`,
+          });
+          continue;
+        }
+        located.push(item);
       }
-      const hashOk =
-        item.spanStart >= 0 &&
-        item.spanEnd <= content.length &&
-        item.spanStart < item.spanEnd &&
-        sha256(content.slice(item.spanStart, item.spanEnd)) === item.spanSha256;
-      const span = hashOk
-        ? removalSpanFor(item.findingType, content, item.spanStart, ranges)
-        : null;
-      if (!span?.ok || span.span.start !== item.spanStart || span.span.end !== item.spanEnd) {
-        decisions.push({ itemId: item.id, status: "skipped", reasonCode: "SPAN_MISMATCH" });
-        continue;
-      }
-      const confirmed = crossCheck(item.findingType, span.span);
-      if (!confirmed.ok) {
-        decisions.push({
-          itemId: item.id,
-          status: "skipped",
-          reasonCode: `VALIDATION_FAILED:${confirmed.reason}`,
-        });
-        continue;
-      }
-      located.push(item);
-    }
 
-    const spliced = spliceSpans(
-      content,
-      located.map((i) => ({ start: i.spanStart, end: i.spanEnd })),
-    );
-    const accepted: RunItem[] = [];
-    for (const item of located) {
-      const refusal = spliced.refused.find(
-        (r) => r.span.start === item.spanStart && r.span.end === item.spanEnd,
+      const spliced = spliceSpans(
+        content,
+        located.map((i) => ({ start: i.spanStart, end: i.spanEnd })),
       );
-      if (refusal) {
-        decisions.push({
-          itemId: item.id,
-          status: "skipped",
-          reasonCode: `VALIDATION_FAILED:${refusal.reason}`,
-        });
-      } else {
-        accepted.push(item);
+      const accepted: RunItem[] = [];
+      for (const item of located) {
+        const refusal = spliced.refused.find(
+          (r) => r.span.start === item.spanStart && r.span.end === item.spanEnd,
+        );
+        if (refusal) {
+          decisions.push({
+            itemId: item.id,
+            status: "skipped",
+            reasonCode: `VALIDATION_FAILED:${refusal.reason}`,
+          });
+        } else {
+          accepted.push(item);
+        }
       }
+      if (accepted.length === 0) continue;
+      writes.push({
+        filename,
+        content: spliced.content,
+        preMd5,
+        expectedMd5: md5(spliced.content),
+        itemIds: accepted.map((i) => i.id),
+      });
+    } catch (error) {
+      decisions.length = mark;
+      decideAll(items, "skipped", "VALIDATION_FAILED:PARSER_DISAGREES");
+      logger.warn("clean-copy-file-check-failed", {
+        runId,
+        cause: error instanceof Error ? error.name : "unknown",
+      });
     }
-    if (accepted.length === 0) continue;
-    writes.push({
-      filename,
-      content: spliced.content,
-      preMd5,
-      expectedMd5: md5(spliced.content),
-      itemIds: accepted.map((i) => i.id),
-    });
   }
 
   if (unverifiedWrite) await setFixRunDoNotPublish(runId);

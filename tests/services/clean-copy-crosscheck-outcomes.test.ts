@@ -11,7 +11,7 @@ const holder = vi.hoisted(() => ({
   manifest: null as unknown,
   ignores: { fingerprints: new Set<string>(), appNames: new Set<string>() },
   send: vi.fn(),
-  crossMode: "real" as "real" | "refuse-theme",
+  crossMode: "real" as "real" | "refuse-theme" | "throw-theme",
   spliceMode: "real" as "real" | "structure-theme",
 }));
 vi.mock("../../app/db.server", () => ({
@@ -36,10 +36,14 @@ vi.mock("../../app/lib/span-crosscheck.server", async (orig) => {
     ...real,
     createSpanCrossCheck: (content: string) => {
       const inner = real.createSpanCrossCheck(content);
-      return (type: string, span: { start: number; end: number }) =>
-        holder.crossMode === "refuse-theme" && content.includes("<title>")
+      return (type: string, span: { start: number; end: number }) => {
+        if (holder.crossMode === "throw-theme" && content.includes("<title>")) {
+          throw new Error("cross-check boom");
+        }
+        return holder.crossMode === "refuse-theme" && content.includes("<title>")
           ? { ok: false as const, reason: "PARSER_DISAGREES" as const }
           : inner(type, span);
+      };
     },
   };
 });
@@ -152,6 +156,19 @@ describe("fix-time refusals leave one file alone and write the others", () => {
     );
   });
 
+  it("a throw while checking one file (audit r6 L3): that file skipped, other file written, partial", async () => {
+    holder.crossMode = "throw-theme";
+    const o = await runToEnd();
+    expect(o.items["f-script-1"]).toMatchObject({
+      status: "skipped",
+      reasonCode: "VALIDATION_FAILED:PARSER_DISAGREES",
+    });
+    expect(o.items["f-other"].status).toBe("removed");
+    expect(o.fin?.status).toBe("partial");
+    expect(o.run.doNotPublish).toBe(false);
+    expect(o.copy.files.get(THEME)).toBe(THEME_FILES[THEME]);
+  });
+
   it("STRUCTURE_CHANGED: that file untouched, other file written, partial", async () => {
     holder.spliceMode = "structure-theme";
     const o = await runToEnd();
@@ -207,7 +224,7 @@ describe("a shop removed from the allowlist mid-run", () => {
     } as Parameters<typeof runSummary>[0]);
     expect(s.heading).toBe("We couldn't make your clean copy");
     expect(s.body).toBe(
-      "Clean copy isn't available for your store yet. We made a copy of your theme before this stopped. Delete it from Online Store > Themes before you try again.",
+      "Clean copy isn't available for your store right now. We made a copy of your theme before this stopped. Delete it from Online Store > Themes before you try again.",
     );
   });
 });

@@ -901,17 +901,19 @@ function removalSpanLocator(content: string) {
   let blocks: Array<[number, number]> | null = null;
   return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
     pendingRemovalSpans.set(finding, () => {
-      ranges ??= nonCodeRanges(content);
-      if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
-      const located = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
-      if (!located.ok) return {};
       const shared = crossCheckFor(content);
       let r: ReturnType<CrossCheck>;
       try {
+        ranges ??= nonCodeRanges(content);
+        if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
+        const located = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
+        if (!located.ok) return {};
         r = shared.check(type, located.span);
       } catch {
-        // X2: a cross-check throw never fails the scan; no span for any
-        // finding in this file, and the file is not checked again.
+        // X2 / audit r6 L4: any throw while locating or checking a span never
+        // fails the scan; no span for any finding in this file, and the file
+        // is not checked again. Not logged here (this module never logs);
+        // parse5 throws are logged once inside span-crosscheck.
         shared.check = () => ({ ok: false, reason: "PARSER_DISAGREES" });
         return {};
       }
@@ -6117,6 +6119,9 @@ function firstFindingsByLine(findings: CreateFindingInput[], n: number): CreateF
 const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
 
 export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): ScanResult {
+  // A cached cross-check (or a refusal after a throw) never outlives its
+  // scan, and the last file isn't held between scans (audit r6 L5).
+  fileCrossCheck = null;
   let findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];

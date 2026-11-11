@@ -30,7 +30,7 @@ Copy rules (guide/style-guide.md at ~/shopify/guide): short plain sentences, no 
 
 ## 4. Entry point on the scan page (`app/routes/app.scans.$scanId.tsx`, minimal edit)
 
-Loader adds `cleanCopy: { eligible: boolean, count: number }` = flag on AND Professional AND the scan has >= 1 finding of the 4 types with a span. Do the count query ONLY when the flag is on and the plan is Professional (existing frozen scan-page tests run with the flag off and mock only today's models, so no new call may run for them). When eligible, render one secondary button "Make a clean copy ({count})" linking to `clean-copy` near the findings header. No other change to that file.
+Loader adds `cleanCopy: { eligible: boolean, count: number }` = flag on AND Professional AND the scan has >= 1 finding of the 4 types with a span. Do the count query ONLY when the flag is on and the plan is Professional (existing frozen scan-page tests run with the flag off and mock only today's models, so no new call may run for them). Exception (gc-tib.20, audit r5 M1): the recent-runs read (`loadCleanCopyRunLines`, one indexed query, skipped while the scan runs) runs on every plan with the flag on or off, so a "don't publish" warning survives a downgrade, a rollback or removal from `CLEAN_COPY_SHOPS`. When eligible, render one secondary button "Make a clean copy ({count})" linking to `clean-copy` near the findings header. No other change to that file.
 
 ## 5. Tests (route tests mirror existing tests/routes patterns: mock `authenticate.admin`, db/models, the adapter)
 

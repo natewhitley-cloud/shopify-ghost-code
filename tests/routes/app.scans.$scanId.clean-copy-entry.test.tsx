@@ -624,6 +624,7 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
     dbMock.fixRun.findMany.mockResolvedValueOnce([]);
     const res = (await run()) as unknown as WithRuns;
+    expect(dbMock.fixRun.findMany).toHaveBeenCalledTimes(1);
     expect(res.cleanCopyRuns).toEqual([]);
   });
 

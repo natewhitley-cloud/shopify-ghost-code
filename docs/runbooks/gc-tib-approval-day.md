@@ -71,9 +71,13 @@ marked STOP means don't go further until it's resolved.
 
 ## Rollback
 
-- Unset `CLEAN_COPY_ENABLED` and redeploy the env. Preflight refuses new runs, and the
-  worker exits before any Admin call.
+- Unset `CLEAN_COPY_ENABLED` AND clear `CLEAN_COPY_SHOPS` (an allowlisted shop stays on
+  while it's listed), then redeploy the env. Preflight refuses new runs. A run already in
+  progress stops at its next gate (duplicate or write step) before any write; its
+  copy-ready poll may still make read-only Admin calls.
 - Runs already finished keep their copies in merchants' theme libraries (unpublished).
   Their result pages still open, and the scan page's "View result" lines (with any
   "don't publish" warning) stay visible with the flag off or the shop off the
   allowlist (audit r5 M1), so a rollback is just the env change.
+- Leave write_themes in `optional_scopes` unless Shopify asks otherwise. Removing it
+  needs another `shopify app deploy`.

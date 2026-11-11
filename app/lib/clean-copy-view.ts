@@ -184,7 +184,7 @@ const WORKER_FAILURE_COPY: Record<string, string> = {
 };
 
 const RUN_REFUSAL_COPY: Record<RunRefusalReason, string> = {
-  FLAG_OFF: "Clean copy isn't available for your store yet.",
+  FLAG_OFF: "Clean copy isn't available for your store right now.",
   EMPTY_SELECTION: "Select at least one piece of leftover code to remove.",
   SHOP_NOT_FOUND: "We couldn't find your store. Reload the app and try again.",
   NOT_PROFESSIONAL: "Clean copy is part of the Professional plan.",
