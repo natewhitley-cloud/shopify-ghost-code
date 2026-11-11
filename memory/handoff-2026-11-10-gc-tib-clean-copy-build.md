@@ -10,7 +10,7 @@
   - d1e3ab1: editor links use `<s-link>`.
   - Demo re-run on fixed code: 13/13 removed into unpublished copy "test-data - clean copy pa4zrdal" (153007784113); live theme pulled before/after, byte-identical (291 files). Screenshots re-rendered in `~/shopify/gc-preview-harness/cleancopy/png/`.
   - Ticket reply DRAFT: `memory/shopify-ticket-71890683-reply-draft.md` (Nathan reviews, takes admin screenshots 4-7, sends).
-  - Adversarial audit of this batch: see "Audit r3" below.
+  - Audit r3 (this batch): no HIGH, no MEDIUM; 8 LOWs, all fixed in the r3 commit (finding 5 moot: getTheme cannot return USER_ERROR). Gate green: 12,131 tests.
 - **Next:**
   1. Nathan: admin screenshots + send the reply.
   2. Theme library on nw-dev-store-2 now holds 3 GhostCode copies (probe 153006309553, ffewpawe 153006604465, pa4zrdal 153007784113). Nathan deletes the old two whenever; keep pa4zrdal for the screenshots.
