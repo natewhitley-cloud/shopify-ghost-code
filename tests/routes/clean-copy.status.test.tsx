@@ -379,9 +379,9 @@ describe("audit H2: stale-copy warning", () => {
     expect(res.previewUrl).not.toBeNull();
   });
 
-  it("not checked for failed or active runs", async () => {
+  it("not checked for active runs or runs without a copy (r2 gc-tib.13: failed runs with a copy are)", async () => {
     for (const over of [
-      { status: "failed", failureReason: "SCAN_STALE" },
+      { status: "failed", failureReason: "SCAN_STALE", copyThemeId: null },
       { status: "writing", items: [item({ status: "pending" })] },
     ]) {
       mockRun.mockResolvedValue(baseRun(over));
@@ -444,5 +444,131 @@ describe("audit M-j / M-d / logic 12 / M-a on the status page", () => {
     const res = await run();
     expect(res.summary.heading).toBe("The copy was published before we finished");
     expect(res.summary.body).not.toContain("Your live theme was not changed.");
+  });
+});
+
+describe("audit r2 gc-tib.13 / gc-tib.15: banners follow the live theme", () => {
+  const UNCHANGED = "Your live theme was not changed.";
+  const PUBLISH_IT = "Preview the copy, then publish it";
+  const copyLive = () => getMainTheme.mockResolvedValue(mainTheme({ id: COPY_GID }));
+  const otherLive = () =>
+    getMainTheme.mockResolvedValue(mainTheme({ id: "gid://shopify/OnlineStoreTheme/999" }));
+  const failedRun = (over: Record<string, unknown> = {}) =>
+    baseRun({
+      status: "failed",
+      failureReason: "INTERNAL_ERROR",
+      items: [item({ status: "failed", reasonCode: "INTERNAL_ERROR" })],
+      ...over,
+    });
+
+  it("do-not-publish copy that is now live: says so, never 'not changed' or 'delete the copy'", async () => {
+    mockRun.mockResolvedValue(failedRun({ doNotPublish: true }));
+    copyLive();
+    const res = await run();
+    expect(res.summary.heading).toBe("This copy is now your live theme");
+    expect(res.summary.body).not.toContain(UNCHANGED);
+    expect(res.summary.body).not.toContain("Delete the copy");
+    expect(res.summary.body).toContain("Publish your previous theme again");
+    expect(res.liveTheme).toBeNull();
+    expect(res.previewUrl).toBeNull();
+  });
+
+  it("do-not-publish copy still unpublished: the original warning", async () => {
+    mockRun.mockResolvedValue(failedRun({ doNotPublish: true }));
+    const res = await run();
+    expect(getMainTheme).toHaveBeenCalled();
+    expect(res.summary.heading).toBe("Don't publish this copy");
+    expect(res.summary.body).toContain(UNCHANGED);
+  });
+
+  it("a completed do-not-publish run gets no extra live-theme notice", async () => {
+    mockRun.mockResolvedValue(baseRun({ doNotPublish: true }));
+    copyLive();
+    expect((await run()).liveTheme).toBeNull();
+  });
+
+  it("failed run whose copy was published: revert advice, no 'not changed', no 'delete it'", async () => {
+    mockRun.mockResolvedValue(failedRun());
+    copyLive();
+    const { body } = (await run()).summary;
+    expect(body).not.toContain(UNCHANGED);
+    expect(body).not.toContain("Delete it from");
+    expect(body).toContain("it's now your live theme");
+  });
+
+  it("failed run, another theme now live: no 'not changed', still delete the copy", async () => {
+    mockRun.mockResolvedValue(failedRun());
+    otherLive();
+    const { body } = (await run()).summary;
+    expect(body).not.toContain(UNCHANGED);
+    expect(body).toContain("Delete it from Online Store > Themes before you try again.");
+  });
+
+  it("failed run, live theme unchanged or unreadable: original copy", async () => {
+    mockRun.mockResolvedValue(failedRun());
+    expect((await run()).summary.body).toContain(UNCHANGED);
+    getMainTheme.mockRejectedValue(new Error("boom"));
+    expect((await run()).summary.body).toContain(UNCHANGED);
+  });
+
+  it("a stale run with a published copy is checked too", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({
+        status: "writing",
+        updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        items: [item({ status: "pending" })],
+      }),
+    );
+    copyLive();
+    const { summary } = await run();
+    expect(summary.active).toBe(false);
+    expect(summary.body).not.toContain(UNCHANGED);
+  });
+
+  it("completed, copy published: no 'not changed', no 'publish it', notice kept", async () => {
+    copyLive();
+    const res = await run();
+    expect(res.summary.body).not.toContain(UNCHANGED);
+    expect(res.summary.body).not.toContain(PUBLISH_IT);
+    expect(res.liveTheme).toEqual({ tone: "info", text: PUBLISHED_COPY_COPY });
+  });
+
+  it("completed or partial, live theme changed: no 'publish it', no preview", async () => {
+    for (const over of [
+      {},
+      {
+        status: "partial",
+        items: [
+          item(),
+          item({ id: "i2", findingId: "f2", status: "skipped", reasonCode: "FILE_CHANGED" }),
+        ],
+      },
+    ]) {
+      mockRun.mockResolvedValue(baseRun(over));
+      otherLive();
+      const res = await run();
+      expect(res.summary.body).not.toContain(PUBLISH_IT);
+      expect(res.summary.body).not.toContain(UNCHANGED);
+      expect(res.summary.showPreview).toBe(false);
+      expect(res.liveTheme?.tone).toBe("warning");
+    }
+  });
+
+  it("WRITE_REFUSED says the live theme was unchanged once, not twice", async () => {
+    mockRun.mockResolvedValue(failedRun({ failureReason: "WRITE_REFUSED" }));
+    const { body } = (await run()).summary;
+    expect(body.match(/live theme/g)).toHaveLength(1);
+    expect(body).toContain(UNCHANGED);
+  });
+
+  it("published mid-write, then the merchant put their theme back: no 'it's now your live theme'", async () => {
+    mockRun.mockResolvedValue(
+      failedRun({ failureReason: "COPY_PUBLISHED_DURING_WRITE", doNotPublish: true }),
+    );
+    const res = await run();
+    expect(res.summary.body).not.toContain("now your live theme");
+    expect(res.summary.body).toContain("Don't publish the copy.");
+    copyLive();
+    expect((await run()).summary.body).toContain("It's now your live theme");
   });
 });

@@ -165,8 +165,8 @@ export const RUN_REFUSAL_REASONS = [
 
 export type RunRefusalReason = (typeof RUN_REFUSAL_REASONS)[number];
 
-const COPY_NOT_SAFE =
-  "We stopped because the copy didn't look safe to change. Nothing was changed in your live theme.";
+// The failed banner adds the live-theme sentence itself (audit r2, gc-tib.15).
+const COPY_NOT_SAFE = "We stopped because the copy didn't look safe to change.";
 
 /** Reasons the worker writes onto a run after it started (FixRun.failureReason). */
 const WORKER_FAILURE_COPY: Record<string, string> = {
@@ -302,6 +302,11 @@ export type RunSummaryInput = {
   items: ReadonlyArray<{ status: string }>;
   /** The run made a copy theme (it stays in the store until the merchant deletes it). */
   hasCopy?: boolean;
+  /**
+   * What happened to the live theme since the copy was made, for a finished
+   * run with a copy. Null or absent: unknown (not read, or the read failed).
+   */
+  liveState?: LiveThemeState | null;
 };
 
 const ACTIVE_HEADINGS: Record<string, string> = {
@@ -315,6 +320,10 @@ const DELETE_LEFTOVER_COPY =
   "We made a copy of your theme before this stopped. Delete it from Online Store > Themes before you try again.";
 const PUBLISH_YOURSELF =
   "Preview the copy, then publish it from Online Store > Themes when you're happy with it.";
+const COPY_NOW_LIVE_REVERT =
+  "You published the copy, so it's now your live theme. Publish your previous theme again from Online Store > Themes, then make a new clean copy.";
+const DELETE_UNSAFE_COPY =
+  "Don't publish the copy. Delete it from Online Store > Themes, then make a new clean copy.";
 
 function pieces(n: number): string {
   return n === 1 ? "1 piece" : `${n} pieces`;
@@ -324,14 +333,21 @@ export function runSummary(input: RunSummaryInput): RunSummary {
   const active = Object.prototype.hasOwnProperty.call(ACTIVE_HEADINGS, input.status);
   const removed = input.items.filter((i) => i.status === "removed").length;
   const total = input.items.length;
+  const copyIsLive = input.liveState === "published_copy";
+  // A copy the merchant can still publish: never when the live theme moved on.
+  const copyUsable = !input.liveState || input.liveState === "unchanged";
 
   // The merchant published the copy mid-write: it IS the live theme now, so
-  // "your live theme was not changed" would be false.
+  // "your live theme was not changed" would be false. Once they put another
+  // theme back (liveState read and not published_copy), say so instead.
   if (input.failureReason === "COPY_PUBLISHED_DURING_WRITE") {
+    const reverted = !!input.liveState && !copyIsLive;
     return {
       tone: "critical",
       heading: "The copy was published before we finished",
-      body: `${runRefusalCopy(input.failureReason)} It's now your live theme, and we can't confirm every change in it. Publish your previous theme again from Online Store > Themes, then make a new clean copy.`,
+      body: reverted
+        ? `${runRefusalCopy(input.failureReason)} We can't confirm every change in it. ${DELETE_UNSAFE_COPY}`
+        : `${runRefusalCopy(input.failureReason)} It's now your live theme, and we can't confirm every change in it. Publish your previous theme again from Online Store > Themes, then make a new clean copy.`,
       showPreview: false,
       active: false,
     };
@@ -339,8 +355,10 @@ export function runSummary(input: RunSummaryInput): RunSummary {
   if (input.doNotPublish) {
     return {
       tone: "critical",
-      heading: "Don't publish this copy",
-      body: `We couldn't confirm that every change in this copy was saved correctly, so don't publish it. ${LIVE_THEME_UNCHANGED} Delete the copy from Online Store > Themes, then try again or contact support.`,
+      heading: copyIsLive ? "This copy is now your live theme" : "Don't publish this copy",
+      body: copyIsLive
+        ? `We couldn't confirm that every change in this copy was saved correctly, and it's now your live theme. Publish your previous theme again from Online Store > Themes, then try again or contact support.`
+        : `We couldn't confirm that every change in this copy was saved correctly, so don't publish it. ${copyUsable ? `${LIVE_THEME_UNCHANGED} ` : ""}Delete the copy from Online Store > Themes, then try again or contact support.`,
       showPreview: false,
       active,
     };
@@ -358,8 +376,10 @@ export function runSummary(input: RunSummaryInput): RunSummary {
     return {
       tone: "success",
       heading: "Your clean copy is ready",
-      body: `We removed ${pieces(removed)} of leftover code from a copy of your theme. ${LIVE_THEME_UNCHANGED} ${PUBLISH_YOURSELF}`,
-      showPreview: true,
+      body: copyUsable
+        ? `We removed ${pieces(removed)} of leftover code from a copy of your theme. ${LIVE_THEME_UNCHANGED} ${PUBLISH_YOURSELF}`
+        : `We removed ${pieces(removed)} of leftover code from a copy of your theme.`,
+      showPreview: copyUsable,
       active,
     };
   }
@@ -367,8 +387,14 @@ export function runSummary(input: RunSummaryInput): RunSummary {
     return {
       tone: "warning",
       heading: "Your clean copy is ready, with some code left in",
-      body: `We removed ${removed} of ${total} pieces of leftover code from a copy of your theme. The rest are listed below with the reason. ${LIVE_THEME_UNCHANGED} ${removed > 0 ? PUBLISH_YOURSELF : ""}`.trim(),
-      showPreview: removed > 0,
+      body: [
+        `We removed ${removed} of ${total} pieces of leftover code from a copy of your theme. The rest are listed below with the reason.`,
+        copyUsable ? LIVE_THEME_UNCHANGED : "",
+        copyUsable && removed > 0 ? PUBLISH_YOURSELF : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      showPreview: copyUsable && removed > 0,
       active,
     };
   }
@@ -378,8 +404,8 @@ export function runSummary(input: RunSummaryInput): RunSummary {
       heading: "We couldn't make your clean copy",
       body: [
         runRefusalCopy(input.failureReason),
-        LIVE_THEME_UNCHANGED,
-        input.hasCopy ? DELETE_LEFTOVER_COPY : "",
+        input.hasCopy && copyIsLive ? COPY_NOW_LIVE_REVERT : copyUsable ? LIVE_THEME_UNCHANGED : "",
+        input.hasCopy && !copyIsLive ? DELETE_LEFTOVER_COPY : "",
       ]
         .filter(Boolean)
         .join(" "),

@@ -400,3 +400,110 @@ describe("probe O7: adopting a same-named theme never edits a file that differs 
     expect(itemsOf(runId)["f-script-1"].reasonCode).toBe("FILE_CHANGED");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Audit round 2 (gc-tib.14, gc-tib.16)
+// ---------------------------------------------------------------------------
+
+const denied = () => ({
+  errors: [{ message: "denied", extensions: { code: "ACCESS_DENIED" } }],
+});
+
+describe("r2 gc-tib.14: only a MAIN copy counts as published", () => {
+  it("copy deleted after the upsert: COPY_MISSING, never COPY_PUBLISHED_DURING_WRITE", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    shop.overrides.CleanCopyUpsert = () => {
+      shop.themes.delete(copyId);
+      return undefined;
+    };
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "COPY_MISSING",
+    });
+    expect(runOf(runId)).toMatchObject({ status: "failed", failureReason: "COPY_MISSING" });
+    expect(itemsOf(runId)["f-other"]).toMatchObject({
+      status: "failed",
+      reasonCode: "COPY_MISSING",
+    });
+  });
+
+  it("copy deleted during a job poll: COPY_MISSING, polling stops", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    shop.jobPollsUntilDone = 100;
+    shop.onJobPoll = () => {
+      if (shop.count("CleanCopyJob") === 2) shop.themes.delete(copyId);
+    };
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "COPY_MISSING",
+    });
+    expect(shop.count("CleanCopyJob")).toBe(2);
+  });
+
+  it("copy moved to another role: COPY_NOT_UNPUBLISHED and doNotPublish", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    shop.overrides.CleanCopyUpsert = () => {
+      shop.themes.get(copyId)!.role = "DEVELOPMENT";
+      return undefined;
+    };
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "COPY_NOT_UNPUBLISHED",
+    });
+    expect(runOf(runId)).toMatchObject({
+      failureReason: "COPY_NOT_UNPUBLISHED",
+      doNotPublish: true,
+    });
+  });
+
+  it("a transient role read retries (throws), the run stays active", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    shop.overrides.CleanCopyTheme = (v) =>
+      String(v.id) === copyId && shop.count("CleanCopyUpsert") === 1
+        ? new Error("THROTTLED")
+        : undefined;
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.not.toHaveProperty("reason");
+    expect(runOf(runId).status).toBe("writing");
+  });
+});
+
+describe("r2 gc-tib.16: a failure after a landed write flags doNotPublish", () => {
+  it("ACCESS_DENIED on the post-read after the upsert landed", async () => {
+    const runId = await startRun(["f-other"]);
+    await readyCopy(runId);
+    shop.overrides.CleanCopyFiles = () =>
+      shop.count("CleanCopyUpsert") === 1 ? denied() : undefined;
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "ACCESS_DENIED",
+    });
+    expect(runOf(runId)).toMatchObject({
+      status: "failed",
+      failureReason: "ACCESS_DENIED",
+      doNotPublish: true,
+    });
+  });
+
+  it("mixed ACCESS_DENIED userErrors on the upsert (other files may have landed)", async () => {
+    const runId = await startRun(["f-script-1", "f-other"]);
+    await readyCopy(runId);
+    shop.upsertUserErrors = [
+      { code: "ACCESS_DENIED", filename: "snippets/other.liquid", message: "x" },
+    ];
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "ACCESS_DENIED",
+    });
+    expect(runOf(runId).doNotPublish).toBe(true);
+  });
+
+  it("ACCESS_DENIED before any write: no doNotPublish", async () => {
+    const runId = await startRun(["f-other"]);
+    await readyCopy(runId);
+    shop.overrides.CleanCopyFiles = () => denied();
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "ACCESS_DENIED",
+    });
+    expect(shop.count("CleanCopyUpsert")).toBe(0);
+    expect(runOf(runId)).toMatchObject({ failureReason: "ACCESS_DENIED", doNotPublish: false });
+  });
+});

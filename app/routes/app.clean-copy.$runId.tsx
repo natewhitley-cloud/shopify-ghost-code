@@ -83,32 +83,36 @@ export const loader = async ({
   // as stopped (the next request's sweep fails it for real, audit M-j).
   const stale = isStaleActiveRun(run);
   const hasCopy = run.copyThemeId !== null;
-  const baseSummary = runSummary({
+  const summaryInput = {
     status: stale ? "failed" : run.status,
     doNotPublish: run.doNotPublish,
     failureReason: stale ? "STALE" : run.failureReason,
     items: run.items,
     hasCopy,
-  });
+  };
+  let summary = runSummary(summaryInput);
 
-  // Stale-copy check (spike §3, audit H2): only for a finished copy the
-  // merchant may still publish. A failed read shows nothing, never crashes.
+  // Live-theme check (spike §3, audit H2, r2 gc-tib.13): for every finished run
+  // that made a copy, so no banner claims the live theme is unchanged when the
+  // merchant already published the copy. A failed read keeps the default copy
+  // and never crashes. The stale-copy notice is only for a usable copy.
   let liveTheme: LiveThemeNotice = null;
-  let summary = baseSummary;
-  if ((run.status === "completed" || run.status === "partial") && run.copyThemeId && !stale) {
+  if (!summary.active && run.copyThemeId) {
     try {
       const main = await createCleanCopyAdmin(admin).getMainTheme();
       if (main.ok && main.value) {
-        const state = liveThemeState({
+        const liveState = liveThemeState({
           mainId: main.value.id,
           mainUpdatedAt: main.value.updatedAt,
           sourceThemeId: run.sourceThemeId,
           copyThemeId: run.copyThemeId,
           copyCreatedAt: run.copyCreatedAt,
         });
-        liveTheme = liveThemeNotice(state);
-        // An outdated copy or one already live: no preview / editor links.
-        if (state !== "unchanged") summary = { ...baseSummary, showPreview: false };
+        summary = runSummary({ ...summaryInput, liveState });
+        const finished = summaryInput.status === "completed" || summaryInput.status === "partial";
+        if (finished && !run.doNotPublish) {
+          liveTheme = liveThemeNotice(liveState);
+        }
       }
     } catch {
       liveTheme = null;

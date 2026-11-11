@@ -48,6 +48,7 @@ import {
   getFixRunWithItems,
   isFixRunActive,
   type ItemDecision,
+  markDoNotPublishIfWritten,
   markFixRunFailed,
   recordExpectedPostMd5,
   setFixRunActiveStatus,
@@ -359,6 +360,9 @@ async function failPendingItems(runId: string, reason: string): Promise<void> {
 async function failRunQuietly(runId: string, reason: string): Promise<void> {
   await failPendingItems(runId, reason);
   await markFixRunFailed(runId, reason);
+  // A write may have landed unverified before this failure, e.g. ACCESS_DENIED
+  // on the post-read or a mixed-userErrors upsert (audit M-d, r2 gc-tib.16).
+  await markDoNotPublishIfWritten(runId);
 }
 
 /** Mark the run failed (if still active) and stop. */
@@ -673,15 +677,21 @@ export async function writeCleanCopy(
   const failedFile = (filename: string) =>
     userErrors.some((e) => e.filename === null || e.filename === filename);
 
-  /** True when the copy is no longer UNPUBLISHED (the merchant published it, audit M-a). */
-  const copyPublished = async (): Promise<boolean> => {
+  /**
+   * The copy's role now. MAIN: the merchant published it mid-write (audit M-a).
+   * GONE: deleted. OTHER: any other role. Only MAIN is "published" (r2 gc-tib.14).
+   */
+  const copyRole = async (): Promise<"UNPUBLISHED" | "MAIN" | "GONE" | "OTHER"> => {
     const t = await unwrap(runId, await admin.getTheme(copyThemeId), "read copy role");
-    return !t.ok || t.value === null || t.value.role !== "UNPUBLISHED";
+    if (!t.ok) throw new Error(`[clean-copy] read copy role: ${t.message}`);
+    if (t.value === null) return "GONE";
+    if (t.value.role === "UNPUBLISHED" || t.value.role === "MAIN") return t.value.role;
+    return "OTHER";
   };
 
   // Always wait for a returned job, userErrors or not (audit M-e).
   let jobTimedOut = false;
-  let published = false;
+  let role: Awaited<ReturnType<typeof copyRole>> = "UNPUBLISHED";
   if (up.ok && !up.value.jobDone && up.value.jobId) {
     const attempts = opts.jobPollAttempts ?? 10;
     const delay = opts.jobPollDelayMs ?? 1500;
@@ -689,10 +699,8 @@ export async function writeCleanCopy(
     jobTimedOut = true;
     for (let i = 0; i < attempts; i++) {
       await sleep(delay);
-      if (await copyPublished()) {
-        published = true;
-        break;
-      }
+      role = await copyRole();
+      if (role !== "UNPUBLISHED") break;
       const job = await unwrap(runId, await admin.getJob(up.value.jobId), "job");
       if (job.ok && job.value.done) {
         jobTimedOut = false;
@@ -700,9 +708,12 @@ export async function writeCleanCopy(
       }
     }
   }
-  if (!published) published = await copyPublished();
+  if (role === "UNPUBLISHED") role = await copyRole();
+  // Deleted or moved to another role: stop; failRun flags do-not-publish.
+  if (role === "GONE") return failRun(runId, "COPY_MISSING");
+  if (role === "OTHER") return failRun(runId, "COPY_NOT_UNPUBLISHED");
 
-  if (published) {
+  if (role === "MAIN") {
     // The copy went live while we were writing: nothing we wrote is verified.
     await setFixRunDoNotPublish(runId);
     await decideFixItems(
