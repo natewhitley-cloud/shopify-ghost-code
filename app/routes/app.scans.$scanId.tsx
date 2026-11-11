@@ -121,6 +121,7 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import { appLeftoverFindings, parseLiveAppHooks } from "../services/app-removal.server";
+import { MAX_FILES_PER_REQUEST } from "../services/clean-copy-admin.server";
 import { findingBlockReason } from "../services/clean-copy.server";
 import {
   getFilteredFindingSummaryAndKept,
@@ -1677,9 +1678,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     if (embedApps !== null && !themeChanged) {
       const [latest] = await getCompletedScansForShop(shop.id, { limit: 1 });
       if (latest?.id === scan.id) {
-        const count = (await getFindingsForScan(scan.id)).filter(
+        const removable = (await getFindingsForScan(scan.id)).filter(
           (f) => findingBlockReason(f, ignores, embedApps) === null,
-        ).length;
+        );
+        // The select page shows the first MAX_FILES_PER_REQUEST files (sorted);
+        // count only what it can offer (audit r4).
+        const shownFiles = new Set(
+          [...new Set(removable.map((f) => f.filename))].sort().slice(0, MAX_FILES_PER_REQUEST),
+        );
+        const count = removable.filter((f) => shownFiles.has(f.filename)).length;
         cleanCopy = { eligible: count > 0, count };
       }
     }

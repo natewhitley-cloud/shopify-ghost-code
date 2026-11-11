@@ -693,6 +693,9 @@ export async function writeCleanCopy(
   if (unverifiedWrite) await setFixRunDoNotPublish(runId);
   await decideFixItems(runId, decisions);
   if (writes.length === 0) return { written: 0 };
+  // An earlier attempt of this step already sent an upsert (its job may still
+  // land), so a refusal now can't claim nothing was written (audit r4).
+  const earlierAttemptWrote = run.items.some((i) => i.postMd5 !== null);
   for (const w of writes) await recordExpectedPostMd5(runId, w.itemIds, w.expectedMd5);
 
   // The run may have been failed (STALE sweep, onFailure) since we loaded it
@@ -706,7 +709,10 @@ export async function writeCleanCopy(
   });
   // The guard refused before sending anything: this attempt wrote nothing.
   if (!upRes.ok && upRes.error === "WRITE_REFUSED") {
-    return failRun(runId, "WRITE_REFUSED", { nothingWritten: true });
+    // A deleted copy is COPY_MISSING, never "delete the copy" (audit r4).
+    const copy = await admin.getTheme(copyThemeId);
+    if (copy.ok && copy.value === null) return failRun(runId, "COPY_MISSING");
+    return failRun(runId, "WRITE_REFUSED", { nothingWritten: !earlierAttemptWrote });
   }
   const up = await unwrap(runId, upRes, "upsert");
   const userErrors = up.ok ? up.value.userErrors : [{ filename: null, code: "UNKNOWN" }];

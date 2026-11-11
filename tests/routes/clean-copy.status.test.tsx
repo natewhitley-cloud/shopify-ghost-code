@@ -592,3 +592,22 @@ describe("audit r2 gc-tib.13 / gc-tib.15: banners follow the live theme", () => 
     expect((await run()).summary.body).toContain("It's now your live theme");
   });
 });
+
+describe("audit r4 on the status page", () => {
+  it("COPY_MISSING with doNotPublish set: no 'don't publish', no 'delete the copy'", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({ status: "failed", failureReason: "COPY_MISSING", doNotPublish: true }),
+    );
+    const { summary } = await run();
+    expect(summary.heading).not.toContain("Don't publish");
+    expect(summary.body).not.toContain("Delete");
+  });
+
+  it("an unknown status with a copy whose live state is unknown makes no live-theme claim", async () => {
+    getMainTheme.mockRejectedValue(new Error("boom"));
+    mockRun.mockResolvedValue(baseRun({ status: "mystery" }));
+    expect((await run()).summary.body).toBe("Reload this page in a minute.");
+    mockRun.mockResolvedValue(baseRun({ status: "mystery", copyThemeId: null }));
+    expect((await run()).summary.body).toContain("Your live theme was not changed.");
+  });
+});

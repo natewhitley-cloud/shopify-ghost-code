@@ -13,8 +13,17 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("expiring offline access tokens", () => {
+  it("a commented-out flag does not count (audit r4)", () => {
+    const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const off = "future: {\n  // expiringOfflineAccessTokens: true,\n}";
+    expect(strip(off)).not.toMatch(/future:\s*\{[^}]*expiringOfflineAccessTokens:\s*true/);
+  });
+
   it("app/shopify.server.ts keeps future.expiringOfflineAccessTokens on", () => {
-    const source = readFileSync(join(__dirname, "../../app/shopify.server.ts"), "utf8");
+    const source = readFileSync(join(__dirname, "../../app/shopify.server.ts"), "utf8")
+      // A commented-out flag is off (audit r4): drop comments first.
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
     expect(source).toMatch(/future:\s*\{[^}]*expiringOfflineAccessTokens:\s*true/);
   });
 });

@@ -86,7 +86,8 @@ export const loader = async ({
   const hasCopy = run.copyThemeId !== null && run.failureReason !== "COPY_MISSING";
   const summaryInput = {
     status: stale ? "failed" : run.status,
-    doNotPublish: run.doNotPublish,
+    // A copy that is gone can't be published: no "don't publish" banner (r4).
+    doNotPublish: run.doNotPublish && hasCopy,
     failureReason: stale ? "STALE" : run.failureReason,
     items: run.items,
     hasCopy,

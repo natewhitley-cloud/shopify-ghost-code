@@ -8,8 +8,19 @@ import { scanThemeFiles } from "../../app/services/scan-engine.server";
 const SRC = process.env.THEME_DIR ?? "";
 const OUT = resolve(process.env.OUT_DIR ?? "");
 // OUT is deleted below: only a fresh folder under the temp dir, never THEME_DIR.
-if (!SRC || !process.env.OUT_DIR || OUT === resolve(SRC) || !OUT.startsWith(`${tmpdir()}/`)) {
-  throw new Error("set THEME_DIR, and OUT_DIR to a folder under the temp dir");
+// OUT must be a gc-dryrun-* folder directly in the temp dir, and neither path
+// may contain the other (audit r4).
+const SRC_ABS = resolve(SRC);
+const inside = (a: string, b: string) => a === b || a.startsWith(`${b}/`);
+if (
+  !SRC ||
+  !process.env.OUT_DIR ||
+  resolve(OUT, "..") !== resolve(tmpdir()) ||
+  !/^gc-dryrun-/.test(OUT.slice(resolve(tmpdir()).length + 1)) ||
+  inside(OUT, SRC_ABS) ||
+  inside(SRC_ABS, OUT)
+) {
+  throw new Error("set THEME_DIR, and OUT_DIR to $TMPDIR/gc-dryrun-<name>");
 }
 rmSync(OUT, { recursive: true, force: true });
 cpSync(SRC, OUT, { recursive: true });

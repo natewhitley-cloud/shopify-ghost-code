@@ -424,7 +424,9 @@ export function runSummary(input: RunSummaryInput): RunSummary {
   return {
     tone: "warning",
     heading: "We're not sure how this clean copy went",
-    body: `Reload this page in a minute. ${LIVE_THEME_UNCHANGED}`,
+    body: liveSureUnchanged
+      ? `Reload this page in a minute. ${LIVE_THEME_UNCHANGED}`
+      : "Reload this page in a minute.",
     showPreview: false,
     active: false,
   };

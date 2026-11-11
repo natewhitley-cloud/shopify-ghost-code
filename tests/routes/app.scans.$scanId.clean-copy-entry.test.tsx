@@ -372,6 +372,16 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
     expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
   });
 
+  it("r4: counts only findings in the files the select page can show", async () => {
+    const many = Array.from({ length: 52 }, (_, i) =>
+      withSpan(`f${i}`, "GHOST_SCRIPT", {
+        filename: `snippets/s${String(i).padStart(2, "0")}.liquid`,
+      }),
+    );
+    mockGetFindingsForScan.mockResolvedValue(many);
+    expect(((await run()) as unknown as Entry).cleanCopy.count).toBe(50);
+  });
+
   it("not when the scan's live-embed status is unknown", async () => {
     (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, liveAppHooks: null });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);

@@ -525,3 +525,41 @@ describe("r3: a refused upsert wrote nothing, so no do-not-publish", () => {
     expect(runOf(runId)).toMatchObject({ failureReason: "WRITE_REFUSED", doNotPublish: false });
   });
 });
+
+describe("r4: refused upserts after an earlier attempt, and a deleted copy", () => {
+  it("an earlier attempt's upsert was sent: a refusal now flags doNotPublish", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    // Attempt 1: upsert sent with a job that hasn't landed; the role read throws.
+    shop.jobPollsUntilDone = 100;
+    shop.upsertRejects.add("snippets/other.liquid"); // the job "hasn't landed" yet
+    let roleReads = 0;
+    shop.overrides.CleanCopyTheme = (v) =>
+      String(v.id) === copyId && shop.count("CleanCopyUpsert") === 1 && ++roleReads === 1
+        ? new Error("THROTTLED")
+        : undefined;
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toThrow(/read copy role/);
+    shop.overrides = {};
+    // Attempt 2: the copy moved off UNPUBLISHED, so the guard refuses.
+    shop.themes.get(copyId)!.role = "DEVELOPMENT";
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "WRITE_REFUSED",
+    });
+    expect(runOf(runId)).toMatchObject({ failureReason: "WRITE_REFUSED", doNotPublish: true });
+  });
+
+  it("copy deleted before the write: COPY_MISSING, not WRITE_REFUSED", async () => {
+    const runId = await startRun(["f-other"]);
+    const copyId = await readyCopy(runId);
+    // Deleted after the pre-read, before the upsert guard reads the target.
+    shop.overrides.CleanCopyTheme = () => {
+      if (shop.count("CleanCopyFiles") >= 1) shop.themes.delete(copyId);
+      return undefined;
+    };
+    await expect(writeCleanCopy(admin, runId, noSleep)).rejects.toMatchObject({
+      reason: "COPY_MISSING",
+    });
+    expect(shop.count("CleanCopyUpsert")).toBe(0);
+    expect(runOf(runId)).toMatchObject({ failureReason: "COPY_MISSING", doNotPublish: false });
+  });
+});

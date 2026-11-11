@@ -29,6 +29,7 @@ import {
 import { readChecked } from "../components/polaris-events";
 import {
   type CleanCopyCandidate,
+  CANDIDATE_BLOCK_REASONS,
   type CandidateBlockReason,
   type CandidateGroup,
   candidateBlockCopy,
@@ -146,10 +147,13 @@ export const loader = async ({
   type Draft = { finding: (typeof findings)[number]; blocked: CandidateBlockReason | null };
   // The service's own rule (gc-tib.10). `findings` are fixable types only, so
   // NOT_FIXABLE_TYPE can't come back.
-  const drafts: Draft[] = findings.map((finding) => ({
-    finding,
-    blocked: findingBlockReason(finding, ignores, embedApps) as CandidateBlockReason | null,
-  }));
+  const drafts: Draft[] = findings.map((finding) => {
+    const reason = findingBlockReason(finding, ignores, embedApps);
+    if (reason !== null && !(CANDIDATE_BLOCK_REASONS as readonly string[]).includes(reason)) {
+      throw new Error(`clean copy: no page copy for block reason ${reason}`);
+    }
+    return { finding, blocked: reason as CandidateBlockReason | null };
+  });
 
   // Read the affected MAIN files once (at most MAX_FILES_PER_REQUEST).
   const filenames = [...new Set(drafts.filter((d) => !d.blocked).map((d) => d.finding.filename))]
