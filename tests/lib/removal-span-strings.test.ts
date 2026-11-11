@@ -161,3 +161,72 @@ describe("gc-tib.11 self red-team", () => {
     }
   });
 });
+
+describe("gc-tib.11 audit r1: no span for text", () => {
+  const INNER = "<script src=//e.js></script>";
+  const refused = (content: string, needle = INNER) =>
+    expect(spanAt(content, needle)).toEqual({ ok: false, reason: "IN_NON_CODE_REGION" });
+
+  it("HIGH: a stray quote in a body element's start tag doesn't move the body", () => {
+    refused(`<script data=it's>a="x";w('${INNER}')</script>`);
+    refused(`<SCRIPT data=it's>a="x";w('${INNER}')</SCRIPT>`);
+    refused(`<style data=it's>/*'*/ ${INNER}</style>`);
+    refused(`<textarea x=it's>"' ${INNER}</textarea>`);
+    refused(`<noscript a=b'c>' ${INNER}</noscript>`);
+  });
+
+  it("MEDIUM: a quote that doesn't follow '=' doesn't open a value", () => {
+    refused(`<p title=it's>hi</p><div data-x='${INNER}'>`);
+    refused(`<p it's>hi</p><div data-x='${INNER}'>`);
+  });
+
+  it("MEDIUM: a Liquid block opened inside a start tag still protects its body", () => {
+    refused(`<div {% comment %}>${INNER}{% endcomment %}`);
+    refused(`<div title="{% raw %}">${INNER}{% endraw %}`);
+    refused(`<div {% javascript %}>${INNER}{% endjavascript %}`);
+    refused(`<script {% comment %}>{% endcomment %}>w('${INNER}')</script>`);
+  });
+
+  it("MEDIUM: '#' and comment lines in {% liquid %} don't flip string pairing", () => {
+    refused(`{% liquid\n  # it's\n  assign a = 'b'\n  echo '${INNER}'\n%}`);
+    refused(`{% liquid\n  comment\n  it's\n  endcomment\n  assign a = 'b'\n  echo '${INNER}'\n%}`);
+  });
+
+  it("LOW: tag names with ':' '_' or non-ASCII letters are walked", () => {
+    refused(`<x:y data='${INNER}'>`);
+    refused(`<my_el data='${INNER}'>`);
+    refused(`<dív data='${INNER}'>`);
+  });
+
+  it("LOW: an unquoted attribute value is not code", () => {
+    refused(`<div data-x=${INNER}>`, INNER);
+    refused(`<div data-x = ${INNER}>`, INNER);
+  });
+
+  it("LOW: a bare render line inside a comment in {% liquid %} gets no span", () => {
+    const c = "{% liquid\n  comment\n  render 'app-widget'\n  endcomment\n%}";
+    expect(removalSpanFor("GHOST_SNIPPET", c, c.indexOf("  render"))).toEqual({
+      ok: false,
+      reason: "IN_NON_CODE_REGION",
+    });
+    const hash = "{% liquid\n  # render 'app-widget'\n  render 'real'\n%}";
+    expect(removalSpanFor("GHOST_SNIPPET", hash, hash.indexOf("  render 'real'"))).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("LOW: no empty range for a trailing '{{'", () => {
+    for (const r of nonCodeRanges("abc{{")) expect(r[0]).toBeLessThan(r[1]);
+  });
+
+  it("still finds real elements: '=' quoted values, Liquid values, '>' in values", () => {
+    for (const c of [
+      `<div class="a" data-y='b' x={{ v }}>\n${SCRIPT}`,
+      `<div title = "a > b">\n${SCRIPT}`,
+      `<img alt=it's>\n${SCRIPT}`,
+      `<div {% if x %}hidden{% endif %}>\n${SCRIPT}`,
+    ]) {
+      expect(spanAt(c, SCRIPT)).toMatchObject({ ok: true });
+    }
+  });
+});

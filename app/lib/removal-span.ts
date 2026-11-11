@@ -262,67 +262,130 @@ function lastBlockBefore(
   return found;
 }
 
+/** HTML whitespace (tab, LF, FF, CR, space); NBSP and \v are not. */
+function isHtmlWs(ch: string | undefined): boolean {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r";
+}
+
+/** A Liquid block whose body is not code; it must open even inside a start tag. */
+const LIQUID_BLOCK_OPENER =
+  /^\{%-?\s*(?:comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|^\{%-?\s*#/i;
+
 /**
- * Walk an HTML start tag from just after `<name` to just past its `>`,
- * recording every quoted attribute value as [start, end) (quotes included).
- * Liquid inside the tag or a value (`{{ ... }}`, `{% ... %}`) is skipped as a
- * unit, so a quote inside it doesn't open or close a value; Liquid between
- * attributes is recorded too. An unterminated value or tag runs to the end of
- * the file (an unclosed Liquid tag in it: the walk stops there, conservative).
+ * Walk an HTML start tag from just after `<name` and record every attribute
+ * value as [start, end): quoted (quotes included) or unquoted. A quote opens
+ * a value only right after `=` (HTML: in `title=it's` the apostrophe is text),
+ * as does any other character there (an unquoted value runs to whitespace or
+ * `>`). Liquid outside a value is skipped as a unit and recorded (not a fix
+ * target); inside a value it is part of the value.
+ *
+ * Returns where the main pass resumes: just past the tag's `>` (`closed`),
+ * or, when a Liquid block opener (`{% comment %}`, `{% raw %}`, `{%#`...)
+ * appears in the tag, its offset, so the main pass opens that block (Liquid
+ * runs before HTML). An unterminated value or tag runs to the end of the file.
  */
-function walkStartTag(content: string, from: number, values: Array<[number, number]>): number {
-  let quote: string | null = null;
-  let quoteStart = 0;
+function walkStartTag(
+  content: string,
+  from: number,
+  values: Array<[number, number]>,
+): { end: number; closed: boolean } {
+  const len = content.length;
+  let mode: "none" | "quoted" | "unquoted" = "none";
+  let quote = "";
+  let valueStart = 0;
+  let afterEq = false;
   let i = from;
-  while (i < content.length) {
-    if (content[i] === "{" && (content[i + 1] === "{" || content[i + 1] === "%")) {
+  while (i < len) {
+    const ch = content[i];
+    if (ch === "{" && (content[i + 1] === "{" || content[i + 1] === "%")) {
+      if (content[i + 1] === "%" && LIQUID_BLOCK_OPENER.test(content.slice(i, i + 40))) {
+        if (mode !== "none" && i > valueStart) values.push([valueStart, i]);
+        return { end: i, closed: false };
+      }
       const close = content.indexOf(content[i + 1] === "{" ? "}}" : "%}", i + 2);
       if (close === -1) {
-        if (quote === null) values.push([i, content.length]);
-        break;
+        values.push([mode === "none" ? i : valueStart, len]);
+        return { end: len, closed: false };
       }
-      // Liquid between attributes is not a fix target either (inside a quoted
-      // value, the value's own range covers it).
-      if (quote === null) values.push([i, close + 2]);
+      if (mode === "none") {
+        values.push([i, close + 2]);
+        afterEq = false;
+      }
       i = close + 2;
       continue;
     }
-    const ch = content[i];
-    if (quote !== null) {
+    if (mode === "quoted") {
       if (ch === quote) {
-        values.push([quoteStart, i + 1]);
-        quote = null;
+        values.push([valueStart, i + 1]);
+        mode = "none";
       }
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      quoteStart = i;
+    } else if (mode === "unquoted") {
+      if (isHtmlWs(ch) || ch === ">") {
+        values.push([valueStart, i]);
+        mode = "none";
+        if (ch === ">") return { end: i + 1, closed: true };
+      }
+    } else if (isHtmlWs(ch)) {
+      // Whitespace keeps `afterEq` (`a = "b"` is a value).
+    } else if (afterEq) {
+      afterEq = false;
+      valueStart = i;
+      if (ch === '"' || ch === "'") {
+        mode = "quoted";
+        quote = ch;
+      } else if (ch === ">") {
+        return { end: i + 1, closed: true };
+      } else {
+        mode = "unquoted";
+      }
+    } else if (ch === "=") {
+      afterEq = true;
     } else if (ch === ">") {
-      return i + 1;
+      return { end: i + 1, closed: true };
     }
     i++;
   }
-  if (quote !== null) values.push([quoteStart, content.length]);
-  return content.length;
+  if (mode !== "none") values.push([valueStart, len]);
+  return { end: len, closed: false };
 }
+
+const LIQUID_TAG_HEAD = /^\{%-?\s*liquid\b/i;
 
 /**
  * The string literals inside one Liquid tag or output that starts at `at`
  * (`{%` or `{{`). Liquid ends the tag at the first `%}` / `}}`, even inside
- * quotes, so a literal that doesn't close by then runs to the tag end.
+ * quotes, so a literal that doesn't close by then runs to the tag end. In a
+ * `{% liquid %}` tag, `#` comment lines and `comment ... endcomment` lines are
+ * text too (and their quotes don't pair with real strings).
  * Returns the tag end, or the file end when the tag never closes (then the
- * whole rest is pushed as one range: nothing after it is certain).
+ * rest of the file from inside the tag is one range: nothing after it is
+ * certain; the tag's own start keeps its specific refusal).
  */
 function liquidTagLiterals(content: string, at: number, ranges: Array<[number, number]>): number {
   const closer = content[at + 1] === "{" ? "}}" : "%}";
   const close = content.indexOf(closer, at + 2);
   if (close === -1) {
-    // From inside the tag: the tag's own start keeps its specific refusal
-    // (UNTERMINATED_LIQUID_TAG for a render tag).
-    ranges.push([at + 2, content.length]);
+    if (at + 2 < content.length) ranges.push([at + 2, content.length]);
     return content.length;
   }
+  const isLiquidTag = closer === "%}" && LIQUID_TAG_HEAD.test(content.slice(at, at + 16));
+  let inComment = false;
   let i = at + 2;
   while (i < close) {
+    if (isLiquidTag && (i === at + 2 || content[i - 1] === "\n")) {
+      // Line start inside {% liquid %}: comment lines are text.
+      let eol = content.indexOf("\n", i);
+      if (eol === -1 || eol > close) eol = close;
+      const stmt = content.slice(i, eol).trim();
+      const word = stmt.split(/\s+/)[0]?.toLowerCase() ?? "";
+      if (inComment || stmt.startsWith("#") || word === "comment") {
+        if (word === "comment" && !inComment) inComment = true;
+        else if (word === "endcomment") inComment = false;
+        if (eol > i) ranges.push([i, eol]);
+        i = eol < close ? eol + 1 : close;
+        continue;
+      }
+    }
     const ch = content[i];
     if (ch === '"' || ch === "'") {
       const q = content.indexOf(ch, i + 1);
@@ -350,7 +413,7 @@ function liquidTagLiterals(content: string, at: number, ranges: Array<[number, n
 export function nonCodeRanges(content: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const token =
-    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|\{[{%]|<([a-zA-Z][a-zA-Z0-9-]*)(?=[\s>/])/gi;
+    /\{%-?\s*(comment|doc|raw|schema|javascript|stylesheet)\s*-?%\}|\{%-?\s*#|<!--|\{[{%]|<([a-zA-Z][^\t\n\f\r />]*)/gi;
   const BODY_ELEMENTS = new Set([
     "script",
     "style",
@@ -375,17 +438,20 @@ export function nonCodeRanges(content: string): Array<[number, number]> {
       end = c === -1 ? content.length : c + 3;
       ranges.push([at, end]);
     } else if (m[2]) {
-      // The start tag itself is code (it may be the fix target); its quoted
+      // The start tag itself is code (it may be the fix target); its
       // attribute values are not. Then, for text-only elements, the body.
-      const gtEnd = walkStartTag(content, at + m[0].length, ranges);
-      end = gtEnd;
       const name = m[2].toLowerCase();
-      if (BODY_ELEMENTS.has(name) && gtEnd < content.length) {
+      const tag = walkStartTag(content, at + m[0].length, ranges);
+      end = tag.end;
+      if (BODY_ELEMENTS.has(name) && end < content.length) {
+        // A Liquid block opened inside the start tag: the body's start is
+        // unknown, so everything to the closing tag is text (conservative).
+        const bodyStart = end;
         const close = new RegExp(`</${name}`, "gi");
-        close.lastIndex = gtEnd;
+        close.lastIndex = bodyStart;
         const c = close.exec(content);
         end = c ? c.index : content.length;
-        if (end > gtEnd) ranges.push([gtEnd, end]);
+        if (end > bodyStart) ranges.push([bodyStart, end]);
       }
     } else if (m[0] === "{{" || m[0] === "{%") {
       end = liquidTagLiterals(content, at, ranges);
