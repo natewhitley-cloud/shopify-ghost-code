@@ -180,3 +180,14 @@ export function isStorefrontGuardLive(): boolean {
 export function isStorefrontGuardEmailLive(): boolean {
   return isStorefrontGuardLive() && process.env.STOREFRONT_GUARD_EMAIL_ENABLED === "true";
 }
+
+/**
+ * Whether the clean-copy fix may run (gc-tib): duplicate the MAIN theme and
+ * remove selected leftover tags in the unpublished copy. Deliberately NOT in
+ * SOFT_LAUNCH_FLAGS (no FindingType). Off (unset or anything but "true") =
+ * preflight refuses and the clean-copy worker exits before any Admin call.
+ * Stays off until Shopify approves the write_themes exemption (spike §1).
+ */
+export function isCleanCopyEnabled(): boolean {
+  return process.env.CLEAN_COPY_ENABLED === "true";
+}

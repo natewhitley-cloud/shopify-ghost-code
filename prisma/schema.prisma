@@ -375,11 +375,18 @@ model FixItem {
   fixRunId   String
   fixRun     FixRun  @relation(fields: [fixRunId], references: [id], onDelete: Cascade)
   findingId  String
+  // Finding.findingType at selection time (gc-tib.4): the write step re-locates
+  // the span with removalSpanFor(type, ...) without needing the Finding row.
+  // Null only on rows created before the column; such items are refused.
+  findingType String?
   filename   String
   spanStart  Int
   spanEnd    Int
   spanSha256 String
   // Shopify checksumMd5 of the copy's file before and after our write.
+  // preMd5 is set at creation from the scan's manifest (the copy must still
+  // match it). postMd5 is the EXPECTED md5, written before the upsert, so a
+  // crash-retry that finds the file already at postMd5 marks the item removed.
   preMd5     String?
   postMd5    String?
   // pending | removed | skipped | failed

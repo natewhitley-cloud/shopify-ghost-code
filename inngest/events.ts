@@ -47,4 +47,16 @@ export type Events = {
       runNowPrevious?: string | null;
     };
   };
+
+  /**
+   * One clean-copy run (gc-tib): duplicate the MAIN theme and remove the
+   * run's selected spans in the unpublished copy. Sent by requestCleanCopy
+   * after preflight created the FixRun row; the worker loads everything else.
+   */
+  "clean-copy/requested": {
+    data: {
+      shopId: string;
+      fixRunId: string;
+    };
+  };
 };

@@ -12,6 +12,7 @@ import { serve } from "inngest/remix";
 
 import { inngest } from "../../inngest/client";
 import { checkScanStale } from "../../inngest/functions/check-scan-stale";
+import { cleanCopy } from "../../inngest/functions/clean-copy";
 import { monitorDeepHealth } from "../../inngest/functions/monitor-deep-health";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
 import { monthlyScan } from "../../inngest/functions/monthly-scan";
@@ -52,6 +53,7 @@ const handler = serve({
     speedReportRun,
     speedReportCancelled,
     storefrontGuard,
+    cleanCopy,
   ],
 });
 
