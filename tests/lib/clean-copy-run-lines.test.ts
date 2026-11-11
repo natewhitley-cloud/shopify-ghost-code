@@ -11,6 +11,7 @@ import {
   cleanCopyRunPath,
   type RecentCleanCopyRun,
   RUN_REFUSAL_REASONS,
+  runHasCopy,
   runRefusalCopy,
 } from "../../app/lib/clean-copy-view";
 
@@ -21,6 +22,7 @@ const run = (over: Partial<RecentCleanCopyRun> = {}): RecentCleanCopyRun => ({
   failureReason: null,
   copyThemeId: "gid://shopify/OnlineStoreTheme/2",
   copyThemeName: "Dawn - clean copy ab12",
+  copyGoneAt: null,
   ...over,
 });
 
@@ -133,14 +135,15 @@ describe("cleanCopyRunLines: an older unsafe copy stays visible", () => {
     expect(lines.map((l) => l.runId)).toEqual(["b", "a"]);
   });
 
-  it("the newest run unsafe and an older one unsafe: both, two different copies", () => {
+  it("the newest run unsafe and an older one unsafe: both, newest first", () => {
     const lines = cleanCopyRunLines([
       run({ id: "a", doNotPublish: true }),
       run({ id: "b", doNotPublish: true }),
     ]);
+    // r1: the newest warning stays first; the older one follows.
     expect(lines.map((l) => [l.runId, l.tone])).toEqual([
-      ["b", "critical"],
       ["a", "critical"],
+      ["b", "critical"],
     ]);
   });
 
@@ -151,6 +154,61 @@ describe("cleanCopyRunLines: an older unsafe copy stays visible", () => {
       run({ id: "c", status: "failed", doNotPublish: true, failureReason: "COPY_MISSING" }),
     ]);
     expect(lines.map((l) => l.runId)).toEqual(["a"]);
+  });
+});
+
+describe("r1: a deleted copy clears its warning; a copy published mid-write says so", () => {
+  it("copyGoneAt set: no warning, for the newest run or an older one", () => {
+    const gone = new Date("2026-11-11T10:00:00Z");
+    const [newest] = cleanCopyRunLines([
+      run({ status: "failed", doNotPublish: true, copyGoneAt: gone }),
+    ]);
+    expect(newest.tone).toBe("warning");
+    const lines = cleanCopyRunLines([
+      run({ id: "new" }),
+      run({ id: "old", doNotPublish: true, copyGoneAt: gone }),
+    ]);
+    expect(lines.map((l) => l.runId)).toEqual(["new"]);
+  });
+
+  it("copyGoneAt also clears the published-mid-write warning", () => {
+    const [line] = cleanCopyRunLines([
+      run({
+        status: "failed",
+        failureReason: "COPY_PUBLISHED_DURING_WRITE",
+        copyGoneAt: new Date(),
+      }),
+    ]);
+    expect(line.tone).toBe("warning");
+  });
+
+  it("published mid-write: says it was published, not 'don't publish it'", () => {
+    const [named] = cleanCopyRunLines([
+      run({ status: "failed", failureReason: "COPY_PUBLISHED_DURING_WRITE", doNotPublish: true }),
+    ]);
+    expect(named).toMatchObject({
+      tone: "critical",
+      text: 'The copy "Dawn - clean copy ab12" was published before we finished removing code. See what to do next.',
+    });
+    const [unnamed] = cleanCopyRunLines([
+      run({ status: "failed", failureReason: "COPY_PUBLISHED_DURING_WRITE", copyThemeName: null }),
+    ]);
+    expect(unnamed.text).toBe(
+      "Your clean copy was published before we finished removing code. See what to do next.",
+    );
+  });
+});
+
+describe("runHasCopy (shared with the result page)", () => {
+  it("needs a copy id, no COPY_MISSING and no copyGoneAt", () => {
+    const base = { copyThemeId: "gid://shopify/OnlineStoreTheme/2", failureReason: null };
+    expect(runHasCopy(base)).toBe(true);
+    expect(runHasCopy({ ...base, copyGoneAt: null })).toBe(true);
+    expect(runHasCopy({ ...base, copyThemeId: null })).toBe(false);
+    expect(runHasCopy({ ...base, failureReason: "COPY_MISSING" })).toBe(false);
+    expect(runHasCopy({ ...base, copyGoneAt: new Date() })).toBe(false);
+    // Serialized loader data carries the date as a string.
+    expect(runHasCopy({ ...base, copyGoneAt: "2026-11-11T10:00:00.000Z" })).toBe(false);
   });
 });
 

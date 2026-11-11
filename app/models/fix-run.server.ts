@@ -18,7 +18,12 @@
  */
 
 import db from "../db.server";
-import type { RecentCleanCopyRun } from "../lib/clean-copy-view";
+import {
+  cleanCopyRunLines,
+  type CleanCopyRunLine,
+  type RecentCleanCopyRun,
+} from "../lib/clean-copy-view";
+import { logger } from "../lib/logger.server";
 
 export const ACTIVE_FIX_RUN_STATUSES = ["pending", "duplicating", "writing"] as const;
 export type ActiveFixRunStatus = (typeof ACTIVE_FIX_RUN_STATUSES)[number];
@@ -129,9 +134,23 @@ export async function getFixRunWithItems(runId: string) {
 }
 
 /**
+ * The status and reason a run is shown with: an active run nobody has touched
+ * for the stale threshold was lost, so it reads as failed STALE (the next
+ * request's sweep fails it for real, audit M-j). Used by the result page and
+ * the run lines alike (r1).
+ */
+export function displayedRunState(
+  run: { status: string; failureReason: string | null; updatedAt: Date },
+  now: Date = new Date(),
+): { status: string; failureReason: string | null } {
+  return isStaleActiveRun(run, now)
+    ? { status: "failed", failureReason: "STALE" }
+    : { status: run.status, failureReason: run.failureReason };
+}
+
+/**
  * The shop's kept runs, newest first, for the "last clean copy" lines on the
- * scan and select pages (gc-tib.20). A stale active run reads as failed, as on
- * its result page.
+ * scan and select pages (gc-tib.20), with the displayed status.
  */
 export async function getRecentFixRunsForShop(
   shopId: string,
@@ -148,14 +167,36 @@ export async function getRecentFixRunsForShop(
       failureReason: true,
       copyThemeId: true,
       copyThemeName: true,
+      copyGoneAt: true,
       updatedAt: true,
     },
   });
-  return runs.map(({ updatedAt, ...run }) =>
-    isStaleActiveRun({ status: run.status, updatedAt }, now)
-      ? { ...run, status: "failed", failureReason: "STALE" }
-      : run,
-  );
+  return runs.map(({ updatedAt, ...run }) => ({
+    ...run,
+    ...displayedRunState({ ...run, updatedAt }, now),
+  }));
+}
+
+/**
+ * The lines linking back to recent runs' result pages. Never throws (r1): a
+ * failed read hides the lines instead of failing the scan page; the run's own
+ * result page still shows its warning.
+ */
+export async function loadCleanCopyRunLines(shopId: string): Promise<CleanCopyRunLine[]> {
+  try {
+    return cleanCopyRunLines(await getRecentFixRunsForShop(shopId));
+  } catch (error) {
+    logger.error("clean-copy recent runs read failed", {
+      shopId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+/** Record that the run's copy theme was deleted (once; the first sighting wins). */
+export async function markFixRunCopyGone(runId: string, at: Date = new Date()): Promise<void> {
+  await db.fixRun.updateMany({ where: { id: runId, copyGoneAt: null }, data: { copyGoneAt: at } });
 }
 
 /** An active run untouched for ACTIVE_RUN_STALE_MS (the status page shows it as stopped). */

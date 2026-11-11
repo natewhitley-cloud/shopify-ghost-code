@@ -25,7 +25,6 @@ import {
   scopedFindingsHeading,
 } from "../lib/app-removal-notice";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
-import { cleanCopyRunLines } from "../lib/clean-copy-view";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
@@ -108,7 +107,7 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
 } from "../models/finding.server";
-import { getRecentFixRunsForShop } from "../models/fix-run.server";
+import { loadCleanCopyRunLines } from "../models/fix-run.server";
 import {
   getIgnoredFindingsForShop,
   ignoreFindingApp,
@@ -1697,9 +1696,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // gc-tib.20: the way back to recent clean copies' result pages, on every
   // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
-  const cleanCopyRuns = isCleanCopyEnabled()
-    ? cleanCopyRunLines(await getRecentFixRunsForShop(shop.id))
-    : [];
+  // Never throws: a failed read hides the lines, not the page (r1).
+  const cleanCopyRuns = isCleanCopyEnabled() ? await loadCleanCopyRunLines(shop.id) : [];
 
   return {
     cleanCopy,

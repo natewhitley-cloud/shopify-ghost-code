@@ -190,7 +190,7 @@ const HOME_SECURITY_TYPES: readonly FindingType[] = [
 ];
 
 /** The scan action's error when no published theme is found (gc-tib.12: with the Canvas hint). */
-export const NO_PUBLISHED_THEME_ERROR = `No published theme found. Please publish a theme before scanning. ${CANVAS_THEME_HINT}`;
+const NO_PUBLISHED_THEME_ERROR = `No published theme found. Please publish a theme before scanning. ${CANVAS_THEME_HINT}`;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);

@@ -139,6 +139,7 @@ export function createFakeDb() {
         status: "pending",
         failureReason: null,
         doNotPublish: false,
+        copyGoneAt: null,
         createdAt: now,
         updatedAt: now,
         completedAt: null,

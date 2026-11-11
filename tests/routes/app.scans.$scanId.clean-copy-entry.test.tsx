@@ -444,7 +444,7 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun()]);
     const res = (await run()) as unknown as WithRuns;
     expect(dbMock.fixRun.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { shopId: expect.any(String) } }),
+      expect.objectContaining({ where: { shopId: SHOP.id } }),
     );
     expect(res.cleanCopyRuns).toEqual([expect.objectContaining({ runId: "run-1", tone: "info" })]);
   });
@@ -496,6 +496,22 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     expect(html).toMatch(
       /<s-banner tone="critical"><s-paragraph>We couldn(&#x27;|')t confirm every change in the copy[^<]*<a href="\/app\/clean-copy\/run-1"[^>]*>View result<\/a>/,
     );
+  });
+
+  it("a failed run: a warning banner; a partial run: a quiet line, not a banner", async () => {
+    const failed = await renderWith([dbRun({ status: "failed" })]);
+    expect(failed).toMatch(
+      /<s-banner tone="warning"><s-paragraph>Your last clean copy didn(&#x27;|')t finish\. <a href="\/app\/clean-copy\/run-1"/,
+    );
+    const partial = await renderWith([dbRun({ status: "partial" })]);
+    expect(partial).toMatch(/<p [^>]*>Your last clean copy, [^<]*with some code left in\. <a /);
+    expect(partial).not.toMatch(/<s-banner[^>]*><s-paragraph>Your last clean copy/);
+  });
+
+  it("r1: a failed run-history read never fails the scan page", async () => {
+    dbMock.fixRun.findMany.mockRejectedValueOnce(new Error("relation does not exist"));
+    const res = (await run()) as unknown as WithRuns;
+    expect(res.cleanCopyRuns).toEqual([]);
   });
 
   it("no runs: nothing rendered", async () => {

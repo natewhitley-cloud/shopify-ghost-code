@@ -19,7 +19,7 @@ vi.mock("../../app/db.server", () => ({ default: {} }));
 vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
 vi.mock("../../app/models/fix-run.server", async (importActual) => {
   const actual = await importActual<typeof import("../../app/models/fix-run.server")>();
-  return { ...actual, getFixRunWithItems: vi.fn() };
+  return { ...actual, getFixRunWithItems: vi.fn(), markFixRunCopyGone: vi.fn() };
 });
 vi.mock("../../app/services/clean-copy-admin.server", async (importActual) => {
   const actual = await importActual<typeof import("../../app/services/clean-copy-admin.server")>();
@@ -34,7 +34,7 @@ import {
   runRefusalCopy,
 } from "../../app/lib/clean-copy-view";
 import { getFindingsForScan } from "../../app/models/finding.server";
-import { getFixRunWithItems } from "../../app/models/fix-run.server";
+import { getFixRunWithItems, markFixRunCopyGone } from "../../app/models/fix-run.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import CleanCopyRun, {
   CLEAN_COPY_FOOTER_NOTE,
@@ -52,6 +52,8 @@ const mockRun = getFixRunWithItems as ReturnType<typeof vi.fn>;
 const mockFindings = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockMakeAdmin = createCleanCopyAdmin as ReturnType<typeof vi.fn>;
 const getMainTheme = vi.fn();
+// gc-tib.20 r1: the copy is read too; present unless a test deletes it.
+const getTheme = vi.fn();
 const SOURCE_GID = "gid://shopify/OnlineStoreTheme/111";
 const COPY_CREATED = new Date("2026-11-10T12:00:00Z");
 const mainTheme = (over: Record<string, unknown> = {}) => ({
@@ -114,7 +116,11 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockAuth.mockResolvedValue({ admin: {}, session: { shop: DOMAIN } });
   getMainTheme.mockResolvedValue(mainTheme());
-  mockMakeAdmin.mockReturnValue({ getMainTheme });
+  getTheme.mockImplementation(async (id: string) => ({
+    ok: true,
+    value: { id, name: "Copy", role: "UNPUBLISHED", processing: false, processingFailed: false },
+  }));
+  mockMakeAdmin.mockReturnValue({ getMainTheme, getTheme });
   mockShop.mockResolvedValue({ id: "shop-1", domain: DOMAIN });
   mockRun.mockResolvedValue(baseRun());
   mockFindings.mockResolvedValue([
@@ -609,5 +615,70 @@ describe("audit r4 on the status page", () => {
     expect((await run()).summary.body).toBe("Reload this page in a minute.");
     mockRun.mockResolvedValue(baseRun({ status: "mystery", copyThemeId: null }));
     expect((await run()).summary.body).toContain("Your live theme was not changed.");
+  });
+});
+
+describe("gc-tib.20 r1: a deleted copy is recorded and its warning stops", () => {
+  const gone = () => getTheme.mockResolvedValue({ ok: true, value: null });
+
+  it("completed run whose copy was deleted: recorded once, no preview, says it was deleted", async () => {
+    gone();
+    mockRun.mockResolvedValue(baseRun({ id: "run-1" }));
+    const res = await run();
+    expect(markFixRunCopyGone).toHaveBeenCalledWith("run-1");
+    expect(res.run.hasCopy).toBe(false);
+    expect(res.run.copyThemeName).toBeNull();
+    expect(res.summary.showPreview).toBe(false);
+    expect(res.previewUrl).toBeNull();
+    expect(res.summary.body).toContain("That copy has since been deleted from your theme library.");
+    expect(res.summary.body).not.toContain("publish it from Online Store");
+    expect(res.liveTheme).toBeNull();
+  });
+
+  it("don't-publish run whose copy was deleted: no 'don't publish', no 'delete the copy'", async () => {
+    gone();
+    mockRun.mockResolvedValue(baseRun({ status: "failed", doNotPublish: true }));
+    const { summary } = await run();
+    expect(markFixRunCopyGone).toHaveBeenCalled();
+    expect(summary.heading).not.toContain("Don't publish");
+    expect(summary.body).not.toContain("Delete");
+  });
+
+  it("a failed or throwing copy read changes nothing and records nothing", async () => {
+    mockRun.mockResolvedValue(baseRun({ status: "failed", doNotPublish: true }));
+    getTheme.mockResolvedValue({ ok: false, error: "TRANSIENT", message: "" });
+    expect((await run()).summary.heading).toBe("Don't publish this copy");
+    getTheme.mockRejectedValue(new Error("boom"));
+    expect((await run()).summary.heading).toBe("Don't publish this copy");
+    expect(markFixRunCopyGone).not.toHaveBeenCalled();
+  });
+
+  it("a copy that still exists: not recorded, the usual result", async () => {
+    mockRun.mockResolvedValue(baseRun());
+    const res = await run();
+    expect(markFixRunCopyGone).not.toHaveBeenCalled();
+    expect(res.run.hasCopy).toBe(true);
+    expect(res.summary.showPreview).toBe(true);
+  });
+
+  it("already recorded as gone: no Admin reads, no copy, no warning", async () => {
+    mockRun.mockResolvedValue(
+      baseRun({
+        status: "failed",
+        doNotPublish: true,
+        copyGoneAt: new Date("2026-11-11T10:00:00Z"),
+      }),
+    );
+    const res = await run();
+    expect(getTheme).not.toHaveBeenCalled();
+    expect(getMainTheme).not.toHaveBeenCalled();
+    expect(res.run.hasCopy).toBe(false);
+    expect(res.summary.heading).not.toContain("Don't publish");
+  });
+
+  it("an active run never reads the copy", async () => {
+    mockRun.mockResolvedValue(baseRun({ status: "writing", items: [item({ status: "pending" })] }));
+    await run();
+    expect(getTheme).not.toHaveBeenCalled();
   });
 });

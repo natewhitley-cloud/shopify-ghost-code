@@ -24,6 +24,8 @@ import {
   FIX_RUNS_KEEP_PER_SHOP,
   finalizeFixRun,
   getRecentFixRunsForShop,
+  loadCleanCopyRunLines,
+  markFixRunCopyGone,
   isFixRunActive,
   isStaleActiveRun,
   markDoNotPublishIfWritten,
@@ -335,6 +337,53 @@ describe("getRecentFixRunsForShop (gc-tib.20)", () => {
   });
 });
 
+describe("gc-tib.20 r1: query shape, never-throw lines, copy gone", () => {
+  it("asks the database for this shop, newest first, capped, with only the fields it needs", async () => {
+    const spy = vi.spyOn(
+      fake.db.fixRun as { findMany: (a: unknown) => Promise<unknown[]> },
+      "findMany",
+    );
+    await getRecentFixRunsForShop("shop-1");
+    expect(spy).toHaveBeenCalledWith({
+      where: { shopId: "shop-1" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: FIX_RUNS_KEEP_PER_SHOP,
+      select: {
+        id: true,
+        status: true,
+        doNotPublish: true,
+        failureReason: true,
+        copyThemeId: true,
+        copyThemeName: true,
+        copyGoneAt: true,
+        updatedAt: true,
+      },
+    });
+  });
+
+  it("loadCleanCopyRunLines: lines on success, [] (never a throw) when the read fails", async () => {
+    const runId = await created();
+    expect(await loadCleanCopyRunLines("shop-1")).toEqual([
+      expect.objectContaining({ runId, tone: "info" }),
+    ]);
+    vi.spyOn(
+      fake.db.fixRun as unknown as { findMany: () => Promise<unknown[]> },
+      "findMany",
+    ).mockRejectedValue(new Error('relation "FixRun" does not exist'));
+    await expect(loadCleanCopyRunLines("shop-1")).resolves.toEqual([]);
+  });
+
+  it("markFixRunCopyGone: set once, the first sighting kept", async () => {
+    const runId = await created();
+    const first = new Date("2026-11-11T10:00:00Z");
+    await markFixRunCopyGone(runId, first);
+    await markFixRunCopyGone(runId, new Date("2026-11-12T10:00:00Z"));
+    expect(runOf(runId).copyGoneAt).toEqual(first);
+    const [r] = await getRecentFixRunsForShop("shop-1");
+    expect(r.copyGoneAt).toEqual(first);
+  });
+});
+
 describe("schema comments (audit logic 18)", () => {
   it("the StorefrontIncident doc comment sits directly above its model", () => {
     const schema = readFileSync(join(__dirname, "..", "..", "prisma/schema.prisma"), "utf8");
@@ -363,5 +412,28 @@ describe("migration 20261110210000_gc_tib_fix_item_finding_type", () => {
       .replace(/\s+/g, " ")
       .trim();
     expect(code).toBe('ALTER TABLE "FixItem" ADD COLUMN "findingType" TEXT;');
+  });
+});
+
+describe("migration 20261111120000_gc_tib_fix_run_copy_gone", () => {
+  it("adds exactly one nullable timestamp column (additive), matching the schema", () => {
+    const sql = readFileSync(
+      join(
+        __dirname,
+        "..",
+        "..",
+        "prisma/migrations/20261111120000_gc_tib_fix_run_copy_gone/migration.sql",
+      ),
+      "utf8",
+    );
+    const code = sql
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("--"))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    expect(code).toBe('ALTER TABLE "FixRun" ADD COLUMN "copyGoneAt" TIMESTAMP(3);');
+    const schema = readFileSync(join(__dirname, "..", "..", "prisma/schema.prisma"), "utf8");
+    expect(schema).toMatch(/model FixRun \{[^}]*\n\s*copyGoneAt\s+DateTime\?\n/);
   });
 });

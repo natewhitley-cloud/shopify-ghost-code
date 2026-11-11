@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { cleanCopyRunPath, type CleanCopyRunLine } from "../lib/clean-copy-view";
 import { TEXT_SUBDUED } from "../styles/shared";
 
-export const VIEW_RUN_RESULT_LABEL = "View result";
+const VIEW_RUN_RESULT_LABEL = "View result";
 
 /**
  * The way back to a clean copy's result page (gc-tib.20), on the scan and

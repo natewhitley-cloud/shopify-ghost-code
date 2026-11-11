@@ -35,7 +35,6 @@ import {
   type CandidateGroup,
   candidateBlockCopy,
   CLEAN_COPY_SCOPE,
-  cleanCopyRunLines,
   cleanCopyRunPath,
   type CleanCopyRunLine,
   findingRefusalCopy,
@@ -45,7 +44,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import { getFindingsForScan } from "../models/finding.server";
-import { getRecentFixRunsForShop } from "../models/fix-run.server";
+import { loadCleanCopyRunLines } from "../models/fix-run.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanManifest } from "../models/scan-manifest.server";
 import { getScanById } from "../models/scan.server";
@@ -111,7 +110,7 @@ export const loader = async ({
   }
   const scan = await getScanById(scanId, { includeFindings: false });
   if (!scan || scan.shopId !== shop.id) return redirect(scanPath(scanId));
-  const runLines = cleanCopyRunLines(await getRecentFixRunsForShop(shop.id));
+  const runLines = await loadCleanCopyRunLines(shop.id);
 
   const cleanAdmin = createCleanCopyAdmin(admin);
   // Read live, not from the session (audit M-h): a grant or revoke since the

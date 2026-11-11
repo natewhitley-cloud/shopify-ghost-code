@@ -323,6 +323,7 @@ const PUBLISH_YOURSELF =
   "Preview the copy, then publish it from Online Store > Themes when you're happy with it.";
 const COPY_NOW_LIVE_REVERT =
   "You published the copy, so it's now your live theme. Publish your previous theme again from Online Store > Themes, then make a new clean copy.";
+const COPY_DELETED = "That copy has since been deleted from your theme library.";
 const DELETE_UNSAFE_COPY =
   "Don't publish the copy. Delete it from Online Store > Themes, then make a new clean copy.";
 
@@ -335,8 +336,10 @@ export function runSummary(input: RunSummaryInput): RunSummary {
   const removed = input.items.filter((i) => i.status === "removed").length;
   const total = input.items.length;
   const copyIsLive = input.liveState === "published_copy";
-  // A copy the merchant can still publish: never when the live theme moved on.
-  const copyUsable = !input.liveState || input.liveState === "unchanged";
+  // A copy the merchant can still publish: never when the live theme moved on,
+  // and never once it was deleted (hasCopy false, gc-tib.20 r1).
+  const copyGone = input.hasCopy === false;
+  const copyUsable = !copyGone && (!input.liveState || input.liveState === "unchanged");
   // "Your live theme was not changed" on a failed run: only when we read it as
   // unchanged, or when there is no copy that could have been published (r3).
   const liveSureUnchanged = input.liveState === "unchanged" || !input.hasCopy;
@@ -382,7 +385,7 @@ export function runSummary(input: RunSummaryInput): RunSummary {
       heading: "Your clean copy is ready",
       body: copyUsable
         ? `We removed ${pieces(removed)} of leftover code from a copy of your theme. ${LIVE_THEME_UNCHANGED} ${PUBLISH_YOURSELF}`
-        : `We removed ${pieces(removed)} of leftover code from a copy of your theme.`,
+        : `We removed ${pieces(removed)} of leftover code from a copy of your theme.${copyGone ? ` ${COPY_DELETED}` : ""}`,
       showPreview: copyUsable,
       active,
     };
@@ -393,6 +396,7 @@ export function runSummary(input: RunSummaryInput): RunSummary {
       heading: "Your clean copy is ready, with some code left in",
       body: [
         `We removed ${removed} of ${total} pieces of leftover code from a copy of your theme. The rest are listed below with the reason.`,
+        copyGone ? COPY_DELETED : "",
         copyUsable ? LIVE_THEME_UNCHANGED : "",
         copyUsable && removed > 0 ? PUBLISH_YOURSELF : "",
       ]
@@ -505,28 +509,45 @@ export type RecentCleanCopyRun = {
   failureReason: string | null;
   copyThemeId: string | null;
   copyThemeName: string | null;
+  copyGoneAt: Date | null;
 };
 
 export type CleanCopyRunLine = { runId: string; tone: SummaryTone; text: string };
 
-/** A copy that may still be in the theme library and must not be published. */
-function copyNeedsWarning(run: RecentCleanCopyRun): boolean {
-  if (run.copyThemeId === null || run.failureReason === "COPY_MISSING") return false;
-  return run.doNotPublish || run.failureReason === "COPY_PUBLISHED_DURING_WRITE";
+/**
+ * The run's copy may still be in the theme library: it was made, and neither
+ * the worker (COPY_MISSING) nor the result page (copyGoneAt) saw it deleted.
+ * The result page and the run lines share this rule (r1).
+ */
+export function runHasCopy(run: {
+  copyThemeId: string | null;
+  failureReason: string | null;
+  copyGoneAt?: Date | string | null;
+}): boolean {
+  return run.copyThemeId !== null && run.failureReason !== "COPY_MISSING" && !run.copyGoneAt;
 }
 
-function copyLabel(run: RecentCleanCopyRun): string {
-  return run.copyThemeName ? `the copy "${run.copyThemeName}"` : "this clean copy";
+/** A copy that may still be in the theme library and must not be published. */
+export function copyMustNotBePublished(run: RecentCleanCopyRun): boolean {
+  if (!runHasCopy(run)) return false;
+  return run.doNotPublish || run.failureReason === "COPY_PUBLISHED_DURING_WRITE";
 }
 
 function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
   const line = (tone: SummaryTone, text: string) => ({ runId: run.id, tone, text });
   const named = run.copyThemeName ? `, "${run.copyThemeName}",` : "";
-  if (copyNeedsWarning(run)) {
-    // No live-theme claim: the scan page doesn't read the live theme.
+  const copy = run.copyThemeName ? `the copy "${run.copyThemeName}"` : "this clean copy";
+  // No live-theme claims: these pages don't read the live theme.
+  if (runHasCopy(run) && run.failureReason === "COPY_PUBLISHED_DURING_WRITE") {
     return line(
       "critical",
-      `We couldn't confirm every change in ${copyLabel(run)}. Don't publish it. If you already did, publish your previous theme again.`,
+      `${run.copyThemeName ? `The copy "${run.copyThemeName}"` : "Your clean copy"} was published before we finished removing code. See what to do next.`,
+    );
+  }
+  if (copyMustNotBePublished(run)) {
+    return line(
+      "critical",
+      `We couldn't confirm every change in ${copy}. Don't publish it. If you already did, publish your previous theme again.`,
     );
   }
   if (Object.prototype.hasOwnProperty.call(ACTIVE_HEADINGS, run.status)) {
@@ -543,15 +564,17 @@ function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
 /**
  * The lines that link back to a run's result page: the newest run, plus the
  * newest older run whose copy must not be published (a later run must not
- * hide that warning). `runs` is newest first. A warning comes first.
+ * hide that warning). `runs` is newest first. The older warning goes first
+ * unless the newest run is itself a warning (r1).
  */
 export function cleanCopyRunLines(runs: readonly RecentCleanCopyRun[]): CleanCopyRunLine[] {
   const [latest, ...older] = runs;
   if (!latest) return [];
-  const lines = [lastRunLine(latest)];
-  const unsafe = older.find(copyNeedsWarning);
-  if (unsafe) lines.unshift(lastRunLine(unsafe));
-  return lines;
+  const newest = lastRunLine(latest);
+  const unsafe = older.find(copyMustNotBePublished);
+  if (!unsafe) return [newest];
+  const warning = lastRunLine(unsafe);
+  return newest.tone === "critical" ? [newest, warning] : [warning, newest];
 }
 
 /** The result page for a run (app/routes/app.clean-copy.$runId.tsx). */

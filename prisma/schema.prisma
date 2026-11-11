@@ -359,6 +359,9 @@ model FixRun {
   failureReason String?
   // Set when a post-write check failed: the merchant must not publish the copy.
   doNotPublish  Boolean   @default(false)
+  // Set when the result page found the copy theme deleted (gc-tib.20 r1): the
+  // copy can't be published any more, so no "don't publish" warning.
+  copyGoneAt    DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   completedAt   DateTime?

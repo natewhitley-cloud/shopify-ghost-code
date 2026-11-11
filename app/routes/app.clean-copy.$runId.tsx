@@ -18,13 +18,18 @@ import {
   liveThemeState,
   type LiveThemeNotice,
   previewUrl,
+  runHasCopy,
   runSummary,
   type RunSummary,
 } from "../lib/clean-copy-view";
 import { buildThemeEditorUrl, storeHandleFromDomain } from "../lib/theme-editor-url";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getFindingsForScan } from "../models/finding.server";
-import { getFixRunWithItems, isStaleActiveRun } from "../models/fix-run.server";
+import {
+  displayedRunState,
+  getFixRunWithItems,
+  markFixRunCopyGone,
+} from "../models/fix-run.server";
 import { getShopMetadata } from "../models/shop.server";
 import { createCleanCopyAdmin } from "../services/clean-copy-admin.server";
 import { authenticate } from "../shopify.server";
@@ -79,30 +84,41 @@ export const loader = async ({
   const run = await getFixRunWithItems(runId);
   if (!run || run.shopId !== shop.id) throw new Response("Not found", { status: 404 });
 
-  // An active run nobody has touched for the stale threshold was lost: show it
-  // as stopped (the next request's sweep fails it for real, audit M-j).
-  const stale = isStaleActiveRun(run);
-  // COPY_MISSING: the copy was deleted, so never tell the merchant to delete it (r3).
-  const hasCopy = run.copyThemeId !== null && run.failureReason !== "COPY_MISSING";
-  const summaryInput = {
-    status: stale ? "failed" : run.status,
-    // A copy that is gone can't be published: no "don't publish" banner (r4).
-    doNotPublish: run.doNotPublish && hasCopy,
-    failureReason: stale ? "STALE" : run.failureReason,
+  // A stale active run reads as failed STALE (shared with the run lines, r1).
+  const shown = displayedRunState(run);
+  // COPY_MISSING or copyGoneAt: the copy was deleted, so never tell the
+  // merchant to delete it (r3) or not to publish it (r4).
+  let hasCopy = runHasCopy(run);
+  const inputFor = (withCopy: boolean) => ({
+    status: shown.status,
+    doNotPublish: run.doNotPublish && withCopy,
+    failureReason: shown.failureReason,
     items: run.items,
-    hasCopy,
-  };
+    hasCopy: withCopy,
+  });
+  let summaryInput = inputFor(hasCopy);
   let summary = runSummary(summaryInput);
 
   // Live-theme check (spike §3, audit H2, r2 gc-tib.13): for every finished run
   // that made a copy, so no banner claims the live theme is unchanged when the
-  // merchant already published the copy. A failed read keeps the default copy
-  // and never crashes. The stale-copy notice is only for a usable copy.
+  // merchant already published the copy. The copy itself is read too
+  // (gc-tib.20 r1): once it's deleted, record it so this page and the scan
+  // page's warning stop. A failed read keeps the default copy and never
+  // crashes. The stale-copy notice is only for a usable copy.
   let liveTheme: LiveThemeNotice = null;
   if (!summary.active && hasCopy && run.copyThemeId) {
     try {
-      const main = await createCleanCopyAdmin(admin).getMainTheme();
-      if (main.ok && main.value) {
+      const cleanAdmin = createCleanCopyAdmin(admin);
+      const [main, copy] = await Promise.all([
+        cleanAdmin.getMainTheme(),
+        cleanAdmin.getTheme(run.copyThemeId),
+      ]);
+      if (copy.ok && copy.value === null) {
+        await markFixRunCopyGone(run.id);
+        hasCopy = false;
+        summaryInput = inputFor(false);
+        summary = runSummary(summaryInput);
+      } else if (main.ok && main.value) {
         const liveState = liveThemeState({
           mainId: main.value.id,
           mainUpdatedAt: main.value.updatedAt,
