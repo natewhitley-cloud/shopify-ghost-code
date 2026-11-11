@@ -18,10 +18,14 @@
  * mapped first, then HTML is tokenized on a copy with Liquid masked, and any
  * structure that depends on how Liquid renders makes the rest of the file
  * non-code. Residual risks (not modeled, by design):
- *   - Liquid variables, filters, `{% render %}` / `{% include %}` /
- *     `{% section %}` output and snippet `break`s are unknown text at scan
- *     time: they can emit markup (`<!--`, quotes, `>`) that changes the HTML
- *     structure. Only string literals in `{{ }}`, echo and cycle are checked.
+ *   - Values that come from outside the template (objects, settings,
+ *     translations, `{% render %}` / `{% include %}` / `{% section %}`
+ *     output) and snippet `break`s are unknown text at scan time: they can
+ *     emit markup (`<!--`, quotes, `>`) that changes the HTML structure.
+ *     What the template itself writes is checked: string literals in
+ *     `{{ }}`, echo and cycle; assign and capture literals and capture
+ *     bodies, carried per variable name to where they print (the Taint
+ *     class); and the markup that markup-making filters emit.
  *   - Tree-construction quirks beyond the tokenizer are approximated: inside
  *     svg/math/select (tracked by start/end tag pairs) a text-only body must
  *     hold no '<'; other insertion modes are assumed to be "in body".
@@ -34,12 +38,21 @@
  *     Comment bodies name tags by their FIRST name (comment.rb, FullToken);
  *     raw and doc bodies by their LAST `{%` (FullTokenPossiblyInvalid); doc
  *     does not skip raw.
- *   - Only literals are checked for emitted markup. Filter arguments count
- *     as emitted except the first argument of remove/remove_first/
- *     remove_last/split/replace/replace_first/replace_last; any decoding
- *     filter (url_decode, base64_decode...) makes any literal ambiguous.
+ *   - Filter arguments count as emitted except the first argument of
+ *     remove/remove_first/remove_last/split/replace/replace_first/
+ *     replace_last; any decoding filter (url_decode, base64_decode...) makes
+ *     any literal ambiguous; markup-making filters (link_to, any `*_tag`...)
+ *     emit balanced markup, which is only allowed in data state.
  *   - An `{% include %}` outside a loop is assumed not to `break` (a snippet
  *     doing so would stop the rest of the template).
+ *
+ * History: audit rounds r4-r5 added parse5 as a second, independent parser
+ * that had to confirm every span. It was removed after audit r6: it caused
+ * every guard HIGH since r5 (its tree builder is quadratic or worse on
+ * hostile input: nesting depth, adoption-agency reconstruction, duplicate
+ * attributes, stack walks), and every wrong span the auditors found was
+ * also accepted by parse5. This module plus the splice structure re-check
+ * (theme-splice.ts) are the whole check.
  *
  * Pure, client-safe module (no .server suffix, no imports).
  */
@@ -70,9 +83,7 @@ export type SpanRefusal =
   /** The element would be longer than MAX_SPAN_CHARS: not a plain app tag. */
   | "SPAN_TOO_LONG"
   /** Removing the element would join the text around it into new markup (`<` + `!--`). */
-  | "JOINS_NEIGHBOURS"
-  /** parse5 does not see this exact element (span-crosscheck.server.ts). */
-  | "PARSER_DISAGREES";
+  | "JOINS_NEIGHBOURS";
 
 export type SpanResult = { ok: true; span: RemovalSpan } | { ok: false; reason: SpanRefusal };
 
@@ -193,14 +204,52 @@ export function linkElementSpan(content: string, start: number): SpanResult {
  * removal could misjudge (nested openers, unbalanced quotes, over-long tags),
  * which the tokenizer must accept as Liquid does.
  */
-function liquidTagEnd(content: string, start: number, maxLength = Infinity): number | null {
+function liquidTagEnd(
+  content: string,
+  start: number,
+  maxLength = Infinity,
+  liquidBody = false,
+): number | null {
   const end = liquidTokenEnd(content, start);
   if (end < 0 || end - start > maxLength) return null;
   const close = end - 2;
   const inner = content.slice(start + 2, close);
   if (inner.includes("{%") || inner.includes("{{")) return null;
-  if (count(inner, "'") % 2 !== 0 || count(inner, '"') % 2 !== 0) return null;
+  if (liquidBody) {
+    // L2 (gc-pb12): a `{% liquid %}` tag's literals end at their line, and
+    // `#` lines and comment bodies hold none (the same rule as liquidTagLines).
+    const from = start + 2 + (content.charCodeAt(start + 2) === 45 ? 1 : 0);
+    if (!liquidLiteralsClosed(content, from, close)) return null;
+  } else if (count(inner, "'") % 2 !== 0 || count(inner, '"') % 2 !== 0) {
+    return null;
+  }
   return close + 2;
+}
+
+/** Whether every string literal on the code lines of a `{% liquid %}` tag [a, b) closes on its line. */
+function liquidLiteralsClosed(content: string, a: number, b: number): boolean {
+  let depth = 0;
+  for (let lineStart = a; lineStart < b; ) {
+    let eol = content.indexOf("\n", lineStart);
+    if (eol === -1 || eol > b) eol = b;
+    let name = lineTagName(content, lineStart, eol);
+    while (depth === 0 && name.name === "liquid") name = lineTagName(content, name.markup, eol);
+    if (depth > 0) {
+      if (name.name === "comment") depth++;
+      else if (name.name === "endcomment") depth--;
+    } else if (name.name === "comment") depth = 1;
+    else if (name.name !== "#") {
+      for (let i = lineStart; i < eol; i++) {
+        const c = content.charCodeAt(i);
+        if (c === 34 || c === 39) {
+          i = quoteEnd(content, i, eol);
+          if (i >= eol) return false;
+        }
+      }
+    }
+    lineStart = eol + 1;
+  }
+  return true;
 }
 
 function count(text: string, ch: string): number {
@@ -233,7 +282,7 @@ export function liquidBlockRanges(content: string): Array<[number, number]> {
   LIQUID_BLOCK_OPEN.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = LIQUID_BLOCK_OPEN.exec(content)) !== null) {
-    const end = liquidTagEnd(content, m.index);
+    const end = liquidTagEnd(content, m.index, Infinity, true);
     if (end === null) {
       blocks.push([m.index, Infinity]);
       break;
@@ -314,6 +363,12 @@ const F_LOOP = 256; // for / tablerow (opener or closer)
 const F_MARKUP = 512; // form / tablerow: the tag itself emits HTML tags
 const F_CONTROL = 1024; // any control-flow tag (removalSpanFor refuses spans holding one)
 const F_LIQUID_TAG = 2048; // {% liquid %}
+/** The output may hold (balanced) markup: a markup-making filter or a captured body with tags. */
+const F_MARKUP_OUT = 4096;
+/** A capture whose body holds markup (opener or closer): its body must leave the tokenizer as it found it. */
+const F_CAPTURE = 8192;
+/** Flags a variable can carry from an assign or capture to where it prints (M2, r6). */
+const SOFT_TAINT = F_LIT_DQ | F_LIT_SQ | F_LIT_EQWS | F_LIT_DASH | F_LIT_BRACKET | F_MARKUP_OUT;
 
 /** Blocks whose body renders conditionally, repeatedly or not at all. */
 const CONTROL_BLOCKS = new Set([
@@ -563,6 +618,33 @@ const NON_EMITTING_FIRST_ARG = new Set([
 ]);
 /** Filters that can turn literal text into markup (`%3C`, base64). */
 const DECODING_FILTER = /decode|unescape/;
+/**
+ * Filters whose output is HTML markup (L1, r6), from Shopify's filter
+ * reference (theme-liquid-docs data/filters.json: every filter whose summary
+ * says it generates HTML or wraps text in an element). Any `*_tag` filter
+ * counts too, so new tag filters are covered. Their output is balanced
+ * markup: fine in data state, ambiguous anywhere else (F_MARKUP_OUT).
+ */
+const MARKUP_FILTERS = new Set([
+  "avatar",
+  "currency_selector",
+  "customer_login_link",
+  "customer_logout_link",
+  "customer_register_link",
+  "default_errors",
+  "default_pagination",
+  "format_address",
+  "highlight",
+  "inline_asset_content",
+  "link_to",
+  "link_to_type",
+  "link_to_vendor",
+  "login_button",
+  "newline_to_br",
+  "payment_button",
+  "payment_terms",
+]);
+const isMarkupFilter = (name: string) => MARKUP_FILTERS.has(name) || name.endsWith("_tag");
 
 function hasQuote(content: string, a: number, b: number): boolean {
   for (let i = a; i < b; i++) {
@@ -616,7 +698,8 @@ function emittedFlags(content: string, a: number, b: number): number {
     if (c === 34 || c === 39) {
       i = quoteEnd(content, i, b);
       if (i >= b) {
-        const f = stringFlags(content, a, b);
+        // Unclosed: every literal counts, and any filter may make markup.
+        const f = stringFlags(content, a, b) | F_MARKUP_OUT;
         return DECODING_FILTER.test(content.slice(a, b)) ? f | F_LIT_LTGT : f;
       }
     } else if (c === 124) segs.push(i + 1);
@@ -634,6 +717,7 @@ function emittedFlags(content: string, a: number, b: number): number {
     while (p < y && /[\w-]/.test(content[p])) p++;
     const name = content.slice(nameStart, p);
     if (DECODING_FILTER.test(name)) decode = true;
+    if (isMarkupFilter(name)) f |= F_MARKUP_OUT;
     while (p < y && isStripWs(content.charCodeAt(p))) p++;
     if (hasQuote(content, p, y)) literals = true;
     if (content.charCodeAt(p) !== 58) {
@@ -764,42 +848,181 @@ const NO_VARIABLE_OUTPUT = new Set([
   "endpaginate",
 ]);
 
-/** Whether an output's markup [a, b) names anything outside string literals. */
+/**
+ * Whether an output's markup [a, b) names anything outside string literals.
+ * A `[` counts (M1, r6): Ruby's variable_lookup resolves `['x']` to x.
+ */
 function namesSomething(content: string, a: number, b: number): boolean {
   for (let i = a; i < b; i++) {
     const c = content.charCodeAt(i);
     if (c === 34 || c === 39) i = quoteEnd(content, i, b);
-    else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) return true;
+    else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 91) return true;
   }
   return false;
 }
 
+const isNameStart = (c: number) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+const isNameChar = (c: number) => isWordChar(c) || c === 45 || c === 63;
+
+/**
+ * M2 (r6): what assigns and captures may have put in each variable, so a
+ * later print carries it to wherever it lands. Hard limits, no value flow:
+ *   - flags only grow (a reassign never clears: branches are not tracked);
+ *   - a print reads every name it mentions outside string literals (filter
+ *     names and keywords too); a top-level `['x']` reads x; any other
+ *     top-level `[` lookup, and an include, read every variable;
+ *   - a flag added inside a loop after that name (or every name) was read
+ *     earlier in the outermost open loop is ambiguous: the earlier read runs
+ *     again on the next iteration.
+ * A '<'/'>' literal is not kept here: it is the X9 hard taint in liquidMap.
+ */
+class Taint {
+  private byName = new Map<string, number>();
+  private all = 0;
+  private loopDepth = 0;
+  private loopReads: Set<string> | null = null;
+  private loopReadAll = false;
+
+  loopOpen(): void {
+    if (this.loopDepth++ === 0) {
+      this.loopReads = new Set();
+      this.loopReadAll = false;
+    }
+  }
+
+  loopClose(): void {
+    if (this.loopDepth > 0 && --this.loopDepth === 0) this.loopReads = null;
+  }
+
+  private lookup(name: string): number {
+    this.loopReads?.add(name);
+    return this.byName.get(name) ?? 0;
+  }
+
+  /** Every variable's flags (an include, a dynamic lookup). */
+  readAll(): number {
+    if (this.loopReads) this.loopReadAll = true;
+    return this.all;
+  }
+
+  /** The flags a token reading the expression [a, b) may print. */
+  read(content: string, a: number, b: number): number {
+    let f = 0;
+    let prev = 0; // the last char outside strings and whitespace (97: a name)
+    for (let i = a; i < b; i++) {
+      const c = content.charCodeAt(i);
+      if (c === 34 || c === 39) {
+        i = quoteEnd(content, i, b);
+        prev = c;
+        continue;
+      }
+      if (isNameStart(c)) {
+        let j = i + 1;
+        while (j < b && isNameChar(content.charCodeAt(j))) j++;
+        // `.name` is a property of the value before it: that value's flags cover it.
+        if (prev !== 46) f |= this.lookup(content.slice(i, j));
+        i = j - 1;
+        prev = 97;
+        continue;
+      }
+      // A `[` after a value indexes it (covered by that value); anywhere else
+      // it is a top-level lookup by name.
+      if (c === 91 && prev !== 97 && prev !== 93 && prev !== 41) {
+        let k = i + 1;
+        while (k < b && isRubyWs(content.charCodeAt(k))) k++;
+        const q = content.charCodeAt(k);
+        if (q === 34 || q === 39) f |= this.lookup(content.slice(k + 1, quoteEnd(content, k, b)));
+        else if (!(q >= 48 && q <= 57)) f |= this.readAll();
+      }
+      if (!isRubyWs(c)) prev = c;
+    }
+    return f;
+  }
+
+  /** Adds `flags` to `name`; false when that is ambiguous (see the class doc). */
+  add(name: string, flags: number): boolean {
+    return this.addChecked(name, flags, this.readInLoop(name));
+  }
+
+  /**
+   * `name = <expression [a, b)>` plus `literal` flags. Whether the name was
+   * read earlier in the loop is decided before the expression is read: a
+   * self-reference (`x = x | append: 'a b'`) leaves no stale copy behind.
+   */
+  assign(name: string, literal: number, content: string, a: number, b: number): boolean {
+    const readBefore = this.readInLoop(name);
+    return this.addChecked(name, literal | this.read(content, a, b), readBefore);
+  }
+
+  private readInLoop(name: string): boolean {
+    return this.loopReads !== null && (this.loopReadAll || this.loopReads.has(name));
+  }
+
+  private addChecked(name: string, flags: number, readBefore: boolean): boolean {
+    const soft = flags & SOFT_TAINT;
+    if (soft === 0) return true;
+    if (readBefore) return false;
+    this.byName.set(name, (this.byName.get(name) ?? 0) | soft);
+    this.all |= soft;
+    return true;
+  }
+}
+
+/** The variable an assign/capture/for markup [a, b) names: an identifier or a quoted name. */
+function boundName(content: string, a: number, b: number): { name: string; end: number } {
+  let i = a;
+  while (i < b && isRubyWs(content.charCodeAt(i))) i++;
+  const c = content.charCodeAt(i);
+  if (c === 34 || c === 39) {
+    const e = quoteEnd(content, i, b);
+    return { name: content.slice(i + 1, e), end: Math.min(e + 1, b) };
+  }
+  let j = i;
+  while (j < b && isNameChar(content.charCodeAt(j))) j++;
+  return { name: content.slice(i, j), end: j };
+}
+
+/** Where a for/tablerow's collection expression starts (after `in`), or b. */
+function loopExprStart(content: string, from: number, b: number): number {
+  const m = /\sin\s/.exec(content.slice(from, b));
+  return m ? from + m.index + m[0].length : b;
+}
+
 /**
  * The statements of one `{% liquid %}` tag (lines split on "\n"; the first
- * follows `liquid`), named with Ruby's LiquidTagToken. A nested `liquid`
- * line runs its rest as one more statement. Inside a comment only
- * comment/endcomment count (comment.rb); `raw` there, and `raw`/`doc`
- * anywhere in the tag, can never close (their end must be a `{% %}` token):
- * ambiguous. `#` lines and comment bodies are text. Strings end at the line
- * end: an unclosed one makes the rest of the tag text. Returns the literal
- * flags of echo/cycle/assign/capture lines, whether a break/continue/include
- * outside the tag's own loops can stop an enclosing loop (an included
- * snippet runs in the caller's context: include.rb), and `amb` when the tag
- * cannot be read with certainty.
+ * follows `liquid`; [from, close) excludes a whitespace-control `-`), named
+ * with Ruby's LiquidTagToken. A nested `liquid` line runs its rest as one
+ * more statement. Inside a comment only comment/endcomment count
+ * (comment.rb); `raw` there, and `raw`/`doc` anywhere in the tag, can never
+ * close (their end must be a `{% %}` token): ambiguous, like a comment left
+ * open at the end of the tag. `#` lines and comment bodies are text. A
+ * string literal ends at its line (Ruby splits the tag on "\n"): one left
+ * unclosed on a code line makes the tag ambiguous (M3, r6). Returns the
+ * literal and taint flags of the lines that may print, whether a
+ * break/continue/include outside the tag's own loops can stop an enclosing
+ * loop (an included snippet runs in the caller's context: include.rb), and
+ * `amb` when the tag cannot be read with certainty. Assign, capture and for
+ * lines update `taint` in order.
  */
 function liquidTagLines(
   content: string,
   from: number,
   close: number,
   ranges: Array<[number, number]>,
+  taint: Taint,
 ): { flags: number; breaks: boolean; includes: boolean; amb: boolean } {
   let depth = 0;
   let loops = 0;
   let flags = 0;
   let breaks = false;
   let includes = false;
+  /** Open captures in this tag: their bodies are the echo lines inside. */
+  const captures: Array<{ name: string; acc: number }> = [];
   let lineStart = from;
-  const ambiguous = { flags, breaks, includes, amb: true };
+  const result = (amb: boolean) => {
+    for (; loops > 0; loops--) taint.loopClose();
+    return { flags, breaks, includes, amb };
+  };
   while (lineStart < close) {
     let eol = content.indexOf("\n", lineStart);
     if (eol === -1 || eol > close) eol = close;
@@ -807,7 +1030,7 @@ function liquidTagLines(
     if (depth > 0) {
       if (tok.name === "comment") depth++;
       else if (tok.name === "endcomment") depth--;
-      else if (tok.name === "raw") return ambiguous;
+      else if (tok.name === "raw") return result(true);
       if (eol > lineStart) ranges.push([lineStart, eol]);
       lineStart = eol + 1;
       continue;
@@ -818,40 +1041,64 @@ function liquidTagLines(
       tok = lineTagName(content, tok.markup, eol);
     }
     const word = tok.name;
-    if (nested && !NESTED_LIQUID_OK.has(word)) return ambiguous;
-    if (word === "raw" || word === "doc") return ambiguous;
+    if (nested && !NESTED_LIQUID_OK.has(word)) return result(true);
+    if (word === "raw" || word === "doc") return result(true);
     if (word === "comment" || word === "#") {
       if (word === "comment") depth = 1;
       if (eol > lineStart) ranges.push([lineStart, eol]);
       lineStart = eol + 1;
       continue;
     }
-    if (word === "for" || word === "tablerow") loops++;
-    else if ((word === "endfor" || word === "endtablerow") && loops > 0) loops--;
-    else if ((word === "break" || word === "continue") && loops === 0) breaks = true;
-    else if (word === "include" && loops === 0) includes = true;
-    if (word === "echo") flags |= emittedFlags(content, tok.markup, eol);
-    else if (word === "cycle" || word === "capture") flags |= stringFlags(content, tok.markup, eol);
-    else if (word === "assign") flags |= assignFlags(content, tok.markup, eol);
-    let i = lineStart;
-    while (i < eol) {
+    // String literals end at the line end (M3).
+    for (let i = lineStart; i < eol; i++) {
       const c = content.charCodeAt(i);
-      if (c !== 34 && c !== 39) {
-        i++;
-        continue;
-      }
+      if (c !== 34 && c !== 39) continue;
       const j = quoteEnd(content, i, eol);
-      if (j >= eol) {
-        // Unclosed at the line end: the rest of the tag is text.
-        ranges.push([i, close]);
-        return { flags, breaks, includes, amb: false };
-      }
+      if (j >= eol) return result(true);
       ranges.push([i, j + 1]);
-      i = j + 1;
+      i = j;
     }
+    const m = tok.markup;
+    let lineFlags = 0;
+    if (word === "for" || word === "tablerow") {
+      const v = boundName(content, m, eol);
+      if (!taint.assign(v.name, 0, content, loopExprStart(content, v.end, eol), eol)) {
+        return result(true);
+      }
+      taint.loopOpen();
+      loops++;
+    } else if ((word === "endfor" || word === "endtablerow") && loops > 0) {
+      taint.loopClose();
+      loops--;
+    } else if ((word === "break" || word === "continue") && loops === 0) breaks = true;
+    if (word === "assign") {
+      const v = boundName(content, m, eol);
+      const f = assignFlags(content, v.end, eol);
+      flags |= f & F_LIT_LTGT;
+      if (!taint.assign(v.name, f, content, v.end, eol)) return result(true);
+    } else if (word === "capture") {
+      const v = boundName(content, m, eol);
+      flags |= stringFlags(content, m, eol) & F_LIT_LTGT;
+      captures.push({ name: v.name, acc: 0 });
+    } else if (word === "endcapture") {
+      const cap = captures.pop();
+      if (cap && !taint.add(cap.name, cap.acc)) return result(true);
+    } else if (word === "echo") {
+      lineFlags = emittedFlags(content, m, eol) | taint.read(content, m, eol);
+    } else if (word === "cycle") {
+      lineFlags = stringFlags(content, m, eol) | taint.read(content, m, eol);
+    } else if (word === "include") {
+      if (loops === 0) includes = true;
+      lineFlags = taint.read(content, m, eol) | taint.readAll();
+    } else if (word !== "" && !NO_VARIABLE_OUTPUT.has(word)) {
+      lineFlags = taint.read(content, m, eol);
+    }
+    flags |= lineFlags;
+    if (captures.length > 0) captures[captures.length - 1].acc |= lineFlags;
     lineStart = eol + 1;
   }
-  return { flags, breaks, includes, amb: false };
+  // A comment or capture left open: Ruby raises (tag never closed).
+  return result(depth > 0 || captures.length > 0);
 }
 
 /** An open Liquid block: its opener token, the path outside it, and whether a break cut it. */
@@ -914,10 +1161,18 @@ function liquidMap(content: string): LiquidMap {
   let ltTail: string | null = null;
   let ltPos = -1;
   let effLast = -1;
+  /** M2 (r6): variable taint, and the open captures with what their bodies may hold. */
+  const taint = new Taint();
+  const captures: Array<{ name: string; acc: number; tok: number }> = [];
   const effAppend = (a: number, b: number, stripLead: boolean, stripTrail: boolean) => {
     if (stripLead) while (a < b && isStripWs(content.charCodeAt(a))) a++;
     if (stripTrail) while (b > a && isStripWs(content.charCodeAt(b - 1))) b--;
     if (a >= b) return;
+    if (captures.length > 0) {
+      // Static text in a capture body: '<'/'>' there is (balanced) markup.
+      const f = charFlags(content, a, b);
+      captures[captures.length - 1].acc |= (f & SOFT_TAINT) | (f & F_LIT_LTGT ? F_MARKUP_OUT : 0);
+    }
     effLast = content.charCodeAt(b - 1);
     let k = b - 1;
     while (k >= a && content.charCodeAt(k) !== 60) k--;
@@ -952,6 +1207,12 @@ function liquidMap(content: string): LiquidMap {
     tLoop.push(-1);
     fillRange(tokId, id, s, e);
     fillRange(path, p, s, e);
+    if (captures.length > 0) {
+      const cap = captures[captures.length - 1];
+      if (kind === K_EMIT) cap.acc |= flags & SOFT_TAINT;
+      if (flags & F_MARKUP || kind === K_STYLE_OPEN || kind === K_STYLE_CLOSE)
+        cap.acc |= F_MARKUP_OUT;
+    }
     // {% style %} / {% endstyle %} render real tags: the copy shows them.
     if (kind === K_STYLE_OPEN) fillRange(tokId, -1, s, s + 7);
     if (kind === K_STYLE_CLOSE) fillRange(tokId, -1, s, s + 8);
@@ -983,7 +1244,7 @@ function liquidMap(content: string): LiquidMap {
    */
   let tainted = false;
   /** Assign/capture `tag` at q holds a '<'/'>' literal: false ends the scan. */
-  const taint = (q: number): boolean => {
+  const hardTaint = (q: number): boolean => {
     // In a loop, an earlier output in the body runs again after the assign.
     if (loops.length > 0) {
       amb(q);
@@ -1029,8 +1290,11 @@ function liquidMap(content: string): LiquidMap {
     }
     let flags = 0;
 
+    // The markup between the delimiters, without whitespace-control dashes (L4).
+    const inA = q + 2 + (lstrip ? 1 : 0);
+    const inB = e - 2 - (rstrip && e - 3 >= inA ? 1 : 0);
     if (!isTag) {
-      flags |= emittedFlags(content, q + 2, e - 2);
+      flags |= emittedFlags(content, inA, inB) | taint.read(content, inA, inB);
       if (flags & F_LIT_LTGT) {
         amb(q);
         break;
@@ -1085,7 +1349,7 @@ function liquidMap(content: string): LiquidMap {
       prevR = closeR;
       continue;
     } else if (name === "liquid") {
-      const info = liquidTagLines(content, nameEnd, e - 2, ranges);
+      const info = liquidTagLines(content, nameEnd, Math.max(nameEnd, inB), ranges, taint);
       if (info.amb || info.flags & F_LIT_LTGT) {
         amb(q);
         break;
@@ -1100,7 +1364,19 @@ function liquidMap(content: string): LiquidMap {
       ranges.push([q + 1, e]);
     } else if (CONTROL_BLOCKS.has(name)) {
       // X9: a capture's literal (its variable name) counts like an assign's.
-      if (name === "capture" && stringFlags(content, nameEnd, e - 2) & F_LIT_LTGT && !taint(q)) {
+      if (name === "capture" && stringFlags(content, nameEnd, inB) & F_LIT_LTGT && !hardTaint(q)) {
+        break;
+      }
+      if (name === "for" || name === "tablerow") {
+        const v = boundName(content, nameEnd, inB);
+        if (!taint.assign(v.name, 0, content, loopExprStart(content, v.end, inB), inB)) {
+          amb(q);
+          break;
+        }
+      }
+      // form prints attributes from its arguments.
+      if (name === "form" && taint.read(content, nameEnd, inB)) {
+        amb(q);
         break;
       }
       flags |= F_CONTROL;
@@ -1109,7 +1385,13 @@ function liquidMap(content: string): LiquidMap {
       addToken(q, e, K_OPEN, flags, curPath);
       const frame = { name, start: q, outer: curPath, broken: false, tok: tStart.length - 1 };
       stack.push(frame);
-      if (flags & F_LOOP) loops.push(frame);
+      if (flags & F_LOOP) {
+        loops.push(frame);
+        taint.loopOpen();
+      }
+      if (name === "capture") {
+        captures.push({ name: boundName(content, nameEnd, inB).name, acc: 0, tok: frame.tok });
+      }
       curPath = nextPath++;
       if (flags & F_MARKUP) effSynthetic();
       ranges.push([q + 1, e]);
@@ -1130,7 +1412,11 @@ function liquidMap(content: string): LiquidMap {
       }
       stack.pop();
       const isLoop = top.name === "for" || top.name === "tablerow";
-      if (isLoop) loops.pop();
+      if (isLoop) {
+        loops.pop();
+        taint.loopClose();
+      }
+      const cap = top.name === "capture" ? captures.pop() : undefined;
       if (top.name === "style") {
         addToken(q, e, K_STYLE_CLOSE, flags, top.outer);
         ranges.push([top.start, e]);
@@ -1141,6 +1427,20 @@ function liquidMap(content: string): LiquidMap {
         if (top.name === "form" || top.name === "tablerow") flags |= F_MARKUP;
         addToken(q, e, K_CLOSE, flags, top.outer);
         if (isLoop) tLoop[tStart.length - 1] = top.tok;
+        if (cap) {
+          if (!taint.add(cap.name, cap.acc)) {
+            amb(q);
+            break;
+          }
+          // A body with markup must leave the tokenizer as it found it, like
+          // a loop body (phase 2 checks it with the loop machinery).
+          if (cap.acc & F_MARKUP_OUT) {
+            const closeTok = tStart.length - 1;
+            tFlags[cap.tok] |= F_LOOP | F_CAPTURE;
+            tFlags[closeTok] |= F_LOOP | F_CAPTURE;
+            tLoop[closeTok] = cap.tok;
+          }
+        }
         if (flags & F_MARKUP) effSynthetic();
         ranges.push([q + 1, e]);
       }
@@ -1154,9 +1454,9 @@ function liquidMap(content: string): LiquidMap {
       if (!doBreak(e, tStart.length - 1)) break;
     } else if (name === "echo" || name === "cycle") {
       flags |=
-        name === "echo"
-          ? emittedFlags(content, nameEnd, e - 2)
-          : stringFlags(content, nameEnd, e - 2);
+        (name === "echo"
+          ? emittedFlags(content, nameEnd, inB)
+          : stringFlags(content, nameEnd, inB)) | taint.read(content, nameEnd, inB);
       if (flags & F_LIT_LTGT) {
         amb(q);
         break;
@@ -1165,13 +1465,22 @@ function liquidMap(content: string): LiquidMap {
       ranges.push([q + 1, e]);
     } else if (name === "assign" || name === "layout") {
       // X9: an assigned literal holding '<' or '>' may be output anywhere later.
-      if (name === "assign" && assignFlags(content, nameEnd, e - 2) & F_LIT_LTGT && !taint(q)) {
-        break;
+      if (name === "assign") {
+        const v = boundName(content, nameEnd, inB);
+        const f = assignFlags(content, v.end, inB);
+        if (f & F_LIT_LTGT && !hardTaint(q)) break;
+        if (!taint.assign(v.name, f, content, v.end, inB)) {
+          amb(q);
+          break;
+        }
       }
       addToken(q, e, K_SILENT, flags, curPath);
       ranges.push([q + 1, e]);
     } else {
-      // render, include, section, unknown tags...: may render anything.
+      // render, include, section, unknown tags...: may render anything,
+      // including the variables they name (an include sees them all).
+      flags |= taint.read(content, nameEnd, inB);
+      if (name === "include") flags |= taint.readAll();
       addToken(q, e, K_EMIT, flags, curPath);
       ranges.push([q + 1, e]);
       // An included snippet runs in this context: its break ends our loop.
@@ -1324,16 +1633,6 @@ function maskedCopy(content: string, map: LiquidMap, lim: number): string {
   return parts.join("");
 }
 
-/**
- * The HTML the browser parses once Liquid has rendered, as far as it can be
- * known: `content` with every mapped Liquid token masked (offsets unchanged).
- * For the server-side parse5 cross-check (span-crosscheck.server.ts).
- */
-export function maskedHtml(content: string): string {
-  const map = liquidMap(content);
-  return maskedCopy(content, map, content.length);
-}
-
 /** Phase 2: HTML structure on the masked copy. */
 function htmlScan(
   content: string,
@@ -1358,6 +1657,8 @@ function htmlScan(
   const markup = (t: number) => (tFlags[t] & F_MARKUP) !== 0;
   const loopTok = (t: number) => (tFlags[t] & (F_LOOP | F_BREAK)) !== 0;
   const emitsWith = (t: number, f: number) => tKind[t] === K_EMIT && (tFlags[t] & f) !== 0;
+  /** Renders markup itself, or prints a markup filter's output or a captured body with markup. */
+  const markupOut = (t: number) => markup(t) || emitsWith(t, F_MARKUP_OUT);
 
   const nextBangEnd = finder(copy, /--!>/g);
   const nextCdataEnd = finder(copy, /\]\]>/g);
@@ -1398,8 +1699,11 @@ function htmlScan(
       if (t >= 0) {
         const kind = tKind[t];
         const flags = tFlags[t];
-        if (flags & F_MARKUP) return -1;
+        // Markup a token renders (form/tablerow, a markup filter, a captured
+        // body) and a capture with markup are never read inside a tag.
+        if (flags & (F_MARKUP | F_CAPTURE)) return -1;
         if (kind === K_EMIT) {
+          if (flags & F_MARKUP_OUT) return -1;
           if (set & ~QUOTED && flags & (F_LIT_DQ | F_LIT_SQ | F_LIT_EQWS)) return -1;
           if (set & (1 << S_DQ) && flags & F_LIT_DQ) return -1;
           if (set & (1 << S_SQ) && flags & F_LIT_SQ) return -1;
@@ -1474,6 +1778,8 @@ function htmlScan(
   let ambAt = len;
   const strict: Array<{ name: string; path: number }> = [];
   const strictCount = new Map<string, number>();
+  /** Where the outermost open svg/math/select started. */
+  let strictStart = -1;
   const tmpl: Array<{ path: number; start: number }> = [];
 
   // L10: a loop body (and every break/continue exit) must leave the tokenizer
@@ -1547,6 +1853,8 @@ function htmlScan(
     const opened: number[] = [];
     for (; lp < loopToks.length && tStart[loopToks[lp]] < b; lp++) {
       const t = loopToks[lp];
+      // A capture with markup in a text body would print that text as HTML elsewhere.
+      if (tFlags[t] & F_CAPTURE) return false;
       if (tKind[t] === K_OPEN) {
         opened.push(t);
         continue;
@@ -1601,7 +1909,11 @@ function htmlScan(
         anyTok(
           lt,
           end,
-          (t) => markup(t) || emitsWith(t, F_LIT_DASH) || tEffLast[t] === 45 || tEffLast[t] === 33,
+          (t) =>
+            markup(t) ||
+            emitsWith(t, F_LIT_DASH | F_MARKUP_OUT) ||
+            tEffLast[t] === 45 ||
+            tEffLast[t] === 33,
         ) ||
         !skipLoops(end, false)
       ) {
@@ -1623,7 +1935,11 @@ function htmlScan(
       }
       end = k + 3;
       if (
-        anyTok(lt, end, (t) => markup(t) || emitsWith(t, F_LIT_BRACKET) || tEffLast[t] === 93) ||
+        anyTok(
+          lt,
+          end,
+          (t) => markup(t) || emitsWith(t, F_LIT_BRACKET | F_MARKUP_OUT) || tEffLast[t] === 93,
+        ) ||
         !skipLoops(end, false)
       ) {
         setAmb(lt);
@@ -1654,7 +1970,7 @@ function htmlScan(
         g === -1 ||
         g >= lim ||
         path[g] !== path[lt] ||
-        anyTok(lt, g, markup) ||
+        anyTok(lt, g, markupOut) ||
         !skipLoops(g, false)
       ) {
         setAmb(lt);
@@ -1700,6 +2016,11 @@ function htmlScan(
           strictCount.set(n, (strictCount.get(n) ?? 1) - 1);
         }
         strict.length = j;
+        // Markup printed inside svg/math/select may break out of it (M2, r6).
+        if (j === 0 && anyTok(strictStart, lt, (t) => emitsWith(t, F_MARKUP_OUT))) {
+          setAmb(strictStart);
+          break;
+        }
       }
       continue;
     }
@@ -1714,6 +2035,7 @@ function htmlScan(
     }
     if (STRICT_ELEMENTS.has(name)) {
       if (!selfClosing || name === "select") {
+        if (strict.length === 0) strictStart = lt;
         strict.push({ name, path: path[lt] });
         strictCount.set(name, (strictCount.get(name) ?? 0) + 1);
       }
@@ -1735,7 +2057,7 @@ function htmlScan(
     }
     if (
       path[bodyEnd] !== path[lt] ||
-      anyTok(bodyStart, bodyEnd, markup) ||
+      anyTok(bodyStart, bodyEnd, markupOut) ||
       !bodyLoopsOk(bodyStart, bodyEnd, name)
     ) {
       setAmb(lt);
@@ -1755,6 +2077,14 @@ function htmlScan(
   }
   // Loop tokens after the last construct are in data state too.
   if (ambAt === len && !dataLoops(lim)) setAmb(lim);
+  // An svg/math/select left open: markup printed in it to the end (M2, r6).
+  if (
+    ambAt === len &&
+    strict.length > 0 &&
+    anyTok(strictStart, lim, (t) => emitsWith(t, F_MARKUP_OUT))
+  ) {
+    setAmb(strictStart);
+  }
   // Template content still open at the end (or at an ambiguity) runs to EOF.
   if (tmpl.length > 0) ranges.push([tmpl[0].start, len]);
   return { ranges, ambAt };

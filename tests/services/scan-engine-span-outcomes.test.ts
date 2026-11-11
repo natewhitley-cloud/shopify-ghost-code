@@ -1,7 +1,7 @@
 /**
- * gc-t44r X5a / X2 (r5): scan-time outcomes of the parse5 cross-check. A span
- * the guard accepts but parse5 refuses is never stored; a cross-check throw
- * (or a document past the parse5 node budget) never fails the scan.
+ * gc-t44r X5a / X2 (r5), retargeted after the second parser was removed
+ * (r6): scan-time outcomes of locating removal spans. A span the guard
+ * refuses is never stored; a guard throw never fails the scan.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,19 +10,17 @@ const holder = vi.hoisted(() => ({
   calls: 0,
 }));
 
-vi.mock("../../app/lib/span-crosscheck.server", async (orig) => {
-  const real = (await orig()) as typeof import("../../app/lib/span-crosscheck.server");
+vi.mock("../../app/lib/removal-span", async (orig) => {
+  const real = (await orig()) as typeof import("../../app/lib/removal-span");
   return {
     ...real,
-    createSpanCrossCheck: (content: string) => {
-      const inner = real.createSpanCrossCheck(content);
-      return (type: string, span: { start: number; end: number }) => {
-        holder.calls++;
-        if (holder.mode === "throw") throw new Error("parse5 boom");
-        if (holder.mode === "refuse")
-          return { ok: false as const, reason: "PARSER_DISAGREES" as const };
-        return inner(type, span);
-      };
+    removalSpanFor: (...args: Parameters<typeof real.removalSpanFor>) => {
+      holder.calls++;
+      if (holder.mode === "throw") throw new Error("guard boom");
+      if (holder.mode === "refuse") {
+        return { ok: false as const, reason: "IN_NON_CODE_REGION" as const };
+      }
+      return real.removalSpanFor(...args);
     },
   };
 });
@@ -44,14 +42,14 @@ afterEach(() => {
   holder.calls = 0;
 });
 
-describe("scan-time cross-check outcomes", () => {
-  it("control: with parse5 agreeing, both findings carry a span", () => {
+describe("scan-time span outcomes", () => {
+  it("control: both findings carry a span", () => {
     const found = fixable(CONTENT);
     expect(found.length).toBe(2);
     for (const f of found) expect(f.spanStart).toBeTypeOf("number");
   });
 
-  it("guard accepts, parse5 refuses: the finding is reported with no span", () => {
+  it("the guard refuses: the finding is reported with no span", () => {
     holder.mode = "refuse";
     const found = fixable(CONTENT);
     expect(found.length).toBe(2);
@@ -62,15 +60,16 @@ describe("scan-time cross-check outcomes", () => {
     }
   });
 
-  it("a cross-check throw: the scan completes, findings have no span, and the file is checked once", () => {
+  it("a guard throw: the scan completes and the findings have no span", () => {
     holder.mode = "throw";
     const found = fixable(CONTENT);
     expect(found.length).toBe(2);
     for (const f of found) expect(f.spanStart).toBeUndefined();
-    expect(holder.calls).toBe(1);
+    // One attempt per detector (script, style), not per finding.
+    expect(holder.calls).toBeLessThanOrEqual(2);
   });
 
-  it("the X1 document (parse5 past its node budget) scans in bounded time with no span", () => {
+  it("the r5 X1 document (adoption-agency blow-up for a tree builder) scans fast; the guard decides", () => {
     let blow = "<div>";
     for (let i = 0; i < 4900; i++) blow += `<b i=${i}>`;
     blow += "</div>" + "<div>x</div>".repeat(4900);
@@ -79,6 +78,6 @@ describe("scan-time cross-check outcomes", () => {
     const found = fixable(content);
     expect(performance.now() - t).toBeLessThan(5000);
     expect(found.length).toBe(1);
-    expect(found[0].spanStart).toBeUndefined();
+    expect(content.slice(found[0].spanStart, found[0].spanEnd)).toBe(STYLE);
   });
 });

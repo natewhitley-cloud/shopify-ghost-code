@@ -246,7 +246,7 @@ const VALIDATION_COPY: Record<string, string> = {
   UNBALANCED_LIQUID: "Skipped. Removing it would break the Liquid code around it.",
   STRUCTURE_CHANGED:
     "Skipped. Removing code from this file would change how the rest of it reads, so we left the file alone.",
-  PARSER_DISAGREES: "Skipped. We couldn't confirm exactly where this code starts and ends.",
+  CHECK_FAILED: "Skipped. We couldn't check this file safely, so we left it alone.",
 };
 
 const VALIDATION_GENERIC = "Skipped. We couldn't confirm that removing this code was safe.";

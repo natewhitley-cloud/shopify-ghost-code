@@ -1,7 +1,8 @@
 /**
- * gc-t44r X5 (r5): fix-time outcomes of the parse5 cross-check and the splice
- * structure re-check, the merchant copy for both refusals, and a shop removed
- * from the allowlist mid-run. Same boundaries as clean-copy.server.test.ts:
+ * gc-t44r X5 (r5), retargeted after the second parser was removed (r6):
+ * fix-time outcomes of a throw while checking one file and of the splice
+ * structure re-check, the merchant copy for both, and a shop removed from
+ * the allowlist mid-run. Same boundaries as clean-copy.server.test.ts:
  * in-memory Prisma fake, FakeShopify behind the real adapter.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,8 +12,8 @@ const holder = vi.hoisted(() => ({
   manifest: null as unknown,
   ignores: { fingerprints: new Set<string>(), appNames: new Set<string>() },
   send: vi.fn(),
-  crossMode: "real" as "real" | "refuse-theme" | "throw-theme",
-  spliceMode: "real" as "real" | "structure-theme",
+  guardMode: "real" as "real" | "throw-theme",
+  spliceMode: "real" as "real" | "structure-theme" | "throw-theme",
 }));
 vi.mock("../../app/db.server", () => ({
   get default() {
@@ -29,37 +30,36 @@ vi.mock("../../inngest/client", () => ({ inngest: { send: holder.send } }));
 vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-/** parse5 refuses every span in layout/theme.liquid (the only file with <title>). */
-vi.mock("../../app/lib/span-crosscheck.server", async (orig) => {
-  const real = (await orig()) as typeof import("../../app/lib/span-crosscheck.server");
+/** The guard throws for layout/theme.liquid (the only file with <title>). */
+vi.mock("../../app/lib/removal-span", async (orig) => {
+  const real = (await orig()) as typeof import("../../app/lib/removal-span");
   return {
     ...real,
-    createSpanCrossCheck: (content: string) => {
-      const inner = real.createSpanCrossCheck(content);
-      return (type: string, span: { start: number; end: number }) => {
-        if (holder.crossMode === "throw-theme" && content.includes("<title>")) {
-          throw new Error("cross-check boom");
-        }
-        return holder.crossMode === "refuse-theme" && content.includes("<title>")
-          ? { ok: false as const, reason: "PARSER_DISAGREES" as const }
-          : inner(type, span);
-      };
+    removalSpanFor: (...args: Parameters<typeof real.removalSpanFor>) => {
+      if (holder.guardMode === "throw-theme" && args[1].includes("<title>")) {
+        throw new Error("guard boom");
+      }
+      return real.removalSpanFor(...args);
     },
   };
 });
-/** The splice re-check fails for layout/theme.liquid. */
+/** The splice re-check fails (or the splice throws) for layout/theme.liquid. */
 vi.mock("../../app/lib/theme-splice", async (orig) => {
   const real = (await orig()) as typeof import("../../app/lib/theme-splice");
   return {
     ...real,
-    spliceSpans: (content: string, spans: Array<{ start: number; end: number }>) =>
-      holder.spliceMode === "structure-theme" && content.includes("<title>")
+    spliceSpans: (content: string, spans: Array<{ start: number; end: number }>) => {
+      if (holder.spliceMode === "throw-theme" && content.includes("<title>")) {
+        throw new Error("splice boom");
+      }
+      return holder.spliceMode === "structure-theme" && content.includes("<title>")
         ? {
             content,
             removed: [],
             refused: spans.map((s) => ({ span: s, reason: "STRUCTURE_CHANGED" as const })),
           }
-        : real.spliceSpans(content, spans),
+        : real.spliceSpans(content, spans);
+    },
   };
 });
 
@@ -90,7 +90,7 @@ let admin: ReturnType<typeof createCleanCopyAdmin>;
 
 beforeEach(() => {
   vi.stubEnv("CLEAN_COPY_ENABLED", "true");
-  holder.crossMode = "real";
+  holder.guardMode = "real";
   holder.spliceMode = "real";
   fake = createFakeDb();
   holder.fake = fake;
@@ -140,34 +140,24 @@ describe("fix-time refusals leave one file alone and write the others", () => {
     expect(o.fin?.status).toBe("completed");
   });
 
-  it("parse5 refuses: VALIDATION_FAILED:PARSER_DISAGREES, other file written, partial, publishable", async () => {
-    holder.crossMode = "refuse-theme";
-    const o = await runToEnd();
-    expect(o.items["f-script-1"]).toMatchObject({
-      status: "skipped",
-      reasonCode: "VALIDATION_FAILED:PARSER_DISAGREES",
-    });
-    expect(o.items["f-other"].status).toBe("removed");
-    expect(o.fin?.status).toBe("partial");
-    expect(o.run.doNotPublish).toBe(false);
-    expect(o.copy.files.get(THEME)).toBe(THEME_FILES[THEME]);
-    expect(o.copy.files.get("snippets/other.liquid")).not.toBe(
-      THEME_FILES["snippets/other.liquid"],
-    );
-  });
-
-  it("a throw while checking one file (audit r6 L3): that file skipped, other file written, partial", async () => {
-    holder.crossMode = "throw-theme";
-    const o = await runToEnd();
-    expect(o.items["f-script-1"]).toMatchObject({
-      status: "skipped",
-      reasonCode: "VALIDATION_FAILED:PARSER_DISAGREES",
-    });
-    expect(o.items["f-other"].status).toBe("removed");
-    expect(o.fin?.status).toBe("partial");
-    expect(o.run.doNotPublish).toBe(false);
-    expect(o.copy.files.get(THEME)).toBe(THEME_FILES[THEME]);
-  });
+  it.each([
+    ["the guard", "guardMode"],
+    ["the splice", "spliceMode"],
+  ] as const)(
+    "a throw in %s while checking one file (audit r6 L3): CHECK_FAILED, other file written, partial",
+    async (_label, key) => {
+      holder[key] = "throw-theme";
+      const o = await runToEnd();
+      expect(o.items["f-script-1"]).toMatchObject({
+        status: "skipped",
+        reasonCode: "VALIDATION_FAILED:CHECK_FAILED",
+      });
+      expect(o.items["f-other"].status).toBe("removed");
+      expect(o.fin?.status).toBe("partial");
+      expect(o.run.doNotPublish).toBe(false);
+      expect(o.copy.files.get(THEME)).toBe(THEME_FILES[THEME]);
+    },
+  );
 
   it("STRUCTURE_CHANGED: that file untouched, other file written, partial", async () => {
     holder.spliceMode = "structure-theme";
@@ -190,8 +180,8 @@ describe("merchant copy for the two refusals (pinned)", () => {
       "Skipped. Removing code from this file would change how the rest of it reads, so we left the file alone.",
     ],
     [
-      "VALIDATION_FAILED:PARSER_DISAGREES",
-      "Skipped. We couldn't confirm exactly where this code starts and ends.",
+      "VALIDATION_FAILED:CHECK_FAILED",
+      "Skipped. We couldn't check this file safely, so we left it alone.",
     ],
   ])("%s", (code, text) => {
     expect(fixItemReasonCopy(code)).toBe(text);

@@ -84,9 +84,11 @@ describe("span boundaries (audit A1-A11)", () => {
     expect(r.content).toBe(c);
   });
 
-  it("A3b: an apostrophe in a # comment inside a real block refuses (fails safe)", () => {
+  // gc-pb12 (audit r6 L2): `#` lines are comments in Ruby, so their quotes
+  // no longer refuse the block; the bare render line is fixable.
+  it("A3b: an apostrophe in a # comment inside a real block no longer refuses (gc-pb12)", () => {
     const c = `{% liquid\n  # don't show\n  render 'judgeme_widgets'\n  assign x = 1\n%}\n`;
-    expect(clean(c).removed).toEqual([]);
+    expect(clean(c).content).toBe(`{% liquid\n  # don't show\n  assign x = 1\n%}\n`);
   });
 
   it("M-b: block ends at the first %}, even inside quotes; a bare line holding %} is refused", () => {
