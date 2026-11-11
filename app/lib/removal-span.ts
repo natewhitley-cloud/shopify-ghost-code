@@ -278,8 +278,9 @@ function isLiquidBlockOpener(content: string, at: number): boolean {
 
 /**
  * Walk an HTML start or end tag from just after `<name` (or `</name`) to just
- * past its `>`, collecting attribute values as [start, end) (quoted, with the
- * quotes, or unquoted) and Liquid between attributes.
+ * past its `>`. The caller marks the whole interior as text (attribute values
+ * included); the walk only finds the real `>` (quoted or unquoted values,
+ * Liquid skipped as a unit).
  *
  * Hard limit (gc-tib.11 audit r2): the walk does not try to model every way
  * HTML and Liquid can interleave. A tag is AMBIGUOUS, and the caller then
@@ -291,15 +292,10 @@ function isLiquidBlockOpener(content: string, at: number): boolean {
  * Ordinary markup (`class="{% if x %}a{% endif %}"`, `value={{ id }}`,
  * `{% if x %}hidden{% endif %}`) is not ambiguous.
  */
-function walkTag(
-  content: string,
-  from: number,
-): { end: number; values: Array<[number, number]> } | null {
+function walkTag(content: string, from: number): { end: number } | null {
   const len = content.length;
-  const values: Array<[number, number]> = [];
   let mode: "none" | "quoted" | "unquoted" = "none";
   let quote = "";
-  let valueStart = 0;
   let afterEq = false;
   let i = from;
   while (i < len) {
@@ -308,41 +304,31 @@ function walkTag(
       if (content[i + 1] === "%" && isLiquidBlockOpener(content, i)) return null;
       const close = content.indexOf(content[i + 1] === "{" ? "}}" : "%}", i + 2);
       if (close === -1) return null;
-      if (mode === "none") {
-        if (afterEq) {
-          // Liquid right after `=` starts an unquoted value (`value={{ id }}`).
-          afterEq = false;
-          mode = "unquoted";
-          valueStart = i;
-        } else {
-          values.push([i, close + 2]);
-        }
+      if (mode === "none" && afterEq) {
+        // Liquid right after `=` starts an unquoted value (`value={{ id }}`).
+        afterEq = false;
+        mode = "unquoted";
       }
       i = close + 2;
       continue;
     }
     if (mode === "quoted") {
-      if (ch === quote) {
-        values.push([valueStart, i + 1]);
-        mode = "none";
-      }
+      if (ch === quote) mode = "none";
     } else if (mode === "unquoted") {
       if (isHtmlWs(ch) || ch === ">") {
-        values.push([valueStart, i]);
         mode = "none";
-        if (ch === ">") return { end: i + 1, values };
+        if (ch === ">") return { end: i + 1 };
       }
       // Anything else, quotes and `<` included, is part of the value (HTML).
     } else if (isHtmlWs(ch)) {
       // Whitespace keeps `afterEq` (`a = "b"` is a value).
     } else if (afterEq) {
       afterEq = false;
-      valueStart = i;
       if (ch === '"' || ch === "'") {
         mode = "quoted";
         quote = ch;
       } else if (ch === ">") {
-        return { end: i + 1, values };
+        return { end: i + 1 };
       } else if (ch === "<") {
         return null;
       } else {
@@ -351,7 +337,7 @@ function walkTag(
     } else if (ch === "=") {
       afterEq = true;
     } else if (ch === ">") {
-      return { end: i + 1, values };
+      return { end: i + 1 };
     } else if (ch === "<" || ch === '"' || ch === "'") {
       return null;
     }
@@ -376,18 +362,21 @@ const BODY_ELEMENTS = new Set([
 
 /**
  * Where a text-only element's body ends: at `</name` followed by whitespace,
- * `/` or `>` (so `</scriptx` doesn't end a script). A `<!--` in a script body
- * before that (the HTML "escaped" states) makes the body run to the first
- * close tag after the next `-->` (conservative).
+ * `/` or `>` (so `</scriptx` doesn't end a script). In a script, a `<!--`
+ * followed by `<script` before that close (the HTML "double escaped" state)
+ * makes the body run to the first close tag after the next `-->`
+ * (conservative). A plain `<!--` doesn't: `</script` ends an escaped script.
+ * Only the body itself is searched, so many elements stay linear (audit r3).
  */
 function bodyEnd(content: string, name: string, from: number): number {
   const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi");
   close.lastIndex = from;
   let c = close.exec(content);
   if (name === "script") {
-    const open = content.indexOf("<!--", from);
-    if (open !== -1 && (c === null || open < c.index)) {
-      const shut = content.indexOf("-->", open + 4);
+    const body = content.slice(from, c ? c.index : content.length);
+    const open = body.indexOf("<!--");
+    if (open !== -1 && /<script[\\t\\n\\f\\r />]/i.test(body.slice(open + 4))) {
+      const shut = content.indexOf("-->", from + open + 4);
       if (shut === -1) return content.length;
       close.lastIndex = shut + 3;
       c = close.exec(content);
@@ -463,7 +452,8 @@ function liquidTagLiterals(content: string, at: number, ranges: Array<[number, n
  * `<title>`, `<template>`, `<xmp>`, `<noscript>`, `<iframe>`, `<noembed>`,
  * `<noframes>`; `<plaintext>` runs to the end of the file); string literals
  * inside other Liquid tags and outputs, and comment lines in `{% liquid %}`;
- * HTML attribute values. An ambiguous tag (see walkTag) makes the rest of the
+ * the interior of every HTML tag (name, attributes, values: a span starts only
+ * at a real tag's `<`). An ambiguous tag (see walkTag) makes the rest of the
  * file text: a hard limit, not a guess.
  * One left-to-right pass; an unterminated region runs to the end of the file.
  * The result is sorted and non-overlapping (inRanges relies on it).
@@ -515,7 +505,11 @@ export function nonCodeRanges(content: string): Array<[number, number]> {
         ranges.push([at, len]);
         break;
       }
-      ranges.push(...tag.values);
+      // The tag's interior (name, attributes, Liquid, up to its '>') is never
+      // a fix target: a span may start only at a real tag's '<' (audit r3:
+      // '<div<link ...>' is one tag, not a link). Values lie inside it.
+      // (No spread: a tag with 100k+ values would overflow the stack.)
+      if (tag.end > at + 1) ranges.push([at + 1, tag.end]);
       end = tag.end;
       if (!isEnd && name === "plaintext") {
         if (end < len) ranges.push([end, len]);

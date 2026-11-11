@@ -313,3 +313,41 @@ describe("gc-tib.11 audit r2: ambiguous tags make the rest of the file text (har
     });
   });
 });
+
+describe("gc-tib.11 audit r3: regressions and the tag-interior limit", () => {
+  const LINK = '<link rel="stylesheet" href="//e.css">';
+
+  it("HIGH 4: many script elements stay linear (was quadratic in bodyEnd)", () => {
+    const content = "<script></script>".repeat(61_680);
+    const t = performance.now();
+    nonCodeRanges(content);
+    expect(performance.now() - t).toBeLessThan(1000);
+  });
+
+  it("HIGH 5: a tag with a huge attribute list doesn't overflow the stack", () => {
+    const content = `<div ${'=""'.repeat(125_000)}>\n${SCRIPT}`;
+    expect(() => nonCodeRanges(content)).not.toThrow();
+    expect(spanAt(content, SCRIPT)).toMatchObject({ ok: true });
+  });
+
+  it("HIGH 1: an element swallowed into another tag's name is not code", () => {
+    for (const c of [`<div${LINK}\n<p>hi</p>`, `</div${LINK}`, `<div{{x}}${LINK}`]) {
+      expect(spanAt(c, "<link", "GHOST_STYLE")).toEqual({
+        ok: false,
+        reason: "IN_NON_CODE_REGION",
+      });
+    }
+    expect(spanAt(`<a<script src=//e.js></script>`, "<script src")).toEqual({
+      ok: false,
+      reason: "IN_NON_CODE_REGION",
+    });
+  });
+
+  it("LOW 13: a '<!--' in a script without a nested <script> doesn't refuse the rest", () => {
+    const c = `<script>// <!-- legacy\nvar a = 1;</script>\n${SCRIPT}`;
+    expect(spanAt(c, SCRIPT)).toMatchObject({ ok: true });
+    // A double escape (<!-- then <script) still extends the body.
+    const d = `<script><!--<script></script>${SCRIPT}--></script>`;
+    expect(spanAt(d, "<script src")).toEqual({ ok: false, reason: "IN_NON_CODE_REGION" });
+  });
+});
