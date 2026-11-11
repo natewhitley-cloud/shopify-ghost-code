@@ -59,6 +59,11 @@ vi.mock("../../app/models/billing-event.server", () => ({
   hasBillingHistory: vi.fn(),
 }));
 
+// Clean copy run lines load on every scan page (audit r5 M1); no runs here.
+vi.mock("../../app/models/fix-run.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/models/fix-run.server")>()),
+  loadCleanCopyRunLines: vi.fn(async () => []),
+}));
 vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
   // gc-97k.9: the return-visit banner's "first successful scan 24h+ ago" read.

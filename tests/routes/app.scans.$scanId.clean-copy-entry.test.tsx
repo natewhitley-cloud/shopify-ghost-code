@@ -610,10 +610,20 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     expect(res.cleanCopyRuns.map((l) => l.tone)).toEqual(["critical"]);
   });
 
-  it("flag off: no read, no lines", async () => {
+  it("flag off (rollback or shop taken off the allowlist): the lines still show (audit r5 M1)", async () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
+    vi.stubEnv("CLEAN_COPY_SHOPS", "");
+    dbMock.fixRun.findMany.mockResolvedValueOnce([dbRun({ doNotPublish: true, status: "failed" })]);
     const res = (await run()) as unknown as WithRuns;
-    expect(dbMock.fixRun.findMany).not.toHaveBeenCalled();
+    expect(dbMock.fixRun.findMany).toHaveBeenCalledTimes(1);
+    expect(res.cleanCopyRuns).toHaveLength(1);
+    expect(res.cleanCopyRuns.map((l) => l.tone)).toEqual(["critical"]);
+  });
+
+  it("flag off and no runs: one read, no lines", async () => {
+    vi.stubEnv("CLEAN_COPY_ENABLED", "false");
+    dbMock.fixRun.findMany.mockResolvedValueOnce([]);
+    const res = (await run()) as unknown as WithRuns;
     expect(res.cleanCopyRuns).toEqual([]);
   });
 

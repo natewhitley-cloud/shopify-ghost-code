@@ -1727,10 +1727,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
   // Never throws: a failed read hides the lines, not the page (r1).
   // Not while this scan runs: the page polls every few seconds (gc-e28n).
-  const cleanCopyRuns =
-    isCleanCopyEnabled(shop.domain) && !isScanRunning(scan.status)
-      ? await loadCleanCopyRunLines(shop.id)
-      : [];
+  // Not gated on the flag (audit r5 M1): a shop taken off the allowlist, or a
+  // rollback, must still see a "don't publish" warning for a copy it has.
+  const cleanCopyRuns = !isScanRunning(scan.status) ? await loadCleanCopyRunLines(shop.id) : [];
 
   return {
     cleanCopy,

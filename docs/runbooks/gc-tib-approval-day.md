@@ -74,10 +74,6 @@ marked STOP means don't go further until it's resolved.
 - Unset `CLEAN_COPY_ENABLED` and redeploy the env. Preflight refuses new runs, and the
   worker exits before any Admin call.
 - Runs already finished keep their copies in merchants' theme libraries (unpublished).
-  Their result pages still open, but the scan page's "View result" lines are hidden
-  while the flag is off (they read the database only with the flag on). Before rolling
-  back, check prod for runs with `"doNotPublish" = true AND "copyGoneAt" IS NULL`
-  (counts only). If there are any, keep the flag on and switch off the entry button
-  instead (a code change), so those warnings stay visible.
-- Leave write_themes in `optional_scopes` unless Shopify asks otherwise. Removing it
-  needs another `shopify app deploy`.
+  Their result pages still open, and the scan page's "View result" lines (with any
+  "don't publish" warning) stay visible with the flag off or the shop off the
+  allowlist (audit r5 M1), so a rollback is just the env change.

@@ -3,7 +3,8 @@
  *
  * Trigger: `clean-copy/requested` { shopId, fixRunId }, sent by
  * requestCleanCopy after preflight created the FixRun. Gated by
- * CLEAN_COPY_ENABLED (default off): flag off = the run is failed FLAG_OFF
+ * isCleanCopyEnabled (CLEAN_COPY_ENABLED, or the shop's domain in the
+ * CLEAN_COPY_SHOPS allowlist; default off): off = the run is failed FLAG_OFF
  * before any Admin call.
  *
  * Steps (at most 17 per run, sleeps included; Inngest budget is tight, no crons):

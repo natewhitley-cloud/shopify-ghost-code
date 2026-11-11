@@ -199,12 +199,15 @@ export function isStorefrontGuardEmailLive(): boolean {
 export function isCleanCopyEnabled(shopDomain: string | null | undefined): boolean {
   if (process.env.CLEAN_COPY_ENABLED === "true") return true;
   if (!shopDomain) return false;
-  const domain = shopDomain.trim().toLowerCase();
-  if (!MYSHOPIFY_DOMAIN.test(domain)) return false;
+  // ASCII check before lower-casing: toLowerCase maps some non-ASCII letters
+  // (the Kelvin sign) onto ASCII ones (audit r5 L5).
+  const trimmed = shopDomain.trim();
+  if (!MYSHOPIFY_DOMAIN.test(trimmed)) return false;
+  const domain = trimmed.toLowerCase();
   return (process.env.CLEAN_COPY_SHOPS ?? "")
     .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .some((s) => s === domain);
+    .map((s) => s.trim())
+    .some((s) => MYSHOPIFY_DOMAIN.test(s) && s.toLowerCase() === domain);
 }
 
-const MYSHOPIFY_DOMAIN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+const MYSHOPIFY_DOMAIN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i; // no u flag: ASCII-only folding

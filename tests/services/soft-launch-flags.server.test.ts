@@ -230,4 +230,12 @@ describe("isCleanCopyEnabled (gc-tib, per-shop allowlist)", () => {
     expect(isCleanCopyEnabled(null)).toBe(false);
     expect(isCleanCopyEnabled(undefined)).toBe(false);
   });
+
+  it("a non-ASCII letter that lower-cases to ASCII never matches (Kelvin sign)", () => {
+    vi.stubEnv("CLEAN_COPY_SHOPS", "kshop.myshopify.com");
+    expect(isCleanCopyEnabled("\u212Ashop.myshopify.com")).toBe(false);
+    expect(isCleanCopyEnabled("kshop.myshopify.com")).toBe(true);
+    vi.stubEnv("CLEAN_COPY_SHOPS", "\u212Ashop.myshopify.com");
+    expect(isCleanCopyEnabled("kshop.myshopify.com")).toBe(false);
+  });
 });
