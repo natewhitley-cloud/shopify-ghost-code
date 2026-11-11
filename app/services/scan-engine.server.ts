@@ -106,6 +106,7 @@ import {
   type FixableFindingType,
 } from "../lib/removal-span";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
+import { createSpanCrossCheck } from "../lib/span-crosscheck.server";
 import {
   detectSuspiciousCode,
   isSuspiciousCodeCandidate,
@@ -877,17 +878,23 @@ const pendingRemovalSpans = new WeakMap<CreateFindingInput, () => RemovalSpanFie
 
 /**
  * Per-file span locator for the 4 fixable detectors: registers a lazy span
- * on the finding and returns it. Non-code ranges and `{% liquid %}` block
- * ranges are built once per file, on the first span actually computed.
+ * on the finding and returns it. Non-code ranges, `{% liquid %}` block
+ * ranges and the parse5 cross-check are built once per file, on the first
+ * span actually computed. A span parse5 does not confirm is never offered
+ * (the fix would refuse it: gc-t44r 3A).
  */
 function removalSpanLocator(content: string) {
   let ranges: Array<[number, number]> | null = null;
   let blocks: Array<[number, number]> | null = null;
+  let crossCheck: ReturnType<typeof createSpanCrossCheck> | null = null;
   return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
     pendingRemovalSpans.set(finding, () => {
       ranges ??= nonCodeRanges(content);
       if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
-      const r = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
+      const located = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
+      if (!located.ok) return {};
+      crossCheck ??= createSpanCrossCheck(content);
+      const r = crossCheck(type, located.span);
       if (!r.ok) return {};
       return {
         spanStart: r.span.start,

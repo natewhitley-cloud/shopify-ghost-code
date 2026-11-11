@@ -244,6 +244,9 @@ const VALIDATION_COPY: Record<string, string> = {
   OVERLAPPING_SPANS: "Skipped. This code overlaps another piece you selected.",
   IN_NON_CODE_REGION: "Skipped. This code sits inside a comment or a block we don't edit.",
   UNBALANCED_LIQUID: "Skipped. Removing it would break the Liquid code around it.",
+  STRUCTURE_CHANGED:
+    "Skipped. Removing code from this file would change how the rest of it reads, so we left the file alone.",
+  PARSER_DISAGREES: "Skipped. We couldn't confirm exactly where this code starts and ends.",
 };
 
 const VALIDATION_GENERIC = "Skipped. We couldn't confirm that removing this code was safe.";

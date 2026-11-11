@@ -37,6 +37,7 @@ import db from "../db.server";
 import { logger } from "../lib/logger.server";
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES, nonCodeRanges, removalSpanFor } from "../lib/removal-span";
+import { createSpanCrossCheck } from "../lib/span-crosscheck.server";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { spliceSpans } from "../lib/theme-splice";
 import {
@@ -671,6 +672,8 @@ export async function writeCleanCopy(
     }
 
     const ranges = nonCodeRanges(content);
+    // One parse5 parse per file, on the first span (gc-t44r 3A).
+    const crossCheck = createSpanCrossCheck(content);
     const located: RunItem[] = [];
     for (const item of items) {
       if (
@@ -690,6 +693,15 @@ export async function writeCleanCopy(
         : null;
       if (!span?.ok || span.span.start !== item.spanStart || span.span.end !== item.spanEnd) {
         decisions.push({ itemId: item.id, status: "skipped", reasonCode: "SPAN_MISMATCH" });
+        continue;
+      }
+      const confirmed = crossCheck(item.findingType, span.span);
+      if (!confirmed.ok) {
+        decisions.push({
+          itemId: item.id,
+          status: "skipped",
+          reasonCode: `VALIDATION_FAILED:${confirmed.reason}`,
+        });
         continue;
       }
       located.push(item);

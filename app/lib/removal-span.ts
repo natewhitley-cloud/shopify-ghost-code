@@ -25,9 +25,21 @@
  *   - Tree-construction quirks beyond the tokenizer are approximated: inside
  *     svg/math/select (tracked by start/end tag pairs) a text-only body must
  *     hold no '<'; other insertion modes are assumed to be "in body".
- *   - Liquid itself is modeled from Shopify Liquid's tokenizer rules; a
- *     template Shopify would reject (unknown or upper-case tag, mismatched
- *     block) is treated as ambiguous, not parsed.
+ *   - Liquid itself is modeled from Shopify Liquid's Ruby source (main,
+ *     checked 2026-11-11), not liquid-c. A template Shopify would reject
+ *     (unnamed, unknown-case or mismatched tag, nested doc) is treated as
+ *     ambiguous, not parsed. Deliberate deviations, all toward refusing:
+ *     an output whose first `}` is not `}}`, or that meets `{%` first (Ruby
+ *     turns it into a tag token), is ambiguous rather than tokenized.
+ *     Comment bodies name tags by their FIRST name (comment.rb, FullToken);
+ *     raw and doc bodies by their LAST `{%` (FullTokenPossiblyInvalid); doc
+ *     does not skip raw.
+ *   - Only literals are checked for emitted markup. Filter arguments count
+ *     as emitted except the first argument of remove/remove_first/
+ *     remove_last/split/replace/replace_first/replace_last; any decoding
+ *     filter (url_decode, base64_decode...) makes any literal ambiguous.
+ *   - An `{% include %}` outside a loop is assumed not to `break` (a snippet
+ *     doing so would stop the rest of the template).
  *
  * Pure, client-safe module (no .server suffix, no imports).
  */
@@ -56,7 +68,11 @@ export type SpanRefusal =
   /** The finding type is not in the v1 fixable allowlist. */
   | "NOT_FIXABLE_TYPE"
   /** The element would be longer than MAX_SPAN_CHARS: not a plain app tag. */
-  | "SPAN_TOO_LONG";
+  | "SPAN_TOO_LONG"
+  /** Removing the element would join the text around it into new markup (`<` + `!--`). */
+  | "JOINS_NEIGHBOURS"
+  /** parse5 does not see this exact element (span-crosscheck.server.ts). */
+  | "PARSER_DISAGREES";
 
 export type SpanResult = { ok: true; span: RemovalSpan } | { ok: false; reason: SpanRefusal };
 
@@ -170,10 +186,17 @@ export function linkElementSpan(content: string, start: number): SpanResult {
  * before that, when the tag text holds an odd number of `'` or `"` (a quote
  * that does not close inside the tag), or when no `%}` follows within
  * `maxLength` chars.
+ *
+ * Not merged with liquidTokenEnd (gc-kgef): that one is the tokenizer (any
+ * token, -1/-2 for unclosed/ambiguous, no judgment of the tag text). This one
+ * is the span locator's stricter check on top of it: it refuses tag text a
+ * removal could misjudge (nested openers, unbalanced quotes, over-long tags),
+ * which the tokenizer must accept as Liquid does.
  */
 function liquidTagEnd(content: string, start: number, maxLength = Infinity): number | null {
-  const close = content.indexOf("%}", start + 2);
-  if (close === -1 || close + 2 - start > maxLength) return null;
+  const end = liquidTokenEnd(content, start);
+  if (end < 0 || end - start > maxLength) return null;
+  const close = end - 2;
   const inner = content.slice(start + 2, close);
   if (inner.includes("{%") || inner.includes("{{")) return null;
   if (count(inner, "'") % 2 !== 0 || count(inner, '"') % 2 !== 0) return null;
@@ -249,7 +272,8 @@ export function bareLiquidStatementSpan(
   }
 
   // Inside a {% liquid %} block that opened on an earlier line.
-  const block = lastBlockBefore(blocks, lineStart);
+  const b = lastAtMost(blocks.length, lineStart - 1, (k) => blocks[k][0]);
+  const block = b === -1 ? null : blocks[b];
   const inside =
     block !== null &&
     block[1] !== Infinity &&
@@ -257,24 +281,6 @@ export function bareLiquidStatementSpan(
     content.lastIndexOf("\n", lineStart - 1) >= block[0];
   if (!inside) return refuse("NOT_IN_LIQUID_BLOCK");
   return { ok: true, span: { start: lineStart, end: lineEnd } };
-}
-
-/** The last block starting before `offset` (blocks sorted), or null. */
-function lastBlockBefore(
-  blocks: ReadonlyArray<[number, number]>,
-  offset: number,
-): [number, number] | null {
-  let lo = 0;
-  let hi = blocks.length - 1;
-  let found: [number, number] | null = null;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (blocks[mid][0] < offset) {
-      found = blocks[mid];
-      lo = mid + 1;
-    } else hi = mid - 1;
-  }
-  return found;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -303,8 +309,7 @@ const F_LIT_SQ = 4; // '
 const F_LIT_EQWS = 8; // = or whitespace
 const F_LIT_DASH = 16; // - or !
 const F_LIT_BRACKET = 32; // ]
-const F_LSTRIP = 64; // {%- / {{-
-const F_RSTRIP = 128; // -%} / -}}
+const F_BREAK = 64; // break / continue / include inside a loop: may end the body early
 const F_LOOP = 256; // for / tablerow (opener or closer)
 const F_MARKUP = 512; // form / tablerow: the tag itself emits HTML tags
 const F_CONTROL = 1024; // any control-flow tag (removalSpanFor refuses spans holding one)
@@ -413,10 +418,11 @@ function nextLiquidOpen(content: string, from: number): number {
 }
 
 /**
- * End (exclusive) of the Liquid token at `q`, with Liquid's tokenizer: a tag
- * ends at the first `%}`, an output at the first `}`. -1: never closes.
- * -2: an output whose first `}` is not `}}` (Liquid and the spec disagree on
- * where it ends: ambiguous).
+ * End (exclusive) of the Liquid token at `q`, with Liquid's tokenizer
+ * (tokenizer.rb): a tag ends at the first `%}`. -1: never closes. -2
+ * (ambiguous): an output whose first `}` is not `}}` (Ruby ends it at the
+ * single `}`), or one that meets `{%` first (Ruby turns it into a tag token
+ * ending at `%}`, which then fails as a variable).
  */
 function liquidTokenEnd(content: string, q: number): number {
   if (content.charCodeAt(q + 1) === 37) {
@@ -425,6 +431,9 @@ function liquidTokenEnd(content: string, q: number): number {
   }
   const c = content.indexOf("}", q + 2);
   if (c === -1) return -1;
+  for (let k = q + 2; k < c; k++) {
+    if (content.charCodeAt(k) === 123 && content.charCodeAt(k + 1) === 37) return -2;
+  }
   return content.charCodeAt(c + 1) === 125 ? c + 2 : -2;
 }
 
@@ -437,8 +446,10 @@ function tagNameAt(content: string, at: number, limit: number): { name: string; 
 }
 
 /**
- * Liquid's tag-name rule inside raw and comment bodies: a token ending in
- * `%}` is named by its LAST `{%` (Ruby `\A(.*){%-?\s*(\w+)...%}\z`, greedy).
+ * Liquid's tag-name rule inside raw and doc bodies (FullTokenPossiblyInvalid):
+ * a token ending in `%}` is named by its LAST `{%` (Ruby
+ * `\A(.*){%-?\s*(\w+)...%}\z`, greedy). Comment bodies use FullToken (the
+ * FIRST name) instead: see commentBodyEnd.
  */
 function bodyTokenName(content: string, q: number, e: number): { name: string; at: number } {
   if (content.charCodeAt(q + 1) !== 37) return { name: "", at: q };
@@ -461,24 +472,45 @@ function rawBodyEnd(content: string, from: number, endName: string): BodyEnd {
   return null;
 }
 
-/** End of a comment/doc body: nested by depth, raw bodies skipped. */
-function commentBodyEnd(content: string, from: number, kind: string): BodyEnd {
+/**
+ * End of a comment body (comment.rb): tags are named by their FIRST name
+ * (FullToken; only tokens that start with `{%`), comments nest by depth, and
+ * a raw body inside is skipped with raw's own (last-name) rule.
+ */
+function commentBodyEnd(content: string, from: number): BodyEnd {
   let depth = 1;
   for (let q = nextLiquidOpen(content, from); q !== -1; ) {
     const e = liquidTokenEnd(content, q);
     if (e === -1) return null;
     if (e === -2) return { amb: q };
-    const t = bodyTokenName(content, q, e);
+    const name = content.charCodeAt(q + 1) === 37 ? tagNameAt(content, q, e - 2).name : "";
     let next = e;
-    if (t.name === kind) depth++;
-    else if (t.name === "end" + kind) {
-      if (--depth === 0) return { bodyEnd: t.at, end: e };
-    } else if (t.name === "raw") {
+    if (name === "comment") depth++;
+    else if (name === "endcomment") {
+      if (--depth === 0) return { bodyEnd: q, end: e };
+    } else if (name === "raw") {
       const r = rawBodyEnd(content, e, "endraw");
       if (r === null || "amb" in r) return r;
       next = r.end;
     }
     q = nextLiquidOpen(content, next);
+  }
+  return null;
+}
+
+/**
+ * End of a doc body (doc.rb): the first token named `enddoc` by the last-name
+ * rule; raw is NOT skipped; a nested `doc` is a Liquid syntax error (ambiguous).
+ */
+function docBodyEnd(content: string, from: number): BodyEnd {
+  for (let q = nextLiquidOpen(content, from); q !== -1; ) {
+    const e = liquidTokenEnd(content, q);
+    if (e === -1) return null;
+    if (e === -2) return { amb: q };
+    const t = bodyTokenName(content, q, e);
+    if (t.name === "doc") return { amb: q };
+    if (t.name === "enddoc") return { bodyEnd: t.at, end: e };
+    q = nextLiquidOpen(content, e);
   }
   return null;
 }
@@ -508,11 +540,122 @@ function stringFlags(content: string, a: number, b: number): number {
       i++;
       continue;
     }
-    let j = i + 1;
-    while (j < b && content.charCodeAt(j) !== c) j++;
+    const j = quoteEnd(content, i, b);
     f |= charFlags(content, i + 1, j);
     i = j + 1;
   }
+  return f;
+}
+
+/**
+ * Filters whose FIRST argument (the search string or separator) is consumed,
+ * never emitted. remove* and split take only that one argument; replace*
+ * emits its second. Any other argument position counts as emitted.
+ */
+const NON_EMITTING_FIRST_ARG = new Set([
+  "remove",
+  "remove_first",
+  "remove_last",
+  "split",
+  "replace",
+  "replace_first",
+  "replace_last",
+]);
+/** Filters that can turn literal text into markup (`%3C`, base64). */
+const DECODING_FILTER = /decode|unescape/;
+
+function hasQuote(content: string, a: number, b: number): boolean {
+  for (let i = a; i < b; i++) {
+    const c = content.charCodeAt(i);
+    if (c === 34 || c === 39) return true;
+  }
+  return false;
+}
+
+/** End of the string literal opening at `i` (index of its closing quote), or `b` when unclosed. */
+function quoteEnd(content: string, i: number, b: number): number {
+  const q = content.charCodeAt(i);
+  let j = i + 1;
+  while (j < b && content.charCodeAt(j) !== q) j++;
+  return j;
+}
+
+/**
+ * Whether [a, b) is one whole string literal (whitespace around allowed) or
+ * holds no literal at all: the only argument shapes the allowlist accepts.
+ */
+function plainArg(content: string, a: number, b: number): boolean {
+  while (a < b && isStripWs(content.charCodeAt(a))) a++;
+  while (b > a && isStripWs(content.charCodeAt(b - 1))) b--;
+  const c = content.charCodeAt(a);
+  if (c !== 34 && c !== 39) return !hasQuote(content, a, b) && !hasTopLevel(content, a, b, 58);
+  return quoteEnd(content, a, b) === b - 1;
+}
+
+/** Whether char `ch` occurs in [a, b) outside string literals. */
+function hasTopLevel(content: string, a: number, b: number, ch: number): boolean {
+  for (let i = a; i < b; i++) {
+    const c = content.charCodeAt(i);
+    if (c === 34 || c === 39) i = quoteEnd(content, i, b);
+    else if (c === ch) return true;
+  }
+  return false;
+}
+
+/**
+ * F_LIT_* flags of the literals an output markup (`x | f: 'a', 'b'`) may
+ * emit, in [a, b). Hard limit: the base expression's literals and every
+ * filter argument count, except the first argument of a NON_EMITTING_FIRST_ARG
+ * filter (a single literal or none, not a keyword argument). A decoding filter anywhere makes any literal
+ * ambiguous (F_LIT_LTGT). An unclosed literal: every literal counts.
+ */
+function emittedFlags(content: string, a: number, b: number): number {
+  const segs: number[] = [a];
+  for (let i = a; i < b; i++) {
+    const c = content.charCodeAt(i);
+    if (c === 34 || c === 39) {
+      i = quoteEnd(content, i, b);
+      if (i >= b) {
+        const f = stringFlags(content, a, b);
+        return DECODING_FILTER.test(content.slice(a, b)) ? f | F_LIT_LTGT : f;
+      }
+    } else if (c === 124) segs.push(i + 1);
+  }
+  segs.push(b + 1);
+  let f = stringFlags(content, a, segs[1] - 1);
+  let literals = hasQuote(content, a, segs[1] - 1);
+  let decode = false;
+  for (let k = 1; k + 1 < segs.length; k++) {
+    const x = segs[k];
+    const y = segs[k + 1] - 1;
+    let p = x;
+    while (p < y && isStripWs(content.charCodeAt(p))) p++;
+    const nameStart = p;
+    while (p < y && /[\w-]/.test(content[p])) p++;
+    const name = content.slice(nameStart, p);
+    if (DECODING_FILTER.test(name)) decode = true;
+    while (p < y && isStripWs(content.charCodeAt(p))) p++;
+    if (hasQuote(content, p, y)) literals = true;
+    if (content.charCodeAt(p) !== 58) {
+      f |= stringFlags(content, p, y);
+      continue;
+    }
+    p++;
+    let argIndex = 0;
+    for (let s = p, i = p; i <= y; i++) {
+      const c = i < y ? content.charCodeAt(i) : 44;
+      if (c === 34 || c === 39) {
+        i = quoteEnd(content, i, y);
+        continue;
+      }
+      if (c !== 44) continue;
+      const allowed = NON_EMITTING_FIRST_ARG.has(name) && argIndex === 0 && plainArg(content, s, i);
+      if (!allowed) f |= stringFlags(content, s, i);
+      argIndex++;
+      s = i + 1;
+    }
+  }
+  if (decode && literals) f |= F_LIT_LTGT;
   return f;
 }
 
@@ -521,18 +664,20 @@ function stringFlags(content: string, a: number, b: number): number {
  * `liquid`). `#` lines and lines inside comment/doc (nested by depth) are
  * text. Strings end at the line end: an unclosed one makes the rest of the
  * tag text. Returns the literal flags of echo/cycle lines and whether a
- * break/continue outside the tag's own loops can stop an enclosing loop.
+ * break/continue/include outside the tag's own loops can stop an enclosing
+ * loop (an included snippet runs in the caller's context: include.rb).
  */
 function liquidTagLines(
   content: string,
   from: number,
   close: number,
   ranges: Array<[number, number]>,
-): { flags: number; breaks: boolean } {
+): { flags: number; breaks: boolean; includes: boolean } {
   let depth = 0;
   let loops = 0;
   let flags = 0;
   let breaks = false;
+  let includes = false;
   let lineStart = from;
   while (lineStart < close) {
     let eol = content.indexOf("\n", lineStart);
@@ -550,7 +695,9 @@ function liquidTagLines(
     if (word === "for" || word === "tablerow") loops++;
     else if ((word === "endfor" || word === "endtablerow") && loops > 0) loops--;
     else if ((word === "break" || word === "continue") && loops === 0) breaks = true;
-    const emits = word === "echo" || word === "cycle";
+    else if (word === "include" && loops === 0) includes = true;
+    if (word === "echo") flags |= emittedFlags(content, lineStart, eol);
+    else if (word === "cycle") flags |= stringFlags(content, lineStart, eol);
     let i = lineStart;
     while (i < eol) {
       const c = content.charCodeAt(i);
@@ -558,24 +705,22 @@ function liquidTagLines(
         i++;
         continue;
       }
-      let j = i + 1;
-      while (j < eol && content.charCodeAt(j) !== c) j++;
+      const j = quoteEnd(content, i, eol);
       if (j >= eol) {
         // Unclosed at the line end: the rest of the tag is text.
         ranges.push([i, close]);
-        if (emits) flags |= charFlags(content, i + 1, eol);
-        return { flags, breaks };
+        return { flags, breaks, includes };
       }
       ranges.push([i, j + 1]);
-      if (emits) flags |= charFlags(content, i + 1, j);
       i = j + 1;
     }
     lineStart = eol + 1;
   }
-  return { flags, breaks };
+  return { flags, breaks, includes };
 }
 
-type Frame = { name: string; start: number; outer: number; broken: boolean };
+/** An open Liquid block: its opener token, the path outside it, and whether a break cut it. */
+type Frame = { name: string; start: number; outer: number; broken: boolean; tok: number };
 
 type LiquidMap = {
   /** Phase-1 non-code ranges (unsorted). */
@@ -590,6 +735,8 @@ type LiquidMap = {
   tFlags: number[];
   /** Char code of the last static char before the token (-1: none). */
   tEffLast: number[];
+  /** Loop closers and breaks: the token id of their loop opener (-1: none). */
+  tLoop: number[];
   /** Token index per offset (-1: static text). */
   tokId: Int32Array;
   /** Control-flow branch id per offset. */
@@ -607,11 +754,19 @@ function liquidMap(content: string): LiquidMap {
   const tKind: number[] = [];
   const tFlags: number[] = [];
   const tEffLast: number[] = [];
+  const tLoop: number[] = [];
   let ambAt = len;
   let ambRangeAt = len;
+  /** The open for/tablerow frames (innermost last). */
+  const loops: Frame[] = [];
+  /**
+   * Inside a loop body the next iteration starts wherever this one ended
+   * (L10), so an ambiguity inside a loop starts at the outermost open loop.
+   */
   const amb = (at: number, rangeAt = at) => {
-    ambAt = Math.min(ambAt, at);
-    ambRangeAt = Math.min(ambRangeAt, rangeAt);
+    const loopStart = loops.length > 0 ? loops[0].start : Infinity;
+    ambAt = Math.min(ambAt, at, loopStart);
+    ambRangeAt = Math.min(ambRangeAt, rangeAt, loopStart);
   };
 
   let curPath = 0;
@@ -659,22 +814,29 @@ function liquidMap(content: string): LiquidMap {
     tKind.push(kind);
     tFlags.push(flags);
     tEffLast.push(effLast);
+    tLoop.push(-1);
     fillRange(tokId, id, s, e);
     fillRange(path, p, s, e);
     // {% style %} / {% endstyle %} render real tags: the copy shows them.
     if (kind === K_STYLE_OPEN) fillRange(tokId, -1, s, s + 7);
     if (kind === K_STYLE_CLOSE) fillRange(tokId, -1, s, s + 8);
   };
-  /** break/continue: the rest of the enclosing loop body may not render. */
-  const doBreak = (at: number): boolean => {
-    let l = stack.length - 1;
-    while (l >= 0 && stack[l].name !== "for" && stack[l].name !== "tablerow") l--;
-    if (l < 0) {
+  /**
+   * break/continue (or an include, whose snippet may break: `soft`): the rest
+   * of the enclosing loop body may not render. Only the innermost frame is
+   * marked; a closing non-loop frame passes the mark to its parent (linear).
+   */
+  const doBreak = (at: number, tok: number, soft = false): boolean => {
+    const loop = loops[loops.length - 1];
+    if (!loop) {
+      if (soft) return true;
       // Outside a loop, Liquid stops rendering the rest of the template.
       amb(at);
       return false;
     }
-    for (let k = l; k < stack.length; k++) stack[k].broken = true;
+    stack[stack.length - 1].broken = true;
+    tFlags[tok] |= F_BREAK;
+    tLoop[tok] = loop.tok;
     curPath = nextPath++;
     return true;
   };
@@ -704,10 +866,10 @@ function liquidMap(content: string): LiquidMap {
       amb(seam);
       break;
     }
-    let flags = (lstrip ? F_LSTRIP : 0) | (rstrip ? F_RSTRIP : 0);
+    let flags = 0;
 
     if (!isTag) {
-      flags |= stringFlags(content, q + 2, e - 2);
+      flags |= emittedFlags(content, q + 2, e - 2);
       if (flags & F_LIT_LTGT) {
         amb(q);
         break;
@@ -732,7 +894,9 @@ function liquidMap(content: string): LiquidMap {
     } else if (name === "comment" || name === "doc" || RAW_BLOCKS.has(name)) {
       const r =
         name === "comment" || name === "doc"
-          ? commentBodyEnd(content, e, name)
+          ? name === "comment"
+            ? commentBodyEnd(content, e)
+            : docBodyEnd(content, e)
           : rawBodyEnd(content, e, "end" + name);
       if (r === null || "amb" in r) {
         amb(q);
@@ -751,15 +915,9 @@ function liquidMap(content: string): LiquidMap {
           amb(s2);
           break;
         }
-        addToken(
-          r.bodyEnd,
-          r.end,
-          K_SILENT,
-          (closeL ? F_LSTRIP : 0) | (closeR ? F_RSTRIP : 0),
-          curPath,
-        );
+        addToken(r.bodyEnd, r.end, K_SILENT, 0, curPath);
       } else {
-        addToken(q, r.end, K_SILENT, (flags & ~F_RSTRIP) | (closeR ? F_RSTRIP : 0), curPath);
+        addToken(q, r.end, K_SILENT, flags, curPath);
       }
       e = r.end;
       pos = e;
@@ -772,10 +930,11 @@ function liquidMap(content: string): LiquidMap {
         break;
       }
       addToken(q, e, K_EMIT, flags | info.flags | F_LIQUID_TAG, curPath);
-      if (info.breaks && !doBreak(e)) break;
+      if (info.breaks && !doBreak(e, tStart.length - 1)) break;
+      if (info.includes) doBreak(e, tStart.length - 1, true);
     } else if (name === "style") {
       addToken(q, e, K_STYLE_OPEN, flags, curPath);
-      stack.push({ name, start: q, outer: curPath, broken: false });
+      stack.push({ name, start: q, outer: curPath, broken: false, tok: tStart.length - 1 });
       effSynthetic();
       ranges.push([q + 1, e]);
     } else if (CONTROL_BLOCKS.has(name)) {
@@ -783,7 +942,9 @@ function liquidMap(content: string): LiquidMap {
       if (name === "for" || name === "tablerow") flags |= F_LOOP;
       if (name === "form" || name === "tablerow") flags |= F_MARKUP;
       addToken(q, e, K_OPEN, flags, curPath);
-      stack.push({ name, start: q, outer: curPath, broken: false });
+      const frame = { name, start: q, outer: curPath, broken: false, tok: tStart.length - 1 };
+      stack.push(frame);
+      if (flags & F_LOOP) loops.push(frame);
       curPath = nextPath++;
       if (flags & F_MARKUP) effSynthetic();
       ranges.push([q + 1, e]);
@@ -803,6 +964,8 @@ function liquidMap(content: string): LiquidMap {
         break;
       }
       stack.pop();
+      const isLoop = top.name === "for" || top.name === "tablerow";
+      if (isLoop) loops.pop();
       if (top.name === "style") {
         addToken(q, e, K_STYLE_CLOSE, flags, top.outer);
         ranges.push([top.start, e]);
@@ -812,17 +975,23 @@ function liquidMap(content: string): LiquidMap {
         if (top.name === "for" || top.name === "tablerow") flags |= F_LOOP;
         if (top.name === "form" || top.name === "tablerow") flags |= F_MARKUP;
         addToken(q, e, K_CLOSE, flags, top.outer);
+        if (isLoop) tLoop[tStart.length - 1] = top.tok;
         if (flags & F_MARKUP) effSynthetic();
         ranges.push([q + 1, e]);
       }
       const parent = stack[stack.length - 1];
+      // A break inside a non-loop block also cuts the rest of its parent.
+      if (parent && top.broken && !isLoop) parent.broken = true;
       curPath = parent && parent.broken ? nextPath++ : top.outer;
     } else if (name === "break" || name === "continue") {
       addToken(q, e, K_SILENT, flags | F_CONTROL, curPath);
       ranges.push([q + 1, e]);
-      if (!doBreak(e)) break;
+      if (!doBreak(e, tStart.length - 1)) break;
     } else if (name === "echo" || name === "cycle") {
-      flags |= stringFlags(content, nameEnd, e - 2);
+      flags |=
+        name === "echo"
+          ? emittedFlags(content, nameEnd, e - 2)
+          : stringFlags(content, nameEnd, e - 2);
       if (flags & F_LIT_LTGT) {
         amb(q);
         break;
@@ -836,6 +1005,8 @@ function liquidMap(content: string): LiquidMap {
       // render, include, section, unknown tags...: may render anything.
       addToken(q, e, K_EMIT, flags, curPath);
       ranges.push([q + 1, e]);
+      // An included snippet runs in this context: its break ends our loop.
+      if (name === "include") doBreak(e, tStart.length - 1, true);
     }
     pos = e;
     prevR = rstrip;
@@ -843,7 +1014,19 @@ function liquidMap(content: string): LiquidMap {
   }
   // An unclosed block: Liquid refuses the template; nothing after it is certain.
   if (stack.length > 0) amb(stack[0].start);
-  return { ranges, ambAt, ambRangeAt, tStart, tEnd, tKind, tFlags, tEffLast, tokId, path };
+  return {
+    ranges,
+    ambAt,
+    ambRangeAt,
+    tStart,
+    tEnd,
+    tKind,
+    tFlags,
+    tEffLast,
+    tLoop,
+    tokId,
+    path,
+  };
 }
 
 /* Tag-interior states (HTML tokenizer, attribute states). */
@@ -951,21 +1134,16 @@ function finder(text: string, re: RegExp): (i: number) => number {
   };
 }
 
-/** Phase 2: HTML structure on the masked copy. */
-function htmlScan(
-  content: string,
-  map: LiquidMap,
-): { ranges: Array<[number, number]>; ambAt: number } {
-  const len = content.length;
-  const { tStart, tEnd, tKind, tFlags, tEffLast, tokId, path } = map;
-  const lim = map.ambAt;
-  const ranges: Array<[number, number]> = [];
-  const T = tStart.length;
-
+/**
+ * `content` with every Liquid token starting before `lim` replaced by FILL
+ * chars (same length, so offsets match); `{% style %}` / `{% endstyle %}`
+ * show the `<style>` / `</style>` they render.
+ */
+function maskedCopy(content: string, map: LiquidMap, lim: number): string {
+  const { tStart, tEnd, tKind } = map;
   const parts: string[] = [];
   let at = 0;
-  // Masked up to lim; nothing at or past lim is read as structure.
-  for (let t = 0; t < T && tStart[t] < lim; t++) {
+  for (let t = 0; t < tStart.length && tStart[t] < lim; t++) {
     parts.push(content.slice(at, tStart[t]));
     const n = tEnd[t] - tStart[t];
     if (tKind[t] === K_STYLE_OPEN) parts.push("<style>" + filler(n - 7));
@@ -974,24 +1152,42 @@ function htmlScan(
     at = tEnd[t];
   }
   parts.push(content.slice(at));
-  const copy = parts.join("");
+  return parts.join("");
+}
 
-  const firstTokAt = (a: number) => {
-    let lo = 0;
-    let hi = T;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (tStart[mid] < a) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
+/**
+ * The HTML the browser parses once Liquid has rendered, as far as it can be
+ * known: `content` with every mapped Liquid token masked (offsets unchanged).
+ * For the server-side parse5 cross-check (span-crosscheck.server.ts).
+ */
+export function maskedHtml(content: string): string {
+  const map = liquidMap(content);
+  return maskedCopy(content, map, content.length);
+}
+
+/** Phase 2: HTML structure on the masked copy. */
+function htmlScan(
+  content: string,
+  map: LiquidMap,
+): { ranges: Array<[number, number]>; ambAt: number } {
+  const len = content.length;
+  const { tStart, tEnd, tKind, tFlags, tEffLast, tLoop, tokId, path } = map;
+  const lim = map.ambAt;
+  const ranges: Array<[number, number]> = [];
+  const T = tStart.length;
+
+  // Masked up to lim; nothing at or past lim is read as structure.
+  const copy = maskedCopy(content, map, lim);
+
+  /** The first token starting at or after a. */
+  const firstTokAt = (a: number) => lastAtMost(T, a - 1, (k) => tStart[k]) + 1;
   /** Whether any token starting in [a, b) fails `bad`. */
   const anyTok = (a: number, b: number, bad: (t: number) => boolean) => {
     for (let t = firstTokAt(a); t < T && tStart[t] < b; t++) if (bad(t)) return true;
     return false;
   };
   const markup = (t: number) => (tFlags[t] & F_MARKUP) !== 0;
+  const loopTok = (t: number) => (tFlags[t] & (F_LOOP | F_BREAK)) !== 0;
   const emitsWith = (t: number, f: number) => tKind[t] === K_EMIT && (tFlags[t] & f) !== 0;
 
   const nextBangEnd = finder(copy, /--!>/g);
@@ -1108,14 +1304,77 @@ function htmlScan(
 
   let ambAt = len;
   const strict: Array<{ name: string; path: number }> = [];
+  const strictCount = new Map<string, number>();
   const tmpl: Array<{ path: number; start: number }> = [];
+
+  // L10: a loop body (and every break/continue exit) must leave the tokenizer
+  // as it found it: in data state, at the same template and svg/math/select
+  // depth. Loop tokens met in data state are checked here; loop tokens inside
+  // a tag are the tag walk's job, inside a text body bodyLoopsOk's, and inside
+  // a comment/bogus comment/CDATA they are ambiguous.
+  const loopToks: number[] = [];
+  for (let t = 0; t < T && tStart[t] < lim; t++) if (loopTok(t)) loopToks.push(t);
+  let lp = 0;
+  const openLoops: Array<{ tok: number; tmpl: number; strict: number }> = [];
+  /** Data-state loop tokens before `upTo`; false: the loop state changed (ambiguous). */
+  const dataLoops = (upTo: number): boolean => {
+    for (; lp < loopToks.length && tStart[loopToks[lp]] < upTo; lp++) {
+      const t = loopToks[lp];
+      if (tKind[t] === K_OPEN) {
+        openLoops.push({ tok: t, tmpl: tmpl.length, strict: strict.length });
+        continue;
+      }
+      const top = openLoops[openLoops.length - 1];
+      if (!top || top.tok !== tLoop[t]) return false;
+      if (top.tmpl !== tmpl.length || top.strict !== strict.length) return false;
+      if (tKind[t] === K_CLOSE) openLoops.pop();
+    }
+    return true;
+  };
+  /** Skip the loop tokens inside a construct [a, b); false if any is there and `allowed` is false. */
+  const skipLoops = (b: number, allowed: boolean): boolean => {
+    let any = false;
+    for (; lp < loopToks.length && tStart[loopToks[lp]] < b; lp++) any = true;
+    return allowed || !any;
+  };
+  /**
+   * Loop tokens inside a text body [a, b): every loop opens and closes in the
+   * body, every break's loop is in the body, and no loop text holds '<' (an
+   * iteration could otherwise complete `</name` with the next one).
+   */
+  const bodyLoopsOk = (b: number): boolean => {
+    const opened: number[] = [];
+    for (; lp < loopToks.length && tStart[loopToks[lp]] < b; lp++) {
+      const t = loopToks[lp];
+      if (tKind[t] === K_OPEN) {
+        opened.push(t);
+        continue;
+      }
+      const open = tLoop[t];
+      if (!opened.includes(open)) return false;
+      if (tKind[t] === K_CLOSE) {
+        const k = copy.indexOf("<", tEnd[open]);
+        if (k !== -1 && k < tStart[t]) return false;
+        opened.splice(opened.indexOf(open), 1);
+      }
+    }
+    return opened.length === 0;
+  };
+  const setAmb = (at: number) => {
+    ambAt = openLoops.length > 0 ? Math.min(at, tStart[openLoops[0].tok]) : at;
+  };
+
   let i = 0;
   main: for (;;) {
     const lt = copy.indexOf("<", i);
     if (lt === -1 || lt + 1 >= lim) break;
     i = lt + 1;
+    if (!dataLoops(lt)) {
+      setAmb(lt);
+      break;
+    }
     if (tokId[lt + 1] >= 0) {
-      ambAt = lt;
+      setAmb(lt);
       break;
     }
     const c1 = copy.charCodeAt(lt + 1);
@@ -1131,7 +1390,7 @@ function htmlScan(
         tlen = 4;
       }
       if (term === -1 || term >= lim || path[term] !== path[lt]) {
-        ambAt = lt;
+        setAmb(lt);
         break;
       }
       end = term + tlen;
@@ -1140,9 +1399,10 @@ function htmlScan(
           lt,
           end,
           (t) => markup(t) || emitsWith(t, F_LIT_DASH) || tEffLast[t] === 45 || tEffLast[t] === 33,
-        )
+        ) ||
+        !skipLoops(end, false)
       ) {
-        ambAt = lt;
+        setAmb(lt);
         break;
       }
       ranges.push([lt, end]);
@@ -1155,12 +1415,15 @@ function htmlScan(
       const g = copy.indexOf(">", lt + 9);
       const k = nextCdataEnd(lt + 9);
       if (g === -1 || k === -1 || k >= lim || g !== k + 2 || path[k] !== path[lt]) {
-        ambAt = lt;
+        setAmb(lt);
         break;
       }
       end = k + 3;
-      if (anyTok(lt, end, (t) => markup(t) || emitsWith(t, F_LIT_BRACKET) || tEffLast[t] === 93)) {
-        ambAt = lt;
+      if (
+        anyTok(lt, end, (t) => markup(t) || emitsWith(t, F_LIT_BRACKET) || tEffLast[t] === 93) ||
+        !skipLoops(end, false)
+      ) {
+        setAmb(lt);
         break;
       }
       ranges.push([lt, end]);
@@ -1172,7 +1435,7 @@ function htmlScan(
     if (isEnd) {
       if (lt + 2 >= lim) break;
       if (tokId[lt + 2] >= 0) {
-        ambAt = lt;
+        setAmb(lt);
         break;
       }
       if (copy.charCodeAt(lt + 2) === 62) {
@@ -1184,8 +1447,14 @@ function htmlScan(
     if (c1 === 33 || c1 === 63 || (isEnd && !isAsciiAlpha(copy.charCodeAt(lt + 2)))) {
       // Bogus comment (`<!x`, `<?x`, `</3`): to the next `>`.
       const g = copy.indexOf(">", lt + 2);
-      if (g === -1 || g >= lim || path[g] !== path[lt] || anyTok(lt, g, markup)) {
-        ambAt = lt;
+      if (
+        g === -1 ||
+        g >= lim ||
+        path[g] !== path[lt] ||
+        anyTok(lt, g, markup) ||
+        !skipLoops(g, false)
+      ) {
+        setAmb(lt);
         break;
       }
       end = g + 1;
@@ -1197,31 +1466,37 @@ function htmlScan(
 
     end = walkTag(lt, nameAt);
     if (end === -1) {
-      ambAt = lt;
+      setAmb(lt);
       break;
     }
-    // The tag's interior is never a fix target: a span starts only at a real '<'.
-    ranges.push([lt + 1, end]);
+    // Loop tokens inside the tag were checked by the walk (frames, paths).
+    skipLoops(end, true);
+    // The tag's interior is never a fix target: a span starts only at a real
+    // '<'. Inside svg/math/select no element is a fix target at all (L9).
+    ranges.push([strict.length > 0 && !isEnd ? lt : lt + 1, end]);
     i = end;
     const name = tagName;
     if (isEnd) {
       const top = name === "template" ? tmpl.pop() : undefined;
       if (top) {
         if (top.path !== path[lt]) {
-          ambAt = lt;
+          setAmb(lt);
           break;
         }
         if (tmpl.length === 0) ranges.push([top.start, lt]);
-      } else if (STRICT_ELEMENTS.has(name)) {
+      } else if (STRICT_ELEMENTS.has(name) && (strictCount.get(name) ?? 0) > 0) {
+        // Pop to the matching start tag; each entry is popped once (linear).
         let j = strict.length - 1;
-        while (j >= 0 && strict[j].name !== name) j--;
-        if (j >= 0) {
-          if (strict[j].path !== path[lt]) {
-            ambAt = lt;
-            break;
-          }
-          strict.length = j;
+        while (strict[j].name !== name) j--;
+        if (strict[j].path !== path[lt]) {
+          setAmb(lt);
+          break;
         }
+        for (let k = j; k < strict.length; k++) {
+          const n = strict[k].name;
+          strictCount.set(n, (strictCount.get(n) ?? 1) - 1);
+        }
+        strict.length = j;
       }
       continue;
     }
@@ -1235,7 +1510,10 @@ function htmlScan(
       continue;
     }
     if (STRICT_ELEMENTS.has(name)) {
-      if (!selfClosing || name === "select") strict.push({ name, path: path[lt] });
+      if (!selfClosing || name === "select") {
+        strict.push({ name, path: path[lt] });
+        strictCount.set(name, (strictCount.get(name) ?? 0) + 1);
+      }
       continue;
     }
     if (!BODY_ELEMENTS.has(name)) continue;
@@ -1243,7 +1521,7 @@ function htmlScan(
     const bodyStart = end;
     const bodyEnd = name === "script" ? scriptBody(bodyStart, lt) : closeFinder(name)(bodyStart);
     if (bodyEnd === -2) {
-      ambAt = lt;
+      setAmb(lt);
       break;
     }
     if (bodyEnd === -1 || bodyEnd >= lim) {
@@ -1252,8 +1530,8 @@ function htmlScan(
       i = len;
       break main;
     }
-    if (path[bodyEnd] !== path[lt] || anyTok(bodyStart, bodyEnd, markup)) {
-      ambAt = lt;
+    if (path[bodyEnd] !== path[lt] || anyTok(bodyStart, bodyEnd, markup) || !bodyLoopsOk(bodyEnd)) {
+      setAmb(lt);
       break;
     }
     if (strict.length > 0) {
@@ -1261,13 +1539,15 @@ function htmlScan(
       // body with no '<' reads the same both ways.
       const k = copy.indexOf("<", bodyStart);
       if (k !== -1 && k < bodyEnd) {
-        ambAt = lt;
+        setAmb(lt);
         break;
       }
     }
     if (bodyEnd > bodyStart) ranges.push([bodyStart, bodyEnd]);
     i = bodyEnd;
   }
+  // Loop tokens after the last construct are in data state too.
+  if (ambAt === len && !dataLoops(lim)) setAmb(lim);
   // Template content still open at the end (or at an ambiguity) runs to EOF.
   if (tmpl.length > 0) ranges.push([tmpl[0].start, len]);
   return { ranges, ambAt };
@@ -1280,6 +1560,8 @@ type SpanGuard = {
   tStart: number[];
   tEnd: number[];
   tFlags: number[];
+  /** A private copy of the ranges (start, end pairs): callers may mutate theirs. */
+  flat: Int32Array;
 };
 const guards = new WeakMap<ReadonlyArray<[number, number]>, SpanGuard>();
 
@@ -1314,12 +1596,18 @@ function analyze(content: string): { ranges: Array<[number, number]>; guard: Spa
       ranges.push(last);
     }
   }
+  const flat = new Int32Array(ranges.length * 2);
+  for (let k = 0; k < ranges.length; k++) {
+    flat[2 * k] = ranges[k][0];
+    flat[2 * k + 1] = ranges[k][1];
+  }
   const guard: SpanGuard = {
     content,
     amb: Math.min(map.ambAt, html.ambAt),
     tStart: map.tStart,
     tEnd: map.tEnd,
     tFlags: map.tFlags,
+    flat,
   };
   return { ranges, guard };
 }
@@ -1332,11 +1620,14 @@ function analyze(content: string): { ranges: Array<[number, number]>; guard: Spa
  * string literals and comment lines in `{% liquid %}`. Phase 2 (HTML, on a
  * copy with Liquid masked): comments, bogus comments, CDATA, the interior of
  * every tag, text-only element bodies (script escapes modeled), template
- * content (nested), `<plaintext>` to EOF. AMBIGUOUS (the rest of the file is
+ * content (nested), `<plaintext>` to EOF, and the tags of elements inside an
+ * open svg/math/select (their content is not HTML). AMBIGUOUS (the rest of the file is
  * non-code): Liquid that may complete a dangerous tag name or a comment/CDATA
  * opener or end, emitted literals holding `<` or `>`, tag/comment/body
  * boundaries on different control-flow branches, tag structure that depends
- * on whether a token renders, unclosed or mismatched anything.
+ * on whether a token renders, a for/tablerow body (or break/continue exit)
+ * that does not leave the tokenizer in the state it entered with (then from
+ * the outermost open loop's opener), unclosed or mismatched anything.
  */
 export function nonCodeRanges(content: string): Array<[number, number]> {
   const { ranges, guard } = analyze(content);
@@ -1372,21 +1663,15 @@ function spanGuardRefusal(
   if (s < guard.amb && e > guard.amb) return "IN_NON_CODE_REGION";
   const { tStart, tEnd, tFlags } = guard;
   // Last token starting at or before s.
-  let lo = 0;
-  let hi = tStart.length - 1;
-  let t = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (tStart[mid] <= s) {
-      t = mid;
-      lo = mid + 1;
-    } else hi = mid - 1;
+  const t = lastAtMost(tStart.length, s, (k) => tStart[k]);
+  const inside = t !== -1 && tStart[t] < s && s < tEnd[t];
+  if (bareLine) {
+    // A bare line lives inside one real `{% liquid %}` tag (L7: not a block
+    // that only looks open because a string holds `{% liquid`).
+    const inOwnLiquidTag = inside && (tFlags[t] & F_LIQUID_TAG) !== 0 && e <= tEnd[t] - 2;
+    return inOwnLiquidTag ? null : "NOT_IN_LIQUID_BLOCK";
   }
-  if (t !== -1 && tStart[t] < s && s < tEnd[t]) {
-    const inOwnLiquidTag = bareLine && tFlags[t] & F_LIQUID_TAG && e <= tEnd[t] - 2;
-    if (!inOwnLiquidTag) return "IN_NON_CODE_REGION";
-    return null;
-  }
+  if (inside) return "IN_NON_CODE_REGION";
   for (let k = t + 1; k < tStart.length && tStart[k] < e; k++) {
     if (tFlags[k] & F_CONTROL) return "LIQUID_TAG_IN_ELEMENT";
     if (tEnd[k] > e) return "IN_NON_CODE_REGION";
@@ -1431,8 +1716,44 @@ export function removalSpanFor(
   }
   if (!result.ok) return result;
   if (result.span.end - result.span.start > MAX_SPAN_CHARS) return refuse("SPAN_TOO_LONG");
+  // L8: ranges from other content, or mutated by the caller, never let a span
+  // through: the guard's own copy is checked too (recomputed when missing).
   let guard = guards.get(ranges);
   if (!guard || guard.content !== content) guard = analyze(content).guard;
+  const { flat } = guard;
+  const k = lastAtMost(flat.length >> 1, matchStart, (j) => flat[2 * j]);
+  if (k !== -1 && matchStart < flat[2 * k + 1]) return refuse("IN_NON_CODE_REGION");
+  if (!bareLine && content[matchStart] === "<" && joinsNeighbours(content, matchStart)) {
+    return refuse("JOINS_NEIGHBOURS");
+  }
   const refusal = spanGuardRefusal(guard, result.span, bareLine);
   return refusal ? refuse(refusal) : result;
+}
+
+/**
+ * M4a hard limit: with the element cut out, the text before it would meet the
+ * text after it. A preceding `<`, `<!`, `<!-` or `</` could then open a tag or
+ * a comment from what follows, so such an element is never removed.
+ */
+function joinsNeighbours(content: string, start: number): boolean {
+  const before = content.slice(Math.max(0, start - 3), start);
+  return /(?:<|<!|<!-|<\/)$/.test(before);
+}
+
+/**
+ * The largest k < n with key(k) <= x (key ascending in k), or -1. One binary
+ * search for every sorted lookup in this module (gc-kgef).
+ */
+function lastAtMost(n: number, x: number, key: (k: number) => number): number {
+  let lo = 0;
+  let hi = n - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(mid) <= x) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return found;
 }

@@ -297,3 +297,218 @@ describe("gc-t44r self red-team", () => {
     nonCode(`<div {% tablerow i in x %}{% endtablerow %}>${SCRIPT}`, SCRIPT);
   });
 });
+
+describe("audit r4 fix round", () => {
+  const time = (content: string) => {
+    const t = performance.now();
+    nonCodeRanges(content);
+    return performance.now() - t;
+  };
+
+  it("H1: svg/math/select end tags with nothing to close stay linear (1 MB < 1 s)", () => {
+    const n1 = Math.floor(1e6 / 12);
+    expect(time("<svg>".repeat(n1) + "</math>".repeat(n1))).toBeLessThan(1000);
+    expect(time("<select>".repeat(n1) + "</svg>".repeat(n1))).toBeLessThan(1000);
+    expect(time("<math>" + "<svg>".repeat(n1) + "</math>".repeat(n1))).toBeLessThan(1000);
+  });
+
+  it("H2: break under deep nesting stays linear (1 MB < 1 s)", () => {
+    const n2 = Math.floor(1e6 / 17);
+    expect(time("{%for a in b%}" + "{%if x%}".repeat(n2) + "{%break%}".repeat(n2))).toBeLessThan(
+      1000,
+    );
+    const n3 = Math.floor(1e6 / 30);
+    expect(time("{% for a in b %}".repeat(n3) + "{% break %}".repeat(n3))).toBeLessThan(1000);
+    expect(
+      time("{%for a in b%}" + "{%if x%}".repeat(n2) + "{%include 'a'%}".repeat(n2)),
+    ).toBeLessThan(1000);
+  });
+
+  it("H2: break inside nested blocks still splits the rest of the loop body", () => {
+    nonCode(
+      `{% for i in x %}<!-- {% if a %}{% if b %}{% break %}{% endif %}{% endif %} -->{% endfor %}${LINK}`,
+    );
+    fixable(
+      `{% for i in x %}{% if a %}{% if b %}{% break %}{% endif %}{% endif %}{% endfor %}\n${LINK}`,
+      LINK,
+      "GHOST_STYLE",
+    );
+  });
+
+  it("M3: comment body tags are named by their FIRST name (Ruby FullToken)", () => {
+    // `{% endcomment "{% x " %}` ends the comment: the script body holds the link.
+    nonCode(
+      `{% comment %}{% endcomment "{% x " %}<script>var s = '{% assign a = "{% endcomment " %}${LINK}';</script>`,
+    );
+    // `{% x "{% endcomment %}` does not end it: the link is inside the comment.
+    nonCode(
+      `{% comment %}{% x "{% endcomment %}" %}${LINK}{% comment %}{% endcomment {% x %}{% endcomment %}`,
+    );
+  });
+
+  it("M3: doc does not skip raw and may not nest", () => {
+    fixable(`{% doc %}{% raw %}{% enddoc %}\n${LINK}`, LINK, "GHOST_STYLE");
+    nonCode(`{% doc %}{% doc %}{% enddoc %}{% enddoc %}\n${LINK}`);
+  });
+
+  it("an output that reaches '{%' before '}' is ambiguous (Ruby makes it a tag token)", () => {
+    nonCode(`{{ a {% b %}}}\n${LINK}`);
+  });
+
+  it("M4a: no HTML span right after '<', '<!', '<!-' or '</'", () => {
+    const refusedAt = (c: string, needle: string, type: string) =>
+      expect(removalSpanFor(type, c, c.indexOf(needle)).ok, c).toBe(false);
+    refusedAt(
+      "<p>a <<script src=a></script>!-- b</p><div>live</div>",
+      "<script src",
+      "GHOST_SCRIPT",
+    );
+    refusedAt("x<<link rel=stylesheet href=a>script> y", "<link", "GHOST_STYLE");
+    refusedAt("x<!<link rel=stylesheet href=a>-- y", "<link", "GHOST_STYLE");
+    refusedAt("x<!-<link rel=stylesheet href=a>- y", "<link", "GHOST_STYLE");
+    refusedAt("x</<link rel=stylesheet href=a>script> y", "<link", "GHOST_STYLE");
+    fixable(`a < \n${LINK}`, LINK, "GHOST_STYLE");
+  });
+
+  it("M5: filter arguments on the allowlist do not poison the file", () => {
+    for (const out of [
+      "{{ product.description | remove: '<p>' | remove: '</p>' }}",
+      "{{ x | remove_first: '<b>' | remove_last: '</b>' }}",
+      "{{ x | replace: '<br>', ' ' }}",
+      "{{ x | replace_first: '<p>', '' | replace_last: '</p>', '' }}",
+      "{{ x | split: '<' | first }}",
+      "{% echo x | remove: '<p>' %}",
+      "{% liquid\n  echo x | remove: '<p>'\n%}",
+      "{% if x contains '<p>' %}y{% endif %}",
+    ]) {
+      fixable(`<div>${out}</div>\n${LINK}`, LINK, "GHOST_STYLE");
+    }
+  });
+
+  it("M5: the base literal and every other argument stay flagged", () => {
+    for (const out of [
+      "{{ x | replace: 'a', '<br>' }}",
+      "{{ '<p>' | remove: 'x' }}",
+      "{{ x | append: '<!--' }}",
+      "{{ x | default: '<!--' }}",
+      "{{ x | remove '<!--' }}",
+      "{{ x | remove: 'a', '<!--' }}",
+      "{{ x | remove: '<p>' | prepend: '<!--' }}",
+      "{{ x | truncate: 5, '<!--' }}",
+      '{{ x | remove: \'<p | append: "<!--" }}',
+    ]) {
+      nonCode(`${out}${LINK}-->`);
+    }
+  });
+
+  it("L6: a decode filter makes any literal in the output ambiguous", () => {
+    nonCode(`{{ '%3C!--' | url_decode }}${LINK}-->`);
+    nonCode(`{{ 'PCEtLQ==' | base64_decode }}${LINK}-->`);
+    nonCode(`{{ x | append: '%3C!--' | url_decode }}${LINK}-->`);
+    nonCode(`{{ 'PCEtLQ' | base64_url_safe_decode }}${LINK}-->`);
+  });
+
+  it("2A: include inside a loop splits the branch like break; render does not", () => {
+    nonCode(`{% for i in x %}<!-- {% include 'a' %} -->{% endfor %}${LINK}`);
+    nonCode(
+      `{% for i in x %}{% for j in y %}{% endfor %}<!-- {% if a %}{% include 'a' %}{% endif %} -->{% endfor %}${LINK}`,
+    );
+    fixable(`{% for i in x %}<!-- {% render 'a' %} -->{% endfor %}\n${LINK}`, LINK, "GHOST_STYLE");
+    fixable(`{% include 'a' %}\n${LINK}`, LINK, "GHOST_STYLE");
+  });
+
+  it("L7: a bare render line must sit inside a real {% liquid %} tag", () => {
+    const c = "{{ '{% liquid' | append: \"'\" }}\nrender 'a'\n%}";
+    expect(removalSpanFor("GHOST_SNIPPET", c, c.indexOf("render 'a'")).ok).toBe(false);
+  });
+
+  it("L8: stale or mutated ranges never let a span through", () => {
+    const content = "<script>var a='<link rel=stylesheet href=a>';</script>";
+    const at = content.indexOf("<link");
+    expect(removalSpanFor("GHOST_STYLE", content, at, nonCodeRanges("other text")).ok).toBe(false);
+    const own = nonCodeRanges(content);
+    own.length = 0;
+    expect(removalSpanFor("GHOST_STYLE", content, at, own).ok).toBe(false);
+    expect(removalSpanFor("GHOST_STYLE", content, at, []).ok).toBe(false);
+  });
+
+  it("L9: no HTML span inside svg, math or select", () => {
+    nonCode(`<svg>${LINK}</svg>`);
+    nonCode(`<math>${LINK}</math>`);
+    nonCode(`<select>${LINK}</select>`);
+    nonCode(`<svg>${SCRIPT}</svg>`, SCRIPT);
+    fixable(`<svg><path/></svg>\n${LINK}`, LINK, "GHOST_STYLE");
+  });
+
+  it("red-team: fixes under attack", () => {
+    // allowlist: name case, kebab lookalike, whitespace before ':'
+    nonCode(`{{ x | Remove: '<!--' }}${LINK}-->`);
+    nonCode(`{{ x | remove-x: '<!--' }}${LINK}-->`);
+    fixable(`{{ x | remove : '<p>' }}\n${LINK}`, LINK, "GHOST_STYLE");
+    // keyword argument on an allowlisted filter stays flagged
+    nonCode(`{{ x | remove: a: '<!--' }}${LINK}-->`);
+    // quote/pipe tricks: '|' inside a string doesn't start a filter
+    nonCode(`{{ '| remove: ' | append: '<!--' }}${LINK}-->`);
+    nonCode(`{{ x | remove: '<p>' '<!--' }}${LINK}-->`);
+    // echo with an allowlisted arg inside a tag interior: still checks quotes elsewhere
+    nonCode(`<div a={{ x | append: '"' | remove: '<p>' }}> ${LINK} ">`);
+    // include in nested loop then link after outer loop is fine
+    fixable(
+      `{% for i in x %}{% for j in y %}{% include 'a' %}{% endfor %}{% endfor %}\n${LINK}`,
+      LINK,
+      "GHOST_STYLE",
+    );
+    // M4a with CRLF / tab before: '<' then newline then the link is not a seam
+    fixable(`a <\r\n${LINK}`, LINK, "GHOST_STYLE");
+    // L9: svg closed in a different branch stays strict
+    nonCode(`{% if a %}<svg>{% else %}</svg>{% endif %}${LINK}`);
+  });
+});
+
+describe("L10 (gc-gpqj): a loop body must leave the tokenizer as it found it", () => {
+  it("the audit repro: iteration 2 turns the link into attribute text", () => {
+    nonCode(`{% for i in (1..2) %}${LINK}<div title="{% endfor %}">`);
+    nonCode(`{% tablerow i in x %}${LINK}<div title="{% endtablerow %}">`);
+  });
+
+  it("a loop that opens and closes a div inside the body is fine", () => {
+    fixable(
+      `{% for i in x %}<div class="a">{{ i }}</div>{% endfor %}\n${LINK}`,
+      LINK,
+      "GHOST_STYLE",
+    );
+  });
+
+  it("a loop over a script tag is fine (and the script inside is fixable)", () => {
+    const c = `{% for s in list %}${SCRIPT}{% endfor %}\n${LINK}`;
+    fixable(c, LINK, "GHOST_STYLE");
+    fixable(c, SCRIPT);
+  });
+
+  it("a loop body ending inside a comment or a script is ambiguous", () => {
+    nonCode(`{% for i in x %}${LINK}<!-- {% endfor %} -->`);
+    nonCode(`{% for i in x %}${LINK}<script>{% endfor %}</script>`);
+    nonCode(`{% for i in x %}${LINK}<template>{% endfor %}</template>`);
+    nonCode(`{% for i in x %}${LINK}<svg>{% endfor %}</svg>`);
+  });
+
+  it("a break that leaves inside a construct is ambiguous", () => {
+    nonCode(`{% for i in x %}${LINK}<!-- {% if a %}{% break %}{% endif %} -->{% endfor %}`);
+    nonCode(`{% for i in x %}${LINK}<div title="{% if a %}{% continue %}{% endif %}">{% endfor %}`);
+  });
+
+  it("loops inside a style or script body: allowed when the loop text has no '<'", () => {
+    fixable(
+      `{% style %}{% for s in schemes %}.a-{{ s.id }} { color: red; }{% endfor %}{% endstyle %}\n${LINK}`,
+      LINK,
+      "GHOST_STYLE",
+    );
+    fixable(
+      `<script>var a = [{% for p in ps %}{{ p.id }},{% endfor %}];</script>\n${LINK}`,
+      LINK,
+      "GHOST_STYLE",
+    );
+    nonCode(`<script>{% for p in ps %}</scr{% endfor %}ipt>${LINK}</script>`);
+    nonCode(`<script>{% for p in ps %}ipt>{% endfor %}</scr${LINK}</script>`);
+  });
+});
