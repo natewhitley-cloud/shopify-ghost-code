@@ -883,18 +883,38 @@ const pendingRemovalSpans = new WeakMap<CreateFindingInput, () => RemovalSpanFie
  * span actually computed. A span parse5 does not confirm is never offered
  * (the fix would refuse it: gc-t44r 3A).
  */
+type CrossCheck = ReturnType<typeof createSpanCrossCheck>;
+/**
+ * The cross-check of the file being scanned, shared by every detector's
+ * locator so a file is parsed once (and a throw is caught once).
+ */
+let fileCrossCheck: { content: string; check: CrossCheck } | null = null;
+function crossCheckFor(content: string): { content: string; check: CrossCheck } {
+  if (fileCrossCheck?.content !== content) {
+    fileCrossCheck = { content, check: createSpanCrossCheck(content) };
+  }
+  return fileCrossCheck;
+}
+
 function removalSpanLocator(content: string) {
   let ranges: Array<[number, number]> | null = null;
   let blocks: Array<[number, number]> | null = null;
-  let crossCheck: ReturnType<typeof createSpanCrossCheck> | null = null;
   return (finding: CreateFindingInput, type: FixableFindingType, matchStart: number) => {
     pendingRemovalSpans.set(finding, () => {
       ranges ??= nonCodeRanges(content);
       if (type === "GHOST_SNIPPET") blocks ??= liquidBlockRanges(content);
       const located = removalSpanFor(type, content, matchStart, ranges, blocks ?? undefined);
       if (!located.ok) return {};
-      crossCheck ??= createSpanCrossCheck(content);
-      const r = crossCheck(type, located.span);
+      const shared = crossCheckFor(content);
+      let r: ReturnType<CrossCheck>;
+      try {
+        r = shared.check(type, located.span);
+      } catch {
+        // X2: a cross-check throw never fails the scan; no span for any
+        // finding in this file, and the file is not checked again.
+        shared.check = () => ({ ok: false, reason: "PARSER_DISAGREES" });
+        return {};
+      }
       if (!r.ok) return {};
       return {
         spanStart: r.span.start,

@@ -170,8 +170,10 @@ function sameStructure(
 ): boolean {
   const removed = new Uint8Array(content.length);
   for (const s of spans) removed.fill(1, s.start, s.end);
+  // droppedOut is in descending order (lines are dropped from the end), so
+  // one piece pointer walks down once over all of them: linear (X8).
+  let p = pieceOut.length - 1;
   for (const [a, b] of droppedOut) {
-    let p = pieceOut.length - 1;
     for (let x = b - 1; x >= a; x--) {
       while (pieceOut[p] > x) p--;
       removed[pieceIn[p] + (x - pieceOut[p])] = 1;

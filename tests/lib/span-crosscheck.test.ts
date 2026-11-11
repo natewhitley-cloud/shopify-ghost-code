@@ -174,13 +174,130 @@ describe("red-team: parse5 location edge cases", () => {
     expect(performance.now() - t).toBeLessThan(1000);
   });
 
-  it("10,000 nested divs (the cap) still parse in under 2 s and confirm", () => {
+  // X7 (r5): the bound is generous (full-suite load measured 2.5-3.9 s); the
+  // ratio check below is the linearity signal.
+  it("10,000 nested divs (the cap) still parse and confirm within a generous bound", () => {
     const c = "<div>".repeat(9_990) + SCRIPT;
     const at = c.indexOf("<script");
     const t = performance.now();
     expect(createSpanCrossCheck(c)("GHOST_SCRIPT", span(at, at + SCRIPT.length))).toMatchObject({
       ok: true,
     });
+    expect(performance.now() - t).toBeLessThan(10_000);
+  });
+
+  it("flat documents parse in time linear in size (10x the tags: well under 30x the time)", () => {
+    const doc = (n: number) => "<p>x</p>".repeat(n) + SCRIPT;
+    const time = (n: number) => {
+      const c = doc(n);
+      const at = c.lastIndexOf("<script");
+      const t = performance.now();
+      expect(createSpanCrossCheck(c)("GHOST_SCRIPT", span(at, at + SCRIPT.length))).toMatchObject({
+        ok: true,
+      });
+      return performance.now() - t;
+    };
+    time(500); // warm up
+    const small = Math.max(time(900), 1);
+    const large = time(9_000);
+    expect(large / small).toBeLessThan(30);
+  });
+});
+
+describe("X1 (r5): parse5 node budget", () => {
+  /** The audit's c2 shape: unclosed formatting tags, then many blocks to reconstruct them in. */
+  const blowup = (n: number, m: number) => {
+    let s = "<link rel=stylesheet href=a>\n<div>";
+    for (let i = 0; i < n; i++) s += `<b i=${i}>`;
+    return s + "</div>" + "<div>x</div>".repeat(m);
+  };
+
+  it("adoption-agency reconstruction past the budget is refused, fast", () => {
+    const t = performance.now();
+    expect(createSpanCrossCheck(blowup(1200, 1200))("GHOST_STYLE", span(0, 28))).toEqual({
+      ok: false,
+      reason: "PARSER_DISAGREES",
+    });
     expect(performance.now() - t).toBeLessThan(2000);
+  });
+
+  it("the audit repro (4900 x 4900, ~105 KB) is refused in under 2 s without running out of memory", () => {
+    const c = blowup(4900, 4900);
+    expect(c.length).toBeLessThan(110_000);
+    const t = performance.now();
+    expect(createSpanCrossCheck(c)("GHOST_STYLE", span(0, 28))).toEqual({
+      ok: false,
+      reason: "PARSER_DISAGREES",
+    });
+    expect(performance.now() - t).toBeLessThan(2000);
+  });
+
+  it("a little reconstruction (a stray <b> over 1,000 sections) still confirms", () => {
+    const c = "<link rel=stylesheet href=a>\n<div><b>x</div>" + "<div>y</div>".repeat(1000);
+    expect(createSpanCrossCheck(c)("GHOST_STYLE", span(0, 28))).toMatchObject({ ok: true });
+  });
+
+  it("red-team: 1 MB of text in many character chunks is one node (merged text is not counted)", () => {
+    const c = "<link rel=stylesheet href=a>\n<p>" + "a b\t".repeat(250_000) + "</p>";
+    expect(createSpanCrossCheck(c)("GHOST_STYLE", span(0, 28))).toMatchObject({ ok: true });
+  });
+
+  it("red-team: 30,000 comments under the start-tag cap still confirm", () => {
+    const c =
+      "<link rel=stylesheet href=a>\n" +
+      "<!-- c --><p>x</p>".repeat(9_000) +
+      "<!---->".repeat(21_000);
+    expect(createSpanCrossCheck(c)("GHOST_STYLE", span(0, 28))).toMatchObject({ ok: true });
+  });
+
+  it("red-team: foster-parented text (insertTextBefore) under open formatting tags stays bounded", () => {
+    let c = "<link rel=stylesheet href=a>\n";
+    for (let i = 0; i < 300; i++) c += `<a i=${i}>`;
+    c += "<table>" + "<tr><td></td></tr>x".repeat(2_000) + "</table>";
+    const t = performance.now();
+    expect(createSpanCrossCheck(c)("GHOST_STYLE", span(0, 28))).toMatchObject({ ok: true });
+    expect(performance.now() - t).toBeLessThan(2000);
+  });
+
+  it("a refused parse is cached: later spans in the file do not re-parse", () => {
+    const c = blowup(1200, 1200);
+    const cc = createSpanCrossCheck(c);
+    cc("GHOST_STYLE", span(0, 28));
+    const t = performance.now();
+    for (let i = 0; i < 20; i++) cc("GHOST_STYLE", span(0, 28));
+    expect(performance.now() - t).toBeLessThan(50);
+  });
+});
+
+describe("X6 (r5): Liquid spans must sit in a located text node", () => {
+  it("render tags inside tags parse5 drops are refused", () => {
+    for (const c of [
+      "<p>x</p></span {% render 'a' %}>",
+      "<body><body {% render 'a' %}>",
+      "<p>x</p><html {% render 'a' %}>",
+      "<frameset>{% render 'a' %}</frameset>",
+      "<p>x</p></p {% render 'a' %}>",
+      "<table></td {% render 'a' %}></table>",
+    ]) {
+      const s = c.indexOf("{%");
+      const e = c.indexOf("%}") + 2;
+      expect(createSpanCrossCheck(c)("GHOST_SNIPPET", span(s, e)), c).toEqual({
+        ok: false,
+        reason: "PARSER_DISAGREES",
+      });
+    }
+  });
+
+  it("render tags in ordinary text still confirm (body, after </html>, foster-parented)", () => {
+    for (const c of [
+      "<div>{% render 'a' %}</div>",
+      "{% render 'a' %}",
+      "<html><body></body></html>\n{% render 'a' %}",
+      "<table><tr><td>a</td></tr>{% render 'a' %}</table>",
+    ]) {
+      const s = c.indexOf("{%");
+      const e = c.indexOf("%}") + 2;
+      expect(createSpanCrossCheck(c)("GHOST_SNIPPET", span(s, e)), c).toMatchObject({ ok: true });
+    }
   });
 });

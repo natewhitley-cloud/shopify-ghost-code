@@ -12,20 +12,32 @@
  *   - GHOST_STYLE / GHOST_PRECONNECT: an HTML-namespace `link` element (not in
  *     template content) whose start tag is exactly [span.start, span.end).
  *   - GHOST_SNIPPET (render tag or bare `{% liquid %}` line): the whole span
- *     lies in one Text node whose parent is an HTML element that is not a
- *     text-only element (script, style, textarea, title, ...) and not in
- *     template content, or the span touches no located node at all.
+ *     lies in one located Text node whose parent is an HTML element that is
+ *     not a text-only element (script, style, textarea, title, ...) and not
+ *     in template content. Masked Liquid is non-whitespace filler, so live
+ *     Liquid always lands in a Text node (even foster-parented or after
+ *     </html>); a span parse5 drops (inside a stray or merged tag, in a
+ *     frameset) is refused.
  * Anything else is refused with PARSER_DISAGREES.
  *
- * Hard limit: parse5's tree builder is quadratic in element nesting depth
- * (20k nested <div> take seconds), so a file with more than MAX_START_TAGS
- * start tags is not parsed and every span in it is refused.
+ * Hard limits (memory and time stay bounded; over a limit, every span in the
+ * file is refused):
+ *   - MAX_START_TAGS: the tree builder is quadratic in nesting depth (20k
+ *     nested <div> take seconds), so a file with more start tags is not parsed.
+ *   - MAX_TREE_NODES: adoption-agency reconstruction re-creates open
+ *     formatting elements in every later block, so N unclosed `<b>` and M
+ *     blocks make N*M nodes (4,900 x 4,900 from 105 KB ran Node out of a 4 GB
+ *     heap). A counting tree adapter stops the parse once the budget is spent.
+ *   - Any parse5 throw (the budget sentinel or a parser bug) refuses the file;
+ *     the result is cached, so the file is parsed at most once, and one log
+ *     line (no content) is written.
  *
  * Server-only: removal-span.ts stays import-free because a client route
  * imports FIXABLE_FINDING_TYPES from it.
  */
-import { html, parse, type DefaultTreeAdapterMap } from "parse5";
+import { defaultTreeAdapter, html, parse, type DefaultTreeAdapterMap } from "parse5";
 
+import { logger } from "./logger.server";
 import { maskedHtml, type RemovalSpan, type SpanResult } from "./removal-span";
 
 type Node = DefaultTreeAdapterMap["node"];
@@ -48,6 +60,50 @@ const TEXT_PARENTS = new Set([
 /** Above this many start tags the file is not parsed (see header). */
 export const MAX_START_TAGS = 10_000;
 
+/**
+ * Above this many tree nodes the parse stops (see header). Without
+ * reconstruction a file under MAX_START_TAGS makes at most one element per
+ * start tag plus a few implied ones (html/head/body, tbody/tr per table
+ * part), one text node per gap between tokens, and one node per comment or
+ * doctype: about 3 x 10,000 for the largest allowed file, plus its comments.
+ * 100,000 leaves room for that and for ordinary reconstruction (a stray <b>
+ * over thousands of sections), while capping the tree at tens of MB.
+ */
+export const MAX_TREE_NODES = 100_000;
+
+/** Thrown by the counting adapter when the node budget is spent. */
+class NodeBudgetSpent extends Error {}
+
+/** parse5's default adapter, counting every node it creates. */
+function countingAdapter(): typeof defaultTreeAdapter {
+  let left = MAX_TREE_NODES;
+  const spend = () => {
+    if (--left < 0) throw new NodeBudgetSpent("node budget spent");
+  };
+  const a = defaultTreeAdapter;
+  return {
+    ...a,
+    createElement(tagName, namespaceURI, attrs) {
+      spend();
+      return a.createElement(tagName, namespaceURI, attrs);
+    },
+    createCommentNode(data) {
+      spend();
+      return a.createCommentNode(data);
+    },
+    insertText(parentNode, text) {
+      // The default adapter merges into a trailing text node (no new node).
+      const last = parentNode.childNodes[parentNode.childNodes.length - 1];
+      if (!last || !a.isTextNode(last)) spend();
+      a.insertText(parentNode, text);
+    },
+    insertTextBefore(parentNode, text, referenceNode) {
+      spend();
+      a.insertTextBefore(parentNode, text, referenceNode);
+    },
+  };
+}
+
 function tooManyTags(text: string): boolean {
   let n = 0;
   for (let i = text.indexOf("<"); i !== -1; i = text.indexOf("<", i + 1)) {
@@ -62,17 +118,24 @@ type Parsed = {
   elements: Map<number, { name: string; startTagEnd: number; endTagEnd: number | null }>;
   /** Text nodes a Liquid span may sit in: [start, end) pairs, sorted. */
   texts: Array<[number, number]>;
-  /** Every located token (text, comment, doctype, start/end tags): sorted. */
-  located: Array<[number, number]>;
 };
 
+/** The parsed masked copy, or null when a hard limit or a parse5 throw refuses the file. */
 function parseMasked(content: string): Parsed | null {
   const masked = maskedHtml(content);
   if (tooManyTags(masked)) return null;
-  const doc = parse(masked, { sourceCodeLocationInfo: true });
+  let doc: DefaultTreeAdapterMap["document"];
+  try {
+    doc = parse(masked, { sourceCodeLocationInfo: true, treeAdapter: countingAdapter() });
+  } catch (err) {
+    logger.warn("Span cross-check refused a file: parse5 did not finish", {
+      cause: err instanceof NodeBudgetSpent ? "NODE_BUDGET" : "PARSE_ERROR",
+      length: content.length,
+    });
+    return null;
+  }
   const elements: Parsed["elements"] = new Map();
   const texts: Array<[number, number]> = [];
-  const located: Array<[number, number]> = [];
   // Iterative walk (deep documents must not overflow the stack).
   const stack: Array<{ node: Node; inert: boolean; textOk: boolean }> = [
     { node: doc, inert: false, textOk: true },
@@ -81,14 +144,7 @@ function parseMasked(content: string): Parsed | null {
     const { node, inert, textOk } = stack.pop() as { node: Node; inert: boolean; textOk: boolean };
     const loc = "sourceCodeLocation" in node ? node.sourceCodeLocation : null;
     if (node.nodeName === "#text") {
-      if (loc) {
-        located.push([loc.startOffset, loc.endOffset]);
-        if (textOk && !inert) texts.push([loc.startOffset, loc.endOffset]);
-      }
-      continue;
-    }
-    if (node.nodeName === "#comment" || node.nodeName === "#documentType") {
-      if (loc) located.push([loc.startOffset, loc.endOffset]);
+      if (loc && textOk && !inert) texts.push([loc.startOffset, loc.endOffset]);
       continue;
     }
     if (!("childNodes" in node)) continue;
@@ -97,8 +153,6 @@ function parseMasked(content: string): Parsed | null {
     if ("tagName" in node) {
       const el = node as Element;
       const eloc = el.sourceCodeLocation;
-      if (eloc?.startTag) located.push([eloc.startTag.startOffset, eloc.startTag.endOffset]);
-      if (eloc?.endTag) located.push([eloc.endTag.startOffset, eloc.endTag.endOffset]);
       const isHtml = el.namespaceURI === html.NS.HTML;
       if (
         isHtml &&
@@ -128,8 +182,7 @@ function parseMasked(content: string): Parsed | null {
   }
   const byStart = (a: [number, number], b: [number, number]) => a[0] - b[0];
   texts.sort(byStart);
-  located.sort(byStart);
-  return { elements, texts, located };
+  return { elements, texts };
 }
 
 /** The last interval starting at or before x (intervals sorted by start), or -1. */
@@ -147,20 +200,10 @@ function lastStartingAtOrBefore(list: Array<[number, number]>, x: number): numbe
   return found;
 }
 
-/** Whether [s, e) lies inside one allowed text node, or touches no located node. */
+/** Whether [s, e) lies inside one allowed, located text node (X6: nothing else). */
 function liquidSpanOk(p: Parsed, s: number, e: number): boolean {
   const k = lastStartingAtOrBefore(p.texts, s);
-  if (k !== -1 && e <= p.texts[k][1]) return true;
-  // No located node may overlap [s, e). Located intervals can nest
-  // (an element's start tag holds no children), so scan back to any that
-  // could still reach s, then forward to e.
-  let j = lastStartingAtOrBefore(p.located, e - 1);
-  for (; j >= 0; j--) {
-    const [a, b] = p.located[j];
-    if (b > s && a < e) return false;
-    if (b <= s && a < s - 4096) break;
-  }
-  return true;
+  return k !== -1 && e <= p.texts[k][1];
 }
 
 /**

@@ -659,35 +659,169 @@ function emittedFlags(content: string, a: number, b: number): number {
   return f;
 }
 
+/** Ruby `\s` (LiquidTagToken). */
+const isRubyWs = (c: number) => c === 32 || (c >= 9 && c <= 13);
+const isWordChar = (c: number) =>
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+
 /**
- * The statements of one `{% liquid %}` tag (lines; the first follows
- * `liquid`). `#` lines and lines inside comment/doc (nested by depth) are
- * text. Strings end at the line end: an unclosed one makes the rest of the
- * tag text. Returns the literal flags of echo/cycle lines and whether a
- * break/continue/include outside the tag's own loops can stop an enclosing
- * loop (an included snippet runs in the caller's context: include.rb).
+ * Ruby's LiquidTagToken `\A\s*(#|\w+)\s*(.*?)\z` on [a, b): the tag name
+ * (`""` when the line does not start with one), where it ends, and where its
+ * markup starts. No space is needed after the name (`echo'x'`).
+ */
+function lineTagName(content: string, a: number, b: number) {
+  let i = a;
+  while (i < b && isRubyWs(content.charCodeAt(i))) i++;
+  const nameStart = i;
+  if (i < b && content.charCodeAt(i) === 35) i++;
+  else while (i < b && isWordChar(content.charCodeAt(i))) i++;
+  const name = content.slice(nameStart, i);
+  let markup = i;
+  while (markup < b && isRubyWs(content.charCodeAt(markup))) markup++;
+  return { name, end: i, markup };
+}
+
+/**
+ * Statements a nested `liquid` line may hold. Its rest runs in a one-line
+ * tokenizer of its own (block_body.rb parse_liquid_tag), so a block opener,
+ * closer or branch there can never pair up: anything off this list is
+ * ambiguous (hard limit).
+ */
+const NESTED_LIQUID_OK = new Set([
+  "",
+  "#",
+  "echo",
+  "assign",
+  "increment",
+  "decrement",
+  "cycle",
+  "include",
+  "render",
+  "break",
+  "continue",
+  "section",
+  "sections",
+  "layout",
+  "content_for",
+]);
+
+/**
+ * F_LIT_* flags of an assign's literals (`x = 'a' | f: 'b'`, [a, b)): the
+ * value may be output later, so it counts like an output (X9; the variable
+ * is not tracked).
+ */
+function assignFlags(content: string, a: number, b: number): number {
+  for (let i = a; i < b; i++) {
+    const c = content.charCodeAt(i);
+    if (c === 34 || c === 39) i = quoteEnd(content, i, b);
+    else if (c === 61) return emittedFlags(content, i + 1, b);
+  }
+  return stringFlags(content, a, b);
+}
+
+/**
+ * Tags that can never output a variable's value (X9). Every other tag, and
+ * every `{{ }}` whose markup names anything (outside string literals), may.
+ */
+const NO_VARIABLE_OUTPUT = new Set([
+  "#",
+  "assign",
+  "capture",
+  "endcapture",
+  "if",
+  "elsif",
+  "else",
+  "endif",
+  "unless",
+  "endunless",
+  "case",
+  "when",
+  "endcase",
+  "for",
+  "endfor",
+  "tablerow",
+  "endtablerow",
+  "break",
+  "continue",
+  "comment",
+  "endcomment",
+  "raw",
+  "endraw",
+  "doc",
+  "enddoc",
+  "increment",
+  "decrement",
+  "layout",
+  "style",
+  "endstyle",
+  "javascript",
+  "endjavascript",
+  "stylesheet",
+  "endstylesheet",
+  "schema",
+  "endschema",
+  "paginate",
+  "endpaginate",
+]);
+
+/** Whether an output's markup [a, b) names anything outside string literals. */
+function namesSomething(content: string, a: number, b: number): boolean {
+  for (let i = a; i < b; i++) {
+    const c = content.charCodeAt(i);
+    if (c === 34 || c === 39) i = quoteEnd(content, i, b);
+    else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) return true;
+  }
+  return false;
+}
+
+/**
+ * The statements of one `{% liquid %}` tag (lines split on "\n"; the first
+ * follows `liquid`), named with Ruby's LiquidTagToken. A nested `liquid`
+ * line runs its rest as one more statement. Inside a comment only
+ * comment/endcomment count (comment.rb); `raw` there, and `raw`/`doc`
+ * anywhere in the tag, can never close (their end must be a `{% %}` token):
+ * ambiguous. `#` lines and comment bodies are text. Strings end at the line
+ * end: an unclosed one makes the rest of the tag text. Returns the literal
+ * flags of echo/cycle/assign/capture lines, whether a break/continue/include
+ * outside the tag's own loops can stop an enclosing loop (an included
+ * snippet runs in the caller's context: include.rb), and `amb` when the tag
+ * cannot be read with certainty.
  */
 function liquidTagLines(
   content: string,
   from: number,
   close: number,
   ranges: Array<[number, number]>,
-): { flags: number; breaks: boolean; includes: boolean } {
+): { flags: number; breaks: boolean; includes: boolean; amb: boolean } {
   let depth = 0;
   let loops = 0;
   let flags = 0;
   let breaks = false;
   let includes = false;
   let lineStart = from;
+  const ambiguous = { flags, breaks, includes, amb: true };
   while (lineStart < close) {
     let eol = content.indexOf("\n", lineStart);
     if (eol === -1 || eol > close) eol = close;
-    const stmt = content.slice(lineStart, eol).trim();
-    const word = (stmt.split(/\s+/)[0] ?? "").toLowerCase();
-    if (word === "comment" || word === "doc") depth++;
-    const text = depth > 0 || stmt.startsWith("#");
-    if ((word === "endcomment" || word === "enddoc") && depth > 0) depth--;
-    if (text) {
+    let tok = lineTagName(content, lineStart, eol);
+    if (depth > 0) {
+      if (tok.name === "comment") depth++;
+      else if (tok.name === "endcomment") depth--;
+      else if (tok.name === "raw") return ambiguous;
+      if (eol > lineStart) ranges.push([lineStart, eol]);
+      lineStart = eol + 1;
+      continue;
+    }
+    let nested = false;
+    while (tok.name === "liquid") {
+      nested = true;
+      tok = lineTagName(content, tok.markup, eol);
+    }
+    const word = tok.name;
+    if (nested && !NESTED_LIQUID_OK.has(word)) return ambiguous;
+    if (word === "raw" || word === "doc") return ambiguous;
+    if (word === "comment" || word === "#") {
+      if (word === "comment") depth = 1;
       if (eol > lineStart) ranges.push([lineStart, eol]);
       lineStart = eol + 1;
       continue;
@@ -696,8 +830,9 @@ function liquidTagLines(
     else if ((word === "endfor" || word === "endtablerow") && loops > 0) loops--;
     else if ((word === "break" || word === "continue") && loops === 0) breaks = true;
     else if (word === "include" && loops === 0) includes = true;
-    if (word === "echo") flags |= emittedFlags(content, lineStart, eol);
-    else if (word === "cycle") flags |= stringFlags(content, lineStart, eol);
+    if (word === "echo") flags |= emittedFlags(content, tok.markup, eol);
+    else if (word === "cycle" || word === "capture") flags |= stringFlags(content, tok.markup, eol);
+    else if (word === "assign") flags |= assignFlags(content, tok.markup, eol);
     let i = lineStart;
     while (i < eol) {
       const c = content.charCodeAt(i);
@@ -709,14 +844,14 @@ function liquidTagLines(
       if (j >= eol) {
         // Unclosed at the line end: the rest of the tag is text.
         ranges.push([i, close]);
-        return { flags, breaks, includes };
+        return { flags, breaks, includes, amb: false };
       }
       ranges.push([i, j + 1]);
       i = j + 1;
     }
     lineStart = eol + 1;
   }
-  return { flags, breaks, includes };
+  return { flags, breaks, includes, amb: false };
 }
 
 /** An open Liquid block: its opener token, the path outside it, and whether a break cut it. */
@@ -841,6 +976,23 @@ function liquidMap(content: string): LiquidMap {
     return true;
   };
 
+  /**
+   * X9: an assign/capture literal holding '<' or '>' was seen (outside any
+   * loop). The value can reach the page only through a later token that can
+   * output a variable, so the ambiguity starts at the first such token.
+   */
+  let tainted = false;
+  /** Assign/capture `tag` at q holds a '<'/'>' literal: false ends the scan. */
+  const taint = (q: number): boolean => {
+    // In a loop, an earlier output in the body runs again after the assign.
+    if (loops.length > 0) {
+      amb(q);
+      return false;
+    }
+    tainted = true;
+    return true;
+  };
+
   let pos = 0;
   let prevR = false;
   scan: for (;;) {
@@ -858,6 +1010,15 @@ function liquidMap(content: string): LiquidMap {
       break;
     }
     const isTag = content.charCodeAt(q + 1) === 37;
+    if (
+      tainted &&
+      (isTag
+        ? !NO_VARIABLE_OUTPUT.has(tagNameAt(content, q, e - 2).name)
+        : namesSomething(content, q + 2, e - 2))
+    ) {
+      amb(q);
+      break;
+    }
     const lstrip = content.charCodeAt(q + 2) === 45;
     const rstrip = e - 3 >= q + 2 && content.charCodeAt(e - 3) === 45;
     effAppend(pos, q, prevR, lstrip);
@@ -925,7 +1086,7 @@ function liquidMap(content: string): LiquidMap {
       continue;
     } else if (name === "liquid") {
       const info = liquidTagLines(content, nameEnd, e - 2, ranges);
-      if (info.flags & F_LIT_LTGT) {
+      if (info.amb || info.flags & F_LIT_LTGT) {
         amb(q);
         break;
       }
@@ -938,6 +1099,10 @@ function liquidMap(content: string): LiquidMap {
       effSynthetic();
       ranges.push([q + 1, e]);
     } else if (CONTROL_BLOCKS.has(name)) {
+      // X9: a capture's literal (its variable name) counts like an assign's.
+      if (name === "capture" && stringFlags(content, nameEnd, e - 2) & F_LIT_LTGT && !taint(q)) {
+        break;
+      }
       flags |= F_CONTROL;
       if (name === "for" || name === "tablerow") flags |= F_LOOP;
       if (name === "form" || name === "tablerow") flags |= F_MARKUP;
@@ -999,6 +1164,10 @@ function liquidMap(content: string): LiquidMap {
       addToken(q, e, K_EMIT, flags, curPath);
       ranges.push([q + 1, e]);
     } else if (name === "assign" || name === "layout") {
+      // X9: an assigned literal holding '<' or '>' may be output anywhere later.
+      if (name === "assign" && assignFlags(content, nameEnd, e - 2) & F_LIT_LTGT && !taint(q)) {
+        break;
+      }
       addToken(q, e, K_SILENT, flags, curPath);
       ranges.push([q + 1, e]);
     } else {
@@ -1338,11 +1507,43 @@ function htmlScan(
     return allowed || !any;
   };
   /**
-   * Loop tokens inside a text body [a, b): every loop opens and closes in the
-   * body, every break's loop is in the body, and no loop text holds '<' (an
-   * iteration could otherwise complete `</name` with the next one).
+   * Loop tokens inside the text body [a, b) of element `name`: every loop
+   * opens and closes in the body, every break's loop is in the body, and the
+   * next iteration cannot complete or open a construct (X4). Hard limits:
+   *   - a loop's text holds no `</`, `<!`, `<s`/`<S` or `-->` (script), or no
+   *     `</` + the element's first letter, either case (other text bodies);
+   *   - the static text before every endfor/break does not end in `<` or `/`
+   *     (and not in `-` or `!` in a script), so no pattern forms across the
+   *     iteration seam.
+   * Linear: one pattern scan per body, then a binary search per loop.
    */
-  const bodyLoopsOk = (b: number): boolean => {
+  const bodyLoopsOk = (a: number, b: number, name: string): boolean => {
+    const isScript = name === "script";
+    const letter = name.charCodeAt(0) | 32;
+    let hits: number[] | null = null;
+    const hitAt = (k: number): boolean => {
+      const c = copy.charCodeAt(k);
+      if (c === 60) {
+        const c1 = copy.charCodeAt(k + 1);
+        if (c1 === 47) return isScript || (copy.charCodeAt(k + 2) | 32) === letter;
+        return isScript && (c1 === 33 || (c1 | 32) === 115);
+      }
+      return isScript && c === 45 && copy.startsWith("-->", k);
+    };
+    /** Whether a pattern starts in [x, y). */
+    const patternIn = (x: number, y: number): boolean => {
+      if (hits === null) {
+        hits = [];
+        for (let k = a; k < b; k++) if (hitAt(k)) hits.push(k);
+      }
+      const h = hits;
+      const k = lastAtMost(h.length, x - 1, (j) => h[j]) + 1;
+      return k < h.length && h[k] < y;
+    };
+    const badSeam = (t: number): boolean => {
+      const c = tEffLast[t];
+      return c === 60 || c === 47 || (isScript && (c === 45 || c === 33));
+    };
     const opened: number[] = [];
     for (; lp < loopToks.length && tStart[loopToks[lp]] < b; lp++) {
       const t = loopToks[lp];
@@ -1350,12 +1551,14 @@ function htmlScan(
         opened.push(t);
         continue;
       }
+      // Liquid blocks nest, so the loop a close or break belongs to is the
+      // innermost one open: it must have opened in this body.
       const open = tLoop[t];
-      if (!opened.includes(open)) return false;
+      if (opened.length === 0 || opened[opened.length - 1] !== open) return false;
+      if (badSeam(t)) return false;
       if (tKind[t] === K_CLOSE) {
-        const k = copy.indexOf("<", tEnd[open]);
-        if (k !== -1 && k < tStart[t]) return false;
-        opened.splice(opened.indexOf(open), 1);
+        if (patternIn(tEnd[open], tStart[t])) return false;
+        opened.pop();
       }
     }
     return opened.length === 0;
@@ -1530,7 +1733,11 @@ function htmlScan(
       i = len;
       break main;
     }
-    if (path[bodyEnd] !== path[lt] || anyTok(bodyStart, bodyEnd, markup) || !bodyLoopsOk(bodyEnd)) {
+    if (
+      path[bodyEnd] !== path[lt] ||
+      anyTok(bodyStart, bodyEnd, markup) ||
+      !bodyLoopsOk(bodyStart, bodyEnd, name)
+    ) {
       setAmb(lt);
       break;
     }
