@@ -1,6 +1,7 @@
 # Handoff: gc-tib Clean copy build (2026-11-10 / 11)
 
 ## RESUME HERE (updated 2026-11-11 session 2)
+- **2026-11-11 (session 4): gc-tib.20 DONE + gc-tib.12 DOWNGRADED (Nathan approved).** 2091d86 + 2e1a257. Scan + select pages show "View result" lines for the newest run and the newest older don't-publish copy; the result page reads the copy and records `FixRun.copyGoneAt` once deleted (NEW additive migration 20261111120000_gc_tib_fix_run_copy_gone, applies on deploy). Canvas hint on NO_MAIN_THEME + scan no-published-theme error/Home text. gc-tib.12 now P2 launch follow-up (live Canvas checks A-C after approval). Audit r1: 0 HIGH, 2 MED fixed, LOWs fixed or beaded (gc-e28n). Gate 12,192 green. Still NOT pushed.
 - **2026-11-11: ticket 71890683 reply SENT by Nathan** (screenshots: 1-select, 2-result, 3-admin-themes in ~/shopify/gc-preview-harness/cleancopy/png/). Waiting on Shopify's write_themes decision. Still NOT pushed; open decisions: gc-tib.12 downgrade, gc-tib.20 UX.
 - **Why we're building:** Shopify replied on the write_themes exemption (ticket 71890683, Cy D., 2026-11-10). They want a screencast or screenshots of the app using the scopes. The demo makes the copy through the Shopify CLI, signed in as store staff (no dev-store app, per Nathan).
 - **Branch:** `feat/gc-tib-clean-copy`, worktree `~/shopify/gc-tib`. **NOT pushed. No deploys (Nathan, 2026-11-10).** Push to main = prod deploy.
