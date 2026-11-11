@@ -12,6 +12,7 @@ import {
   SKIPPABLE_CATEGORY_INFO,
   skippedCategoryLabels,
 } from "../../app/lib/optional-scopes";
+import { WRITE_THEMES_SCOPE } from "../../app/services/clean-copy.server";
 
 describe("OPTIONAL_SCOPES", () => {
   it("matches the optional_scopes declared in shopify.app.toml", () => {
@@ -24,8 +25,14 @@ describe("OPTIONAL_SCOPES", () => {
     const declared = (match![1].match(/"([^"]+)"/g) ?? []).map((s) => s.replace(/"/g, ""));
     // Same set (order-independent) — the constant is the request set, the TOML is
     // authoritative. A drift here means the modal would request an undeclared
-    // scope (rejected by Shopify) or miss a declared one.
-    expect([...OPTIONAL_SCOPES].sort()).toEqual([...declared].sort());
+    // scope (rejected by Shopify) or miss a declared one. write_themes is the
+    // one exception: it is declared for Clean copy (gc-tib) and requested only
+    // by the clean-copy select page, never by the Settings card.
+    expect([...OPTIONAL_SCOPES, WRITE_THEMES_SCOPE].sort()).toEqual([...declared].sort());
+  });
+
+  it("never includes write_themes, so the Settings card can't request theme write access", () => {
+    expect(OPTIONAL_SCOPES as readonly string[]).not.toContain(WRITE_THEMES_SCOPE);
   });
 
   it("has label + unlocks copy for every optional scope", () => {
