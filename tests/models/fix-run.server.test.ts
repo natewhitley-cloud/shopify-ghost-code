@@ -308,7 +308,8 @@ describe("getRecentFixRunsForShop (gc-tib.20)", () => {
     expect(runs.map((r) => r.id)).toEqual([second, first]);
     expect(runs[0]).toMatchObject({ status: "pending", doNotPublish: true });
     expect(runs[1]).toMatchObject({ status: "failed", failureReason: "SCAN_STALE" });
-    expect(runs.every((r) => !("updatedAt" in r))).toBe(true);
+    // gc-e28n: updatedAt is kept (a failed run's banner turns quiet with age).
+    expect(runs.every((r) => r.updatedAt instanceof Date)).toBe(true);
   });
 
   it("a stale active run reads as failed STALE, as on its result page; a fresh one stays active", async () => {

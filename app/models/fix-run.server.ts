@@ -171,10 +171,7 @@ export async function getRecentFixRunsForShop(
       updatedAt: true,
     },
   });
-  return runs.map(({ updatedAt, ...run }) => ({
-    ...run,
-    ...displayedRunState({ ...run, updatedAt }, now),
-  }));
+  return runs.map((run) => ({ ...run, ...displayedRunState(run, now) }));
 }
 
 /**

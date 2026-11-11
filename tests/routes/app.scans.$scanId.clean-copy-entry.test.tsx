@@ -621,6 +621,20 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     expect(partial).not.toMatch(/<s-banner[^>]*><s-paragraph>Your last clean copy/);
   });
 
+  it("gc-e28n: no run-history read while this scan is running (the page polls)", async () => {
+    for (const status of ["PENDING", "IN_PROGRESS"]) {
+      (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, status });
+      const res = (await run()) as unknown as WithRuns;
+      expect(res.cleanCopyRuns).toEqual([]);
+    }
+    expect(dbMock.fixRun.findMany).not.toHaveBeenCalled();
+  });
+
+  it("gc-e28n: an active run renders a 'See progress' link", async () => {
+    const html = await renderWith([dbRun({ status: "writing", copyThemeId: null })]);
+    expect(html).toMatch(/<a href="\/app\/clean-copy\/run-1"[^>]*>See progress<\/a>/);
+  });
+
   it("r1: a failed run-history read never fails the scan page", async () => {
     dbMock.fixRun.findMany.mockRejectedValueOnce(new Error("relation does not exist"));
     const res = (await run()) as unknown as WithRuns;

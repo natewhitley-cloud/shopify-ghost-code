@@ -510,9 +510,22 @@ export type RecentCleanCopyRun = {
   copyThemeId: string | null;
   copyThemeName: string | null;
   copyGoneAt: Date | null;
+  /** When the run last changed (a failed run's banner turns quiet after a while). */
+  updatedAt: Date;
 };
 
-export type CleanCopyRunLine = { runId: string; tone: SummaryTone; text: string };
+export type CleanCopyRunLine = {
+  runId: string;
+  tone: SummaryTone;
+  text: string;
+  /** The link text: "View result", or "See progress" while the run is active. */
+  linkLabel: string;
+};
+
+export const VIEW_RESULT_LABEL = "View result";
+export const SEE_PROGRESS_LABEL = "See progress";
+/** A failed run's warning banner turns into a quiet line after this long (gc-e28n). */
+export const FAILED_RUN_BANNER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * The run's copy may still be in the theme library: it was made, and neither
@@ -533,8 +546,13 @@ export function copyMustNotBePublished(run: RecentCleanCopyRun): boolean {
   return run.doNotPublish || run.failureReason === "COPY_PUBLISHED_DURING_WRITE";
 }
 
-function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
-  const line = (tone: SummaryTone, text: string) => ({ runId: run.id, tone, text });
+function lastRunLine(run: RecentCleanCopyRun, now: Date): CleanCopyRunLine {
+  const line = (tone: SummaryTone, text: string, linkLabel = VIEW_RESULT_LABEL) => ({
+    runId: run.id,
+    tone,
+    text,
+    linkLabel,
+  });
   const named = run.copyThemeName ? `, "${run.copyThemeName}",` : "";
   const copy = run.copyThemeName ? `the copy "${run.copyThemeName}"` : "this clean copy";
   // No live-theme claims: these pages don't read the live theme.
@@ -551,13 +569,17 @@ function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
     );
   }
   if (Object.prototype.hasOwnProperty.call(ACTIVE_HEADINGS, run.status)) {
-    return line("info", "Your clean copy is in progress.");
+    return line("info", "Your clean copy is in progress.", SEE_PROGRESS_LABEL);
   }
   if (run.status === "completed") return line("info", `Your last clean copy${named} is finished.`);
   if (run.status === "partial") {
     return line("info", `Your last clean copy${named} is finished, with some code left in.`);
   }
-  if (run.status === "failed") return line("warning", "Your last clean copy didn't finish.");
+  if (run.status === "failed") {
+    // A warning until the merchant has had time to read it, then quiet (gc-e28n).
+    const recent = now.getTime() - run.updatedAt.getTime() < FAILED_RUN_BANNER_MS;
+    return line(recent ? "warning" : "info", "Your last clean copy didn't finish.");
+  }
   return line("info", "See how your last clean copy went.");
 }
 
@@ -567,13 +589,16 @@ function lastRunLine(run: RecentCleanCopyRun): CleanCopyRunLine {
  * hide that warning). `runs` is newest first. The older warning goes first
  * unless the newest run is itself a warning (r1).
  */
-export function cleanCopyRunLines(runs: readonly RecentCleanCopyRun[]): CleanCopyRunLine[] {
+export function cleanCopyRunLines(
+  runs: readonly RecentCleanCopyRun[],
+  now: Date = new Date(),
+): CleanCopyRunLine[] {
   const [latest, ...older] = runs;
   if (!latest) return [];
-  const newest = lastRunLine(latest);
+  const newest = lastRunLine(latest, now);
   const unsafe = older.find(copyMustNotBePublished);
   if (!unsafe) return [newest];
-  const warning = lastRunLine(unsafe);
+  const warning = lastRunLine(unsafe, now);
   return newest.tone === "critical" ? [newest, warning] : [warning, newest];
 }
 

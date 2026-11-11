@@ -9,6 +9,7 @@ import { CANVAS_THEME_HINT } from "../../app/lib/canvas-theme";
 import {
   cleanCopyRunLines,
   cleanCopyRunPath,
+  FAILED_RUN_BANNER_MS,
   type RecentCleanCopyRun,
   RUN_REFUSAL_REASONS,
   runHasCopy,
@@ -23,6 +24,7 @@ const run = (over: Partial<RecentCleanCopyRun> = {}): RecentCleanCopyRun => ({
   copyThemeId: "gid://shopify/OnlineStoreTheme/2",
   copyThemeName: "Dawn - clean copy ab12",
   copyGoneAt: null,
+  updatedAt: new Date(),
   ...over,
 });
 
@@ -37,6 +39,7 @@ describe("cleanCopyRunLines: the newest run", () => {
         runId: "run-1",
         tone: "info",
         text: 'Your last clean copy, "Dawn - clean copy ab12", is finished.',
+        linkLabel: "View result",
       },
     ]);
   });
@@ -61,6 +64,7 @@ describe("cleanCopyRunLines: the newest run", () => {
         runId: "run-1",
         tone: "warning",
         text: "Your last clean copy didn't finish.",
+        linkLabel: "View result",
       });
     }
   });
@@ -209,6 +213,34 @@ describe("runHasCopy (shared with the result page)", () => {
     expect(runHasCopy({ ...base, copyGoneAt: new Date() })).toBe(false);
     // Serialized loader data carries the date as a string.
     expect(runHasCopy({ ...base, copyGoneAt: "2026-11-11T10:00:00.000Z" })).toBe(false);
+  });
+});
+
+describe("gc-e28n: polish", () => {
+  const now = new Date("2026-11-20T12:00:00Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+
+  it("a failed run is a warning for 7 days, then a quiet line", () => {
+    const line = (updatedAt: Date) =>
+      cleanCopyRunLines([run({ status: "failed", updatedAt })], now)[0];
+    expect(line(ago(FAILED_RUN_BANNER_MS - 1)).tone).toBe("warning");
+    expect(line(ago(FAILED_RUN_BANNER_MS)).tone).toBe("info");
+    expect(line(ago(FAILED_RUN_BANNER_MS)).text).toBe("Your last clean copy didn't finish.");
+  });
+
+  it("a don't-publish warning never goes quiet with age", () => {
+    const [line] = cleanCopyRunLines(
+      [run({ status: "failed", doNotPublish: true, updatedAt: ago(90 * 86_400_000) })],
+      now,
+    );
+    expect(line.tone).toBe("critical");
+  });
+
+  it("an active run links with 'See progress'; every other line with 'View result'", () => {
+    expect(cleanCopyRunLines([run({ status: "writing" })], now)[0].linkLabel).toBe("See progress");
+    for (const status of ["completed", "partial", "failed", "mystery"]) {
+      expect(cleanCopyRunLines([run({ status })], now)[0].linkLabel).toBe("View result");
+    }
   });
 });
 

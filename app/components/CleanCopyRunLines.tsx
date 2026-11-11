@@ -3,8 +3,6 @@ import { Link } from "react-router";
 import { cleanCopyRunPath, type CleanCopyRunLine } from "../lib/clean-copy-view";
 import { TEXT_SUBDUED } from "../styles/shared";
 
-const VIEW_RUN_RESULT_LABEL = "View result";
-
 /**
  * The way back to a clean copy's result page (gc-tib.20), on the scan and
  * select pages. A warning (don't publish, or a run that didn't finish) is a
@@ -16,7 +14,7 @@ export function CleanCopyRunLines({ lines }: { lines: readonly CleanCopyRunLine[
   return (
     <>
       {lines.map((line) => {
-        const link = <Link to={cleanCopyRunPath(line.runId)}>{VIEW_RUN_RESULT_LABEL}</Link>;
+        const link = <Link to={cleanCopyRunPath(line.runId)}>{line.linkLabel}</Link>;
         if (line.tone === "critical" || line.tone === "warning") {
           return (
             <s-banner key={line.runId} tone={line.tone}>

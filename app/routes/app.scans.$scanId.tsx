@@ -1724,7 +1724,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // gc-tib.20: the way back to recent clean copies' result pages, on every
   // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
   // Never throws: a failed read hides the lines, not the page (r1).
-  const cleanCopyRuns = isCleanCopyEnabled() ? await loadCleanCopyRunLines(shop.id) : [];
+  // Not while this scan runs: the page polls every few seconds (gc-e28n).
+  const scanRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
+  const cleanCopyRuns =
+    isCleanCopyEnabled() && !scanRunning ? await loadCleanCopyRunLines(shop.id) : [];
 
   return {
     cleanCopy,

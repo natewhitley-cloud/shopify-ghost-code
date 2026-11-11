@@ -757,7 +757,9 @@ describe("gc-tib.20: the way back to a clean copy's result", () => {
     const html = render({
       ...DATA,
       refusal: "SCAN_STALE",
-      runLines: [{ runId: "run-9", tone: "critical", text: "Don't publish it." }],
+      runLines: [
+        { runId: "run-9", tone: "critical", text: "Don't publish it.", linkLabel: "View result" },
+      ],
     });
     expect(html).toMatch(
       /<s-banner tone="critical"><s-paragraph>Don(&#x27;|')t publish it\. <a href="\/app\/clean-copy\/run-9"[^>]*>View result<\/a>/,
