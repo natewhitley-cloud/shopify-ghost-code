@@ -64,6 +64,7 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
+import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
@@ -137,6 +138,7 @@ import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.serve
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanCoverage, ScanDiff } from "../services/scan-differ.server";
 import { advisoryStartHereCopy, buildSecurityRisks } from "../services/security-risk.server";
+import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
@@ -1658,7 +1660,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Exposed to the component so it knows whether to issue the useFetcher call.
   const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
+  // gc-tib: the Clean copy entry point. The findings read runs only with the
+  // flag on and on Professional, so every other shop pays nothing for it.
+  let cleanCopy = { eligible: false, count: 0 };
+  if (isCleanCopyEnabled() && shop.plan === PLANS.PROFESSIONAL) {
+    const fixable = new Set<string>(FIXABLE_FINDING_TYPES);
+    const count = (await getFindingsForScan(scan.id)).filter(
+      (f) => fixable.has(f.findingType) && f.spanStart !== null && f.spanEnd !== null,
+    ).length;
+    cleanCopy = { eligible: count > 0, count };
+  }
+
   return {
+    cleanCopy,
     // Shop domain (e.g. `my-store.myshopify.com`) — used to build the theme
     // code editor deep-link (`admin.shopify.com/store/{handle}/...`) client-side.
     shopDomain: session.shop,
@@ -2012,6 +2026,8 @@ export default function ScanDetail() {
     securityRisks,
     guardIncidents,
     findingSummary,
+    // Defaulted: loader data from before this field (or a stub) may not carry it.
+    cleanCopy = { eligible: false, count: 0 },
     canViewDetails,
     canUseDiffing,
     canExportPdf,
@@ -2834,6 +2850,13 @@ export default function ScanDetail() {
                       </div>
                     )}
                   </div>
+                  {cleanCopy.eligible && (
+                    <div>
+                      <Link to="clean-copy">
+                        <s-button variant="secondary">{`Make a clean copy (${cleanCopy.count})`}</s-button>
+                      </Link>
+                    </div>
+                  )}
                   {/* Filter bar — only when the scan actually has findings to
                     filter (a paid + successful view). Stays visible even when
                     the active filters match zero rows so the merchant can
