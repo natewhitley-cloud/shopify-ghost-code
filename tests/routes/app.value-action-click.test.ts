@@ -63,6 +63,20 @@ describe("value action click ping", () => {
     expect(mockStage).toHaveBeenCalledWith("clean_copy_action", "clicked", SHOP);
   });
 
+  it("a body that is not form data records nothing and never returns 500", async () => {
+    const res = await action({
+      request: new Request("https://app.example.com/app/value-action-click", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ src: "clean_copy_action" }),
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+    expect(mockStage).not.toHaveBeenCalled();
+    expect(res.status).toBe(204);
+  });
+
   it("has no loader (nothing to navigate to)", () => {
     expect("loader" in route).toBe(false);
   });

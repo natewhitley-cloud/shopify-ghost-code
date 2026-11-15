@@ -13,17 +13,20 @@ vi.mock("../../app/models/scan-manifest.server", () => ({ getScanManifest: vi.fn
 vi.mock("../../app/models/fix-run.server", () => ({ countTrialRemovals: vi.fn() }));
 vi.mock("../../app/models/finding.server", () => ({ countFindingsByApp: vi.fn() }));
 vi.mock("../../app/services/soft-launch-flags.server", () => ({ isCleanCopyEnabled: vi.fn() }));
+vi.mock("../../app/services/nudge-stage.server", () => ({ recordNudgeStageOnce: vi.fn() }));
 
 import { countFindingsByApp } from "../../app/models/finding.server";
 import { countTrialRemovals } from "../../app/models/fix-run.server";
 import { getScanManifest } from "../../app/models/scan-manifest.server";
 import { checkCleanCopyFreshness, cleanCopyTrial } from "../../app/services/clean-copy.server";
+import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { isCleanCopyEnabled } from "../../app/services/soft-launch-flags.server";
 import {
   cleanCopyOfferFor,
   cleanCopyTrialFor,
   leftoversByApp,
   leftoversByAppForScan,
+  loadValueAction,
 } from "../../app/services/value-action.server";
 
 const mockFresh = checkCleanCopyFreshness as ReturnType<typeof vi.fn>;
@@ -280,5 +283,59 @@ describe("cleanCopyOfferFor read order", () => {
       admin,
     });
     expect(res).toEqual({ state: "none", count: 0, findingIds: [] });
+  });
+});
+
+// gc-np1d.5: the card's `shown` stamps (telemetry only; outcomes list item 1).
+describe("loadValueAction shown stamps", () => {
+  const SESSION_SHOP = "a.myshopify.com";
+  const mockStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
+  const load = (plan: string, kept: ReturnType<typeof finding>[]) =>
+    loadValueAction({
+      shop: { ...shop, plan },
+      scan: { ...scan, themeName: "Dawn", createdAt: new Date() },
+      keptFindings: kept as never,
+      ignores: NO_IGNORES,
+      admin,
+      shopDomain: SESSION_SHOP,
+    });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockFlag.mockReturnValue(false);
+    mockStage.mockResolvedValue(true);
+  });
+
+  it("Standard with leftovers: do-it-yourself and the upsell are each stamped shown, for the session shop", async () => {
+    mockFlag.mockReturnValue(true);
+    const { card } = await load("Standard", [finding({})]);
+    expect(card?.kind).toBe("diy");
+    expect(mockStage.mock.calls).toEqual([
+      ["clean_copy_diy", "shown", SESSION_SHOP],
+      ["clean_copy_upsell", "shown", SESSION_SHOP],
+    ]);
+  });
+
+  it("Standard with Clean copy off: only do-it-yourself (no upsell for a feature that's off)", async () => {
+    await load("Standard", [finding({})]);
+    expect(mockStage.mock.calls).toEqual([["clean_copy_diy", "shown", SESSION_SHOP]]);
+  });
+
+  it("Free with leftovers: only the upsell is stamped", async () => {
+    mockFlag.mockReturnValue(true);
+    const { card } = await load("Free", [finding({})]);
+    expect(card?.telemetryKey).toBe("clean_copy_upsell");
+    expect(mockStage.mock.calls).toEqual([["clean_copy_upsell", "shown", SESSION_SHOP]]);
+  });
+
+  it("nothing to remove: no stamp", async () => {
+    await load("Standard", []);
+    expect(mockStage).not.toHaveBeenCalled();
+  });
+
+  it("a stamp that finds nothing to claim still returns the card", async () => {
+    mockStage.mockResolvedValue(false);
+    const { card } = await load("Standard", [finding({})]);
+    expect(card?.kind).toBe("diy");
   });
 });

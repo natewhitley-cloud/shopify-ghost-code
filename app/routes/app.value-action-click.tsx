@@ -18,7 +18,11 @@ import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const src = (await request.formData()).get("src");
+  // A body that isn't form data is ignored (telemetry never errors).
+  const src = await request
+    .formData()
+    .then((form) => form.get("src"))
+    .catch(() => null);
   if (isValueActionPingKey(src)) {
     await recordNudgeStageOnce(src, "clicked", session.shop);
   }
