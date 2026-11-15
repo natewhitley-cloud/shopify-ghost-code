@@ -139,29 +139,29 @@ export function buildUpgradePreview(
 
 /**
  * Teaser headline, e.g.
- * "12 more findings on Standard: Found by Google & AI (5), Speed (4), Housekeeping (3)."
+ * "12 more findings on Professional: Found by Google & AI (5), Speed (4), Housekeeping (3)."
  */
 export function upgradePreviewHeadline(preview: UpgradePreview): string {
   const noun = preview.hiddenCount === 1 ? "finding" : "findings";
   const breakdown = preview.groups.map((g) => `${g.label} (${g.count})`).join(", ");
-  return `${preview.hiddenCount} more ${noun} on Standard: ${breakdown}.`;
+  return `${preview.hiddenCount} more ${noun} on ${PLANS.PROFESSIONAL}: ${breakdown}.`;
 }
 
 /**
  * The teaser's body and button (gc-97k.8). Trial framing for a shop that can
  * still get the trial, plain upgrade framing for one that has had a paid plan:
- *   trial:    "<headline> Try Standard free for 7 days to see every file, line, and fix."
- *   fallback: "<headline> Upgrade to Standard to see every file, line, and fix."
+ *   trial:    "<headline> Try Professional free for 7 days to see every file, line, and fix."
+ *   fallback: "<headline> Upgrade to Professional to see every file, line, and fix."
  */
 export function upgradePreviewCopy(
   preview: UpgradePreview,
   trialEligible: boolean,
 ): { body: string; cta: string } {
   const ask = trialEligible
-    ? `Try ${PLANS.STANDARD} free for ${FREE_TRIAL_DAYS} days`
-    : `Upgrade to ${PLANS.STANDARD}`;
+    ? `Try ${PLANS.PROFESSIONAL} free for ${FREE_TRIAL_DAYS} days`
+    : `Upgrade to ${PLANS.PROFESSIONAL}`;
   return {
     body: `${upgradePreviewHeadline(preview)} ${ask} to see every file, line, and fix.`,
-    cta: upgradeCtaLabel(PLANS.STANDARD, trialEligible),
+    cta: upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligible),
   };
 }

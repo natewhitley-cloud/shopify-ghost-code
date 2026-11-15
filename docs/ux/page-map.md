@@ -126,7 +126,7 @@ History, Ignored, Settings and Help are utilities with no value action.
   Free: locked rows as today; the up to 5 shown keep their steps.
 - **Notice slot (decision A, 2026-11-15):** at most one, directly below the action card:
   upgrade-return banner, else the UpgradePreview teaser (Free; Standard has no teaser
-  on this page), else the stale results notice. Quiet: tertiary buttons only. Only the
+  on this page; both pitch Professional, like the Free action card), else the stale results notice. Quiet: tertiary buttons only. Only the
   notice shown records its "shown" stamp. The action card is the one upgrade ask above
   the findings and the slot may hold one more; nothing else on the page asks for an
   upgrade (the truncated-walk notice keeps its "Professional checks ..." line with no
@@ -197,3 +197,4 @@ IDs and counts only, on the existing event sink.
 | 2026-11-14 | 1A: one summary on Home, "What it's costing you". 2A: every plan sees the Clean copy card (upgrade on Free/Standard). 3A: findings grouped by app. 4B (Nathan): Standard leads with do it yourself; "Upgrade to Professional to remove them for you" is the second action. Finding cards show "Included in your clean copy" (no per-card button); scan header keeps Make a clean copy. |
 | 2026-11-15 | A (Nathan, audit r1 M6): the Free scan page showed up to 3 upgrade asks. The UpgradePreview teaser and the upgrade-return banner fold into the scan page's one notice slot (slice 2); slice 1 ships as is.                                                                                                                                                                             |
 | 2026-11-15 | Value-tied notices outrank the multi-theme upsell (audit H1).                                                                                                                                                                                                                                                                                                                          |
+| 2026-11-15 | Nathan: the Free teaser and return banner pitch Professional ("N more findings on Professional", "Try Professional free for 7 days"), so Free sees one plan named on the scan page. The stale notice's "scan every week" ask stays Standard.                                                                                                                                           |

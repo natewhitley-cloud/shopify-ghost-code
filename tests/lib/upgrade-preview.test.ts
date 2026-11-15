@@ -175,12 +175,14 @@ describe("upgradePreviewHeadline", () => {
           { label: "Housekeeping", count: 3 },
         ],
       }),
-    ).toBe("12 more findings on Standard: Found by Google & AI (5), Speed (4), Housekeeping (3).");
+    ).toBe(
+      "12 more findings on Professional: Found by Google & AI (5), Speed (4), Housekeeping (3).",
+    );
   });
 
   it("uses the singular for exactly one hidden finding", () => {
     expect(upgradePreviewHeadline({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] })).toBe(
-      "1 more finding on Standard: Speed (1).",
+      "1 more finding on Professional: Speed (1).",
     );
   });
 
@@ -193,7 +195,7 @@ describe("upgradePreviewHeadline", () => {
           { label: "Other", count: 5 },
         ],
       }),
-    ).toBe("9 more findings on Standard: Speed (4), Other (5).");
+    ).toBe("9 more findings on Professional: Speed (4), Other (5).");
   });
 
   it("never contains an em dash or mentions security or malicious alerts", () => {
@@ -222,11 +224,11 @@ describe("upgradePreviewCopy", () => {
     ],
   };
   const HEADLINE =
-    "12 more findings on Standard: Found by Google & AI (5), Speed (4), Housekeeping (3).";
+    "12 more findings on Professional: Found by Google & AI (5), Speed (4), Housekeeping (3).";
 
   it("never-paid Free shop: trial body and button", () => {
     expect(upgradePreviewCopy(PREVIEW, true)).toEqual({
-      body: `${HEADLINE} Try Standard free for 7 days to see every file, line, and fix.`,
+      body: `${HEADLINE} Try Professional free for 7 days to see every file, line, and fix.`,
       cta: "Start 7-day free trial",
     });
   });
@@ -234,8 +236,8 @@ describe("upgradePreviewCopy", () => {
   it("previously-paid shop: upgrade body and button, no trial promise", () => {
     const copy = upgradePreviewCopy(PREVIEW, false);
     expect(copy).toEqual({
-      body: `${HEADLINE} Upgrade to Standard to see every file, line, and fix.`,
-      cta: "Upgrade to Standard",
+      body: `${HEADLINE} Upgrade to Professional to see every file, line, and fix.`,
+      cta: "Upgrade to Professional",
     });
     expect(`${copy.body} ${copy.cta}`).not.toMatch(/trial|free for/i);
   });
@@ -244,7 +246,7 @@ describe("upgradePreviewCopy", () => {
     expect(
       upgradePreviewCopy({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] }, true).body,
     ).toBe(
-      "1 more finding on Standard: Speed (1). Try Standard free for 7 days to see every file, line, and fix.",
+      "1 more finding on Professional: Speed (1). Try Professional free for 7 days to see every file, line, and fix.",
     );
   });
 

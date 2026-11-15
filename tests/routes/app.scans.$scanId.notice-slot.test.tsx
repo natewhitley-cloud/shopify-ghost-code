@@ -574,7 +574,7 @@ describe("one notice slot", () => {
     expect(slot).toContain("Not now");
     // The teaser and the stale notice are not on the page.
     expect(html).not.toContain("These results are from");
-    expect(html.match(/more findings on Standard/g)).toHaveLength(1);
+    expect(html.match(/more findings on Professional/g)).toHaveLength(1);
     // Below the action card, above the findings.
     const heading = (data.valueAction as { heading: string }).heading;
     const card = html.indexOf(`aria-label="${heading}"`);
@@ -591,12 +591,14 @@ describe("one notice slot", () => {
     const { html, data } = await renderPage();
 
     expect(data.noticeSlot).toBe("upgrade_preview");
-    expect(slotOf(html)).toContain("more findings on Standard");
+    expect(slotOf(html)).toContain("more findings on Professional");
     expect(html).not.toContain("These results are from");
     expect(recordUpgradePreviewStageOnce).toHaveBeenCalledWith("shown", SHOP.domain);
     expect(claimedColumns()).not.toContain("staleResultsShownAt");
     // The teaser is no longer inside the Free findings card.
-    expect(html.indexOf("more findings on Standard")).toBeLessThan(html.indexOf("Preview: Top"));
+    expect(html.indexOf("more findings on Professional")).toBeLessThan(
+      html.indexOf("Preview: Top"),
+    );
   });
 
   it("stale loses to the teaser: a plain status-bar line says the results may be out of date, with no stamp", async () => {
@@ -898,7 +900,7 @@ describe("one notice slot", () => {
       dismissed(DAY);
       const { html, data } = await renderPage();
       expect(data.noticeSlot).toBe("upgrade_preview");
-      expect(slotOf(html)).toContain("more findings on Standard");
+      expect(slotOf(html)).toContain("more findings on Professional");
       expect(recordUpgradePreviewStageOnce).toHaveBeenCalledWith("shown", SHOP.domain);
     });
   });

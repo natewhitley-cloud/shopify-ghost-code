@@ -1,7 +1,7 @@
 /**
  * Free-tier upgrade-preview nudge (gc-97k.4): once-per-merchant funnel events.
  *
- * The teaser on a Free shop's scan page ("N more findings on Standard: ...")
+ * The teaser on a Free shop's scan page ("N more findings on Professional: ...")
  * reports shown -> clicked -> converted through nudge-telemetry. The dedup
  * (atomic Shop stamp claim, emit only when the claim wins) is the shared
  * recordNudgeStageOnce in nudge-stage.server; this module pins it to the

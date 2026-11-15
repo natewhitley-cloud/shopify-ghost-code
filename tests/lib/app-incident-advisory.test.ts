@@ -198,7 +198,7 @@ describe("never paywalled: the upgrade teaser (upgrade-preview.ts)", () => {
       ],
     });
     expect(upgradePreviewHeadline(preview!)).toBe(
-      "5 more findings on Standard: Speed (3), Still tracking you (2).",
+      "5 more findings on Professional: Speed (3), Still tracking you (2).",
     );
   });
 

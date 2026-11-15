@@ -2707,7 +2707,7 @@ describe("app.scans.$scanId loader", () => {
       expect(html).not.toContain("top-findings-heading");
       expect(html).not.toContain("No leftover code detected");
       expect(html).not.toContain("<table");
-      expect(html).toContain("1 more finding on Standard");
+      expect(html).toContain("1 more finding on Professional");
     });
 
     it("an in-progress scan reads nothing for the block", async () => {
@@ -4143,7 +4143,7 @@ describe("UpgradePreviewBanner", () => {
     ],
   };
   const TWELVE_HEADLINE =
-    "12 more findings on Standard: Found by Google &amp; AI (5), Speed (4), Housekeeping (3).";
+    "12 more findings on Professional: Found by Google &amp; AI (5), Speed (4), Housekeeping (3).";
 
   /** The CTA button's visible label. */
   function buttonText(html: string): string | undefined {
@@ -4154,19 +4154,19 @@ describe("UpgradePreviewBanner", () => {
     const html = render(TWELVE, true);
 
     expect(html).toContain(
-      `${TWELVE_HEADLINE} Try Standard free for 7 days to see every file, line, and fix.`,
+      `${TWELVE_HEADLINE} Try Professional free for 7 days to see every file, line, and fix.`,
     );
     expect(buttonText(html)).toBe("Start 7-day free trial");
     expect(html).not.toContain("Upgrade Plan");
   });
 
-  it("previously-paid shop: upgrade body and 'Upgrade to Standard' button, no trial promise", () => {
+  it("previously-paid shop: upgrade body and 'Upgrade to Professional' button, no trial promise", () => {
     const html = render(TWELVE, false);
 
     expect(html).toContain(
-      `${TWELVE_HEADLINE} Upgrade to Standard to see every file, line, and fix.`,
+      `${TWELVE_HEADLINE} Upgrade to Professional to see every file, line, and fix.`,
     );
-    expect(buttonText(html)).toBe("Upgrade to Standard");
+    expect(buttonText(html)).toBe("Upgrade to Professional");
     expect(html).not.toMatch(/trial|free for/i);
   });
 
@@ -4184,7 +4184,7 @@ describe("UpgradePreviewBanner", () => {
       expect(anchors[0]).toContain('target="_top"');
       expect(html).not.toContain("/app/upgrade");
       expect(html).not.toContain('href="/app/settings"');
-      expect(html).toContain("1 more finding on Standard: Speed (1).");
+      expect(html).toContain("1 more finding on Professional: Speed (1).");
     },
   );
 
@@ -4356,7 +4356,7 @@ describe("notice slot banners are quiet (no primary button)", () => {
         trialEligible: true,
       }),
     );
-    expect(html).toContain("3 more findings on Standard: Speed (3).");
+    expect(html).toContain("3 more findings on Professional: Speed (3).");
     expect(html).toMatch(
       /<a href="https:\/\/example\.test\/pricing"[^>]*><s-button variant="tertiary">Start 7-day free trial<\/s-button><\/a>/,
     );
@@ -4428,19 +4428,19 @@ describe("UpgradeReturnBanner (gc-97k.9)", () => {
     expect(html).toContain('heading="Ready to clean up the rest?"');
     expect(html).toContain('tone="info"');
     expect(html).toContain(
-      "14 more findings on Standard: Speed (8), Found by Google &amp; AI (6). Try Standard free for 7 days to see every file, line, and fix.",
+      "14 more findings on Professional: Speed (8), Found by Google &amp; AI (6). Try Professional free for 7 days to see every file, line, and fix.",
     );
     expect(html).toContain(">Start 7-day free trial</s-button>");
     expect(html).toContain(">Not now</s-button>");
   });
 
-  it("previously-paid shop: upgrade body and 'Upgrade to Standard', no trial promise", () => {
+  it("previously-paid shop: upgrade body and 'Upgrade to Professional', no trial promise", () => {
     const html = render(false);
 
     expect(html).toContain(
-      "14 more findings on Standard: Speed (8), Found by Google &amp; AI (6). Upgrade to Standard to see every file, line, and fix.",
+      "14 more findings on Professional: Speed (8), Found by Google &amp; AI (6). Upgrade to Professional to see every file, line, and fix.",
     );
-    expect(html).toContain(">Upgrade to Standard</s-button>");
+    expect(html).toContain(">Upgrade to Professional</s-button>");
     expect(html).not.toMatch(/trial|free for/i);
   });
 
@@ -5427,7 +5427,7 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(html).toMatch(/<s-badge tone="neutral">Scripts: 2<\/s-badge>/);
       expect(html).not.toMatch(/<s-badge tone="neutral">[^<]*: 6<\/s-badge>/);
       expect(html).not.toContain("10 findings detected");
-      expect(html).toContain("2 more findings on Standard");
+      expect(html).toContain("2 more findings on Professional");
       // One upgrade ask on the page.
       expect(html.match(/href="https:\/\/admin\.shopify\.com[^"]*pricing_plans"/g)).toHaveLength(1);
       // Start here stays hidden on the filtered view.
