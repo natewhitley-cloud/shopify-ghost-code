@@ -471,12 +471,23 @@ export function matchSpeedLeftoverApp(
   rowName: string | null | undefined,
   apps: SpeedAppLeftovers["apps"],
 ): SpeedAppLeftovers["apps"][number] | null {
+  // Deliberately no Unicode normalization or lookalike folding: a name that
+  // differs only by a lookalike or full-width character does not match, so the
+  // row gets no link (fails closed, never a link to the wrong app).
   const key = rowName ? leftoverKey(rowName) : "";
   if (key === "") return null;
   return apps.find((a) => a.count > 0 && leftoverKey(a.name) === key) ?? null;
 }
 
-/** "See its 3 leftovers" to the scan page filtered to that app, or null. */
+/** The Store speed link's text (no number: see speedLeftoversLink). */
+export const SPEED_LEFTOVERS_LINK_LABEL = "See its leftover code";
+
+/**
+ * "See its leftover code" to the scan page filtered to that app, or null when
+ * the app has no non-ignored leftovers. No count: the filtered list shows
+ * every kept finding for the app, ignored ones included, so a number here
+ * could not match it (audit r1).
+ */
 export function speedLeftoversLink(
   rowName: string | null | undefined,
   leftovers: SpeedAppLeftovers | null | undefined,
@@ -486,7 +497,7 @@ export function speedLeftoversLink(
   if (!app) return null;
   return {
     href: `/app/scans/${encodeURIComponent(leftovers.scanId)}?app=${encodeURIComponent(app.name)}`,
-    label: `See its ${app.count} ${app.count === 1 ? "leftover" : "leftovers"}`,
+    label: SPEED_LEFTOVERS_LINK_LABEL,
   };
 }
 

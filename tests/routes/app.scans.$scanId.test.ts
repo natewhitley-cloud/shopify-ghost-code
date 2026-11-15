@@ -4984,19 +4984,26 @@ describe("ScanDetail in-progress state (ScanProgress)", () => {
   it("does not render the progress block once the scan has completed", async () => {
     const html = await renderPage({ ...SCAN, status: "COMPLETED" });
 
-    expect(html).toContain("Total Findings"); // the completed results rendered
+    // The completed results rendered (the findings list).
+    expect(html).toMatch(/<h2 class="scan-section-title">Findings<\/h2>/);
     expect(html).not.toContain("Scan In Progress");
     expect(html).not.toContain("Scan in progress");
     expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
     for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
   });
 
-  it("shows the findings count tile and no 0-100 health score tile (gc-k2ub)", async () => {
+  // gc-np1d.6 (screenshot check vs the approved mockup): no summary tiles
+  // between the action card and the findings; they repeated the counts.
+  it("no summary tiles (Total Findings, Severity Breakdown, Performance Impact) and no 0-100 health score tile (gc-k2ub)", async () => {
     const html = await renderPage({ ...SCAN, status: "COMPLETED" });
 
-    expect(html).toMatch(/<h2 class="scan-section-title">Total Findings<\/h2>/);
-    expect(html).toContain('<div class="scan-tile__subtitle">findings detected</div>');
-    expect(html).toContain(">Severity Breakdown</h2>");
+    expect(html).toMatch(/<h2 class="scan-section-title">Findings<\/h2>/);
+    expect(html).not.toContain("Total Findings");
+    expect(html).not.toContain("Severity Breakdown");
+    expect(html).not.toContain("Performance Impact");
+    expect(html).not.toContain("external resources loading");
+    expect(html).not.toContain("scan-tile");
+    expect(html).not.toContain("severity-row");
     expect(html).not.toMatch(/out of 100/i);
     expect(html).not.toMatch(/theme health/i);
     expect(html).not.toMatch(/health score/i);
@@ -5791,8 +5798,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(off.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(0);
       expect(offHtml).not.toContain('id="finding-adv"');
       expect(offHtml).not.toContain("Hulk Product Options");
-      // Only the malicious code is a security risk now: 1, not 2.
-      expect(offHtml).toContain("1 security risk (above)");
+      // Only the malicious code is a security risk now: one banner, not two
+      // (gc-np1d.6: the Total findings note left with the summary tiles).
+      expect(offHtml.match(/>Security risk<\/span>/g) ?? []).not.toHaveLength(0);
       expect(offHtml).not.toContain("2 security risks");
       // Malicious code is untouched: still its banner and still first.
       expect(off.maliciousFindings.map((f) => f.id)).toEqual(["mal"]);
@@ -5882,15 +5890,13 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       const html = await renderPage();
 
-      // The banner, above Total findings and the preview rows; the old amber
+      // The banner, above the preview rows; the old amber
       // "App Security Advisories" section is gone (no duplicate).
       expect(html).not.toContain('heading="App Security Advisories"');
       expect(html).not.toContain('id="app-security-advisories"');
       const advisory = card(html, "adv");
       expect(advisory).toContain(">Security risk</span>");
-      expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
-        html.indexOf("Total Findings"),
-      );
+      expect(html.indexOf('<section id="finding-adv"')).toBeGreaterThan(-1);
       expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
         html.indexOf("Preview: Top 2 Findings"),
       );
@@ -5919,8 +5925,8 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       // Not malicious code: no malicious banner on the page.
       expect(html).not.toContain('id="security-risk-');
       expect(html).not.toContain("linked to malicious code");
-      // "Total findings" splits the count (gc-q5z8).
-      expect(html).toContain("5 findings: 1 security risk (above), 4 leftover items (below).");
+      // gc-np1d.6: no Total findings tile, so no note splitting its count.
+      expect(html).not.toContain("security risk (above)");
       // The advisory is the one Free card with the Ignore control (round 2).
       expect(html.match(/<details class="finding-ignore"/g)).toHaveLength(1);
       expect(advisory).toContain(">Ignore this finding<");
@@ -6182,7 +6188,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       }
     });
 
-    it("renders ONE advisory banner, above Total findings and the Findings list, with Ignore", async () => {
+    it("renders ONE advisory banner, above the Findings list, with Ignore", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
       servePage([...SCRIPTS, ADVISORY]);
 
@@ -6195,9 +6201,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       const startHere = html.slice(start, html.indexOf("</section>", start));
       expect(startHere.match(/>Security risk<\/span>/g)).toHaveLength(1);
       expect(html.replace(startHere, "").match(/>Security risk<\/span>/g)).toHaveLength(1);
-      expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
-        html.indexOf("Total Findings"),
-      );
+      expect(html).not.toContain("Total Findings");
       expect(html.indexOf('id="finding-adv"')).toBeLessThan(
         html.indexOf('<h2 class="scan-section-title">Findings</h2>'),
       );
@@ -6217,23 +6221,23 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       }
     });
 
-    it("gc-q5z8: Total findings note on a paid page with malicious code says the list repeats it", async () => {
+    // gc-np1d.6: the Total findings tile and its note (which split the count
+    // between the banners and the list) are gone; the banners and the list
+    // still hold every finding.
+    it("paid page with malicious code: no Total findings note; the list repeats the malicious line", async () => {
       const mal = row("mal", "MALICIOUS_SCRIPT", "HIGH", 59);
       scanWith([...SCRIPTS, ADVISORY, mal]);
       servePage([...SCRIPTS, ADVISORY, mal]);
 
       const html = await renderPage();
 
-      // 6 findings: the advisory and the malicious line above; the list holds
-      // the 4 scripts AND the malicious line again (5 rows), as the note says.
-      expect(html).toContain(
-        "6 findings: 2 security risks (above), 4 leftover items (below, with the known malicious code listed again).",
-      );
+      expect(html).not.toMatch(/\d+ findings?: \d+ security risks? \(/);
+      expect(html).not.toContain("listed again");
       const list = html.slice(html.indexOf('<h2 class="scan-section-title">Findings</h2>'));
       expect(list.match(/<details class="finding-ignore"/g)).toHaveLength(5);
     });
 
-    it("gc-xtno: three malicious lines on one domain are 1 security risk in the note, with their 3 findings", async () => {
+    it("gc-xtno: three malicious lines on one domain are still one banner", async () => {
       const DESC = "Loads code from biliing.test, a known malicious source";
       const mals = [57, 58, 59].map((n) => ({
         ...row(`mal-${n}`, "MALICIOUS_SCRIPT", "HIGH", n),
@@ -6244,46 +6248,12 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
       const html = await renderPage();
 
-      // One banner holding all three lines.
       expect(html.match(/<section id="security-risk-/g)).toHaveLength(1);
-      expect(html).toContain(
-        "7 findings: 1 security risk (3 findings, above), 4 leftover items (below, with the known malicious code listed again).",
-      );
       expect(html).not.toContain("3 security risks");
+      expect(html).not.toContain("security risk (");
     });
 
-    it("gc-xtno: a domain whose every line is ignored is not counted in the note, a partly ignored one is", async () => {
-      const mal = (id: string, n: number, d: string) => ({
-        ...row(id, "MALICIOUS_SCRIPT", "HIGH", n),
-        description: d,
-        // A distinct snippet per line, so each has its own ignore fingerprint.
-        codeSnippet: `<script src="https://${id}.test/x.js"></script>`,
-      });
-      const A = "Loads code from a.test, a known malicious source";
-      const B = "Loads code from b.test, a known malicious source";
-      const rows = [mal("a1", 50, A), mal("a2", 51, A), mal("b1", 52, B)];
-      scanWith([...SCRIPTS, ...rows]);
-      servePage([...SCRIPTS, ...rows]);
-      mockGetIgnoredFindings.mockResolvedValue({
-        fingerprints: new Set(
-          [rows[0], rows[2]].map((f) =>
-            fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber),
-          ),
-        ),
-        appNames: new Set<string>(),
-      });
-
-      const html = await renderPage();
-
-      // Both banners show (malicious code is shown regardless of ignores) ...
-      expect(html.match(/<section id="security-risk-/g)).toHaveLength(2);
-      // ... but the ignore-filtered total (5) holds one line of one domain.
-      expect(html).toContain(
-        "5 findings: 1 security risk (above), 4 leftover items (below, with the known malicious code listed again).",
-      );
-    });
-
-    it("gc-q5z8: ignored malicious code keeps its banner but is not in the ignore-filtered note (pinned divergence from Home's tile)", async () => {
+    it("gc-q5z8: ignored malicious code keeps its banner", async () => {
       const mal = row("mal", "MALICIOUS_SCRIPT", "HIGH", 59);
       scanWith([...SCRIPTS, mal]);
       servePage([...SCRIPTS, mal]);
@@ -6292,9 +6262,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       const html = await renderPage();
 
       expect(html).toContain('<section id="security-risk-mal"');
-      // The total (4) leaves the ignored line out, so the note has no risk to split.
-      expect(html).toContain('scan-tile__big-number--neutral">4<');
-      expect(html).not.toContain("security risk (above)");
+      expect(html).not.toContain("scan-tile");
     });
 
     it("an advisory alone: its card, and the empty list says so without calling the scan clean", async () => {
@@ -6684,14 +6652,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       const malicious = kept.filter((r) => r.findingType === "MALICIOUS_SCRIPT").length;
       const ordinary = kept.length - advisories - malicious;
 
-      // 1. The total, and the tile that shows it.
+      // 1. The total (gc-np1d.6: no summary tile repeats it).
       expect(data.findingSummary.total).toBe(kept.length);
-      expect(html).toContain(
-        `<div class="scan-tile__big-number scan-tile__big-number--neutral">${kept.length}</div>`,
-      );
-      expect(html).toContain(
-        `<div class="scan-tile__subtitle">${kept.length === 1 ? "finding detected" : "findings detected"}</div>`,
-      );
+      expect(html).not.toContain("scan-tile");
       // 2. Advisory cards: one per non-ignored advisory, in the notice, once.
       expect(data.alwaysShownFindings).toHaveLength(advisories);
       expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY ?? 0).toBe(advisories);
@@ -6700,11 +6663,6 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       // 3. Malicious code: its banner, on every plan.
       expect(data.maliciousFindings).toHaveLength(malicious);
       expect(html.includes('<section id="security-risk-mal"')).toBe(malicious > 0);
-      // The Total findings note splits the total (gc-q5z8).
-      const risks = advisories + malicious;
-      expect(
-        html.includes(`${kept.length} ${kept.length === 1 ? "finding" : "findings"}: ${risks}`),
-      ).toBe(risks > 0);
       // 4. Everything else: the list (paid) or the preview plus the hidden count (Free).
       if (paid) {
         const listed = data.findings.filter((f) => !f.isIgnored);
@@ -6730,29 +6688,22 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(top.length).toBeLessThanOrEqual(3);
     });
 
-    it("'1 finding detected' is singular on the tile and on the Free summary (the plural bug)", async () => {
+    it("'1 finding detected' is singular on the Free summary (the plural bug)", async () => {
       free();
       const one = [row("only", "GHOST_SCRIPT", "HIGH", 0)];
       scanWith(one);
 
       const html = await renderPage();
 
-      expect(html).toContain('<div class="scan-tile__subtitle">finding detected</div>');
       expect(html).toContain("<s-heading>1 finding detected</s-heading>");
       expect(html).not.toContain("1 findings detected");
     });
 
-    it("the plural form is unchanged for 0 and 2+", async () => {
+    it("the plural form is unchanged for 2+", async () => {
       free();
       scanWith(SCRIPTS);
       const many = await renderPage();
-      expect(many).toContain('<div class="scan-tile__subtitle">findings detected</div>');
       expect(many).toContain("<s-heading>4 findings detected</s-heading>");
-
-      scanWith([]);
-      expect(await renderPage()).toContain(
-        '<div class="scan-tile__subtitle">findings detected</div>',
-      );
     });
   });
 });

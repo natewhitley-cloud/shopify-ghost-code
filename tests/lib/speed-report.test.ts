@@ -700,10 +700,13 @@ describe("monthly speed schedule (gc-d0ui)", () => {
 describe("speedLeftoversLink", () => {
   const leftovers = (apps: { name: string; count: number }[]) => ({ scanId: "scan-9", apps });
 
-  it("exact match: the count and the scan page filtered to the finding's app name", () => {
+  // Audit r1: no number. The filtered scan page lists every kept finding for
+  // the app, ignored ones included, so a count could not match it.
+  it("exact match: 'See its leftover code' (no number) to the scan page filtered to the finding's app name", () => {
     expect(speed.speedLeftoversLink("Klaviyo", leftovers([{ name: "Klaviyo", count: 3 }]))).toEqual(
-      { href: "/app/scans/scan-9?app=Klaviyo", label: "See its 3 leftovers" },
+      { href: "/app/scans/scan-9?app=Klaviyo", label: "See its leftover code" },
     );
+    expect(speed.SPEED_LEFTOVERS_LINK_LABEL).toBe("See its leftover code");
   });
 
   it("encodes names with & and spaces", () => {
@@ -717,15 +720,20 @@ describe("speedLeftoversLink", () => {
     );
   });
 
-  it("one leftover reads singular", () => {
-    expect(
-      speed.speedLeftoversLink("Klaviyo", leftovers([{ name: "Klaviyo", count: 1 }]))?.label,
-    ).toBe("See its 1 leftover");
+  it("the text never carries a count", () => {
+    for (const count of [1, 2, 37]) {
+      const label = speed.speedLeftoversLink(
+        "Klaviyo",
+        leftovers([{ name: "Klaviyo", count }]),
+      )?.label;
+      expect(label).toBe("See its leftover code");
+      expect(label).not.toMatch(/\d/);
+    }
   });
 
   it("case and surrounding whitespace still match; the URL keeps the finding's own name", () => {
     const link = speed.speedLeftoversLink("  KLAVIYO ", leftovers([{ name: "klaviyo", count: 4 }]));
-    expect(link).toEqual({ href: "/app/scans/scan-9?app=klaviyo", label: "See its 4 leftovers" });
+    expect(link).toEqual({ href: "/app/scans/scan-9?app=klaviyo", label: "See its leftover code" });
   });
 
   it.each([
@@ -733,6 +741,9 @@ describe("speedLeftoversLink", () => {
     ["the app inside a longer name", "Klaviyo Forms"],
     ["a near name", "Klavio"],
     ["an inner space difference", "Kla viyo"],
+    // Deliberate (fails closed): no Unicode lookalike or width folding.
+    ["a Cyrillic lookalike", "\u041alaviyo"],
+    ["full-width letters", "\uff2blaviyo"],
   ])("never matches %s", (_why, rowName) => {
     expect(
       speed.speedLeftoversLink(rowName, leftovers([{ name: "Klaviyo", count: 3 }])),

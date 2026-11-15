@@ -13,8 +13,8 @@
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { LoaderFunctionArgs } from "react-router";
-import { createRoutesStub } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { createMemoryRouter, createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ import {
   startUpgradeReturnEpisode,
 } from "../../app/models/shop.server";
 import { getUnknownScriptsForScan } from "../../app/models/unknown-script.server";
-import ScanDetail, { loader } from "../../app/routes/app.scans.$scanId";
+import ScanDetail, { action, loader, shouldRevalidate } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { loadGuardHome } from "../../app/services/storefront-guard-home.server";
 import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
@@ -496,9 +496,14 @@ describe("Free preview grouped by app", () => {
 
     const { html, data } = await renderPage();
 
-    // The Free view's counts: never the always-shown types.
+    // The Free view's counts: never the always-shown types, nor the types
+    // Free withholds (audit r1: they are never previewed).
     expect(getFindingGroupsForScan).toHaveBeenCalledWith("scan-1", {
-      excludeFindingTypes: NEVER_PAYWALLED_FINDING_TYPES,
+      excludeFindingTypes: [
+        ...NEVER_PAYWALLED_FINDING_TYPES,
+        "DANGLING_REFERENCE",
+        "CHECKOUT_SUNSET",
+      ],
     });
     // The picker's rows (one per lane) come back in group order: Privy (worst
     // HIGH, 3), Loox (HIGH, 2), then Other code although it is HIGH too.
@@ -707,4 +712,78 @@ describe("one notice slot", () => {
       expect(slotOf(html)).toContain(`href="${PRICING}"`);
     },
   );
+
+  // Audit r1 M3: "Not now" frees the slot, so a re-run loader would pick the
+  // teaser for the same spot and stamp it "shown" while the client keeps the
+  // slot empty. The real loader, action and shouldRevalidate in a data router.
+  describe("Not now on the return banner (audit r1 M3)", () => {
+    const dismissForm = () => {
+      const form = new FormData();
+      form.set("intent", "dismiss-upgrade-return");
+      return form;
+    };
+
+    it("shouldRevalidate: false for the dismissal only; the default otherwise", () => {
+      const args = (formData: FormData | undefined, defaultShouldRevalidate: boolean) =>
+        ({ formData, defaultShouldRevalidate }) as Parameters<typeof shouldRevalidate>[0];
+      expect(shouldRevalidate(args(dismissForm(), true))).toBe(false);
+      const ignore = new FormData();
+      ignore.set("intent", "ignore-instance");
+      expect(shouldRevalidate(args(ignore, true))).toBe(true);
+      expect(shouldRevalidate(args(undefined, true))).toBe(true);
+      expect(shouldRevalidate(args(undefined, false))).toBe(false);
+    });
+
+    it("the dismissal does not re-run the loader, so the teaser records no shown stamp", async () => {
+      freeWithHidden();
+      const loaderRuns = vi.fn();
+      const router = createMemoryRouter(
+        [
+          {
+            id: "scan",
+            path: "/app/scans/:scanId",
+            loader: (args: LoaderFunctionArgs) => {
+              loaderRuns();
+              return loader(args);
+            },
+            action: (args: ActionFunctionArgs) => action(args),
+            shouldRevalidate,
+          },
+        ],
+        { initialEntries: ["/app/scans/scan-1"] },
+      );
+      await vi.waitFor(() => expect(router.state.initialized).toBe(true));
+      expect((router.state.loaderData.scan as { noticeSlot: string }).noticeSlot).toBe(
+        "upgrade_return",
+      );
+      expect(loaderRuns).toHaveBeenCalledTimes(1);
+      // After the dismissal the return banner no longer wins: a re-run loader
+      // would pick the teaser (and stamp it).
+      freeWithHidden({ upgradeReturnDismissCount: 3 });
+      vi.mocked(recordUpgradePreviewStageOnce).mockClear();
+      vi.mocked(claimShopStamp).mockClear();
+
+      // With no component holding the fetcher, the router drops it once idle,
+      // so its settled state is captured as it goes by.
+      let settled: { data?: unknown } | null = null;
+      const unsubscribe = router.subscribe((state) => {
+        const fetcher = state.fetchers.get("not-now");
+        if (fetcher?.state === "idle" && fetcher.data !== undefined) settled = fetcher;
+      });
+      await router.fetch("not-now", "scan", "/app/scans/scan-1", {
+        formMethod: "post",
+        formData: dismissForm(),
+      });
+      // A revalidation, if any, finishes before the fetcher settles.
+      await vi.waitFor(() => expect(settled).not.toBeNull());
+      unsubscribe();
+
+      expect(router.state.errors).toBeNull();
+      expect(settled!.data).toEqual({ success: true, dismissed: "upgrade-return" });
+      expect(loaderRuns).toHaveBeenCalledTimes(1);
+      expect(recordUpgradePreviewStageOnce).not.toHaveBeenCalled();
+      expect(claimShopStamp).not.toHaveBeenCalled();
+      router.dispose();
+    });
+  });
 });

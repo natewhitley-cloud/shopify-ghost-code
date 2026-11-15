@@ -55,7 +55,6 @@ import {
   pickFreePreviewFindings,
 } from "../../app/lib/free-preview";
 import { findingTypesWithheldByPlan } from "../../app/lib/plan-finding-types";
-import { homeRiskSummaryLine } from "../../app/lib/security-risk";
 import {
   buildThemeHealthChecklist,
   groupHealthRows,
@@ -900,22 +899,8 @@ describe("the advisory steps: one source for the card's list and the how-to stri
   );
 });
 
-// gc-q5z8: the old "N app security advisories to review" link is replaced by
-// one summary line that accounts for the whole tile.
-describe("Home's security risk summary line (homeRiskSummaryLine)", () => {
-  it.each([
-    [{ advisories: 0, malicious: 0, leftover: 5 }, null],
-    [{ advisories: 1, malicious: 0, leftover: 12 }, "1 app security advisory, 12 leftover items."],
-    [{ advisories: 2, malicious: 0, leftover: 0 }, "2 app security advisories."],
-    [
-      { advisories: 1, malicious: 2, leftover: 1 },
-      "2 pieces of known malicious code, 1 app security advisory, 1 leftover item.",
-    ],
-    [{ advisories: 0, malicious: 1, leftover: 0 }, "1 piece of known malicious code."],
-  ])("homeRiskSummaryLine(%j) is %j", (input, line) => {
-    expect(homeRiskSummaryLine(input)).toBe(line);
-  });
-
+// gc-q5z8: the findings tile's parts add up.
+describe("findings tile arithmetic (buildFindingsTile)", () => {
   // tile = leftover items (laned findings) + advisories + ignored malicious
   // code added back. Each row: the scan's kept counts by type, the malicious
   // findings found (ignored ones included), and the three parts of the tile.
@@ -960,16 +945,7 @@ describe("Home's security risk summary line (homeRiskSummaryLine)", () => {
     });
     expect({ leftover, advisories, addBack: tile.total - filteredTotal }).toEqual(parts);
     expect(tile.total).toBe(parts.leftover + parts.advisories + parts.addBack);
-    // The summary line's three numbers (as Home computes them: leftover items
-    // without the kept malicious code, which it names on its own) add up to
-    // the tile, and its security risks are the tile's.
     const keptMalicious = counts.MALICIOUS_SCRIPT ?? 0;
-    const line = homeRiskSummaryLine({
-      advisories,
-      malicious: maliciousFound,
-      leftover: leftover - keptMalicious,
-    });
-    expect(line === null).toBe(advisories === 0 && maliciousFound === 0);
     expect(tile.securityRisks).toBe(advisories + maliciousFound);
     expect(leftover - keptMalicious + advisories + maliciousFound).toBe(tile.total);
   });

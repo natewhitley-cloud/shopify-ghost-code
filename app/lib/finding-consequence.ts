@@ -436,16 +436,6 @@ export function laneForType(type: FindingType): LaneKey | null {
   return CONSEQUENCE_MAP[type].primary;
 }
 
-/**
- * The mid-sentence phrase for the "most of the damage is in X" dashboard read
- * (e.g. "what your customers see"). Falls back to the lane's label if a lane is
- * ever missing a phrase, mirroring rankToUrgency's defensive fallback.
- */
-export function dominantPhraseForLane(lane: LaneKey): string {
-  const meta = LANES.find((l) => l.key === lane);
-  return meta?.dominantPhrase ?? meta?.label ?? lane;
-}
-
 /** The one-line "so what" copy for a lane. */
 export function soWhatForLane(lane: LaneKey): string {
   const meta = LANES.find((l) => l.key === lane);

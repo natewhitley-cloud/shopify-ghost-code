@@ -17,15 +17,20 @@
  */
 import { PROMPT_CAP_WINDOW_MS } from "./prompt-cap";
 
-/** Every notice the slot can hold, highest priority first. */
+/**
+ * Every notice the slot can hold, highest priority first. The multi-theme
+ * upsell ranks last (audit H1): it has no dismiss, so above them it would hide
+ * the notices tied to the merchant's own data (a removed app, new high
+ * findings) for good.
+ */
 export const HOME_NOTICE_PRIORITY = [
   "guard_email",
   "summary_notice",
   "summary_optin",
   "feedback",
-  "multi_theme",
   "app_removed",
   "new_high",
+  "multi_theme",
 ] as const;
 
 export type HomeNoticeKey = (typeof HOME_NOTICE_PRIORITY)[number];

@@ -1,6 +1,6 @@
 /**
  * Tests for app/services/speed-leftovers.server.ts (gc-np1d.6): the leftover
- * counts behind Store speed's "See its N leftovers" link. The real
+ * counts behind Store speed's "See its leftover code" link. The real
  * value-action counting runs (leftover types only, never security); the reads
  * are mocked at the model / theme boundary.
  */
@@ -18,9 +18,14 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 vi.mock("../../app/models/finding.server", () => ({
   countFindingsByApp: vi.fn(),
   getFindingsForScan: vi.fn(),
+  getIgnorableFindingsForApps: vi.fn(),
 }));
 
-import { countFindingsByApp, getFindingsForScan } from "../../app/models/finding.server";
+import {
+  countFindingsByApp,
+  getFindingsForScan,
+  getIgnorableFindingsForApps,
+} from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getLatestSuccessfulScanIdForTheme } from "../../app/models/scan.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
@@ -32,7 +37,8 @@ const mockTheme = getCachedMainTheme as ReturnType<typeof vi.fn>;
 const mockScanId = getLatestSuccessfulScanIdForTheme as ReturnType<typeof vi.fn>;
 const mockIgnores = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
 const mockCounts = countFindingsByApp as ReturnType<typeof vi.fn>;
-const mockFindings = getFindingsForScan as ReturnType<typeof vi.fn>;
+const mockFullRead = getFindingsForScan as ReturnType<typeof vi.fn>;
+const mockFindings = getIgnorableFindingsForApps as ReturnType<typeof vi.fn>;
 
 const ADMIN = {} as AdminApiContext;
 const THEME = "gid://shopify/Theme/1";
@@ -83,6 +89,7 @@ describe("readSpeedAppLeftovers", () => {
     expect(mockScanId).toHaveBeenCalledWith("shop-1", THEME);
     expect(mockCounts).toHaveBeenCalledWith("scan-9");
     expect(mockFindings).not.toHaveBeenCalled();
+    expect(mockFullRead).not.toHaveBeenCalled();
   });
 
   it.each(["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY", "MENU_INJECTION"])(
@@ -122,9 +129,46 @@ describe("readSpeedAppLeftovers", () => {
 
   it("an app ignore leaves that app out (no link)", async () => {
     mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set(["Klaviyo"]) });
+    mockCounts.mockResolvedValue([{ appName: "Klaviyo", findingType: "GHOST_SCRIPT", count: 1 }]);
     mockFindings.mockResolvedValue([finding("Klaviyo", "GHOST_SCRIPT", 1)]);
     expect(await read()).toBeNull();
-    expect(mockCounts).not.toHaveBeenCalled();
+  });
+
+  // Audit r1: a shop with ignores reads only the named apps' findings (the
+  // exact stored names the groupBy matched), never the scan's full findings.
+  it("with ignores: the findings read is limited to the matched apps, never the whole scan", async () => {
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(["fp-x"]), appNames: new Set() });
+    mockCounts.mockResolvedValue([
+      { appName: "klaviyo", findingType: "GHOST_SCRIPT", count: 2 },
+      { appName: "Recharge", findingType: "GHOST_SCRIPT", count: 7 },
+      { appName: null, findingType: "GHOST_SCRIPT", count: 4 },
+    ]);
+    mockFindings.mockResolvedValue([
+      finding("klaviyo", "GHOST_SCRIPT", 1),
+      finding("klaviyo", "GHOST_SCRIPT", 2),
+    ]);
+    expect(await read(["Klaviyo"])).toEqual({
+      scanId: "scan-9",
+      apps: [{ name: "klaviyo", count: 2 }],
+    });
+    expect(mockFindings).toHaveBeenCalledTimes(1);
+    expect(mockFindings).toHaveBeenCalledWith("scan-9", ["klaviyo"]);
+    expect(mockFullRead).not.toHaveBeenCalled();
+  });
+
+  it("with ignores but no named app has leftovers: no findings read at all", async () => {
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(["fp-x"]), appNames: new Set() });
+    mockCounts.mockResolvedValue([{ appName: "Recharge", findingType: "GHOST_SCRIPT", count: 7 }]);
+    expect(await read(["Klaviyo"])).toBeNull();
+    expect(mockFindings).not.toHaveBeenCalled();
+    expect(mockFullRead).not.toHaveBeenCalled();
+  });
+
+  it("with ignores, a failed findings read: null, never throws", async () => {
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(["fp-x"]), appNames: new Set() });
+    mockCounts.mockResolvedValue([{ appName: "Klaviyo", findingType: "GHOST_SCRIPT", count: 2 }]);
+    mockFindings.mockRejectedValue(new Error("db down"));
+    await expect(read()).resolves.toBeNull();
   });
 
   it("an ignored finding is not counted", async () => {
@@ -140,12 +184,16 @@ describe("readSpeedAppLeftovers", () => {
       ]),
       appNames: new Set(),
     });
+    mockCounts.mockResolvedValue([
+      { appName: "Klaviyo", findingType: "GHOST_SCRIPT", count: 2 },
+      { appName: "Klaviyo", findingType: "GHOST_SNIPPET", count: 1 },
+    ]);
     mockFindings.mockResolvedValue([
       ignored,
       finding("Klaviyo", "GHOST_SCRIPT", 2),
       finding("Klaviyo", "GHOST_SNIPPET", 3),
     ]);
     expect(await read()).toEqual({ scanId: "scan-9", apps: [{ name: "Klaviyo", count: 2 }] });
-    expect(mockFindings).toHaveBeenCalledWith("scan-9");
+    expect(mockFindings).toHaveBeenCalledWith("scan-9", ["Klaviyo"]);
   });
 });

@@ -23,15 +23,11 @@ import {
 import { getFindingCardCopy, getFindingImpact } from "../../app/lib/finding-remediation";
 import {
   advisoryCheckSteps,
-  countKeptSecurityRisks,
-  findingsTileSubtitle,
-  homeRiskSummaryLine,
   securityRiskAnchorId,
   securityRiskBody,
   securityRiskSourceLabel,
   securityRiskSourceWords,
   securityRiskTitle,
-  totalFindingsNote,
   type AdvisoryRisk,
   type SecurityRisk,
 } from "../../app/lib/security-risk";
@@ -402,85 +398,7 @@ describe("per-entry wording (gc-q5z8): each advisory in its own source's words",
   });
 });
 
-describe("counts copy", () => {
-  it("findingsTileSubtitle", () => {
-    expect(findingsTileSubtitle(13, 1)).toBe("findings, 1 security risk");
-    expect(findingsTileSubtitle(1, 1)).toBe("finding, 1 security risk");
-    expect(findingsTileSubtitle(6, 2)).toBe("findings, 2 security risks");
-    expect(findingsTileSubtitle(4, 0)).toBe("findings");
-    expect(findingsTileSubtitle(1, 0)).toBe("finding");
-  });
-
-  it("totalFindingsNote", () => {
-    expect(totalFindingsNote(13, 1)).toBe(
-      "13 findings: 1 security risk (above), 12 leftover items (below).",
-    );
-    expect(totalFindingsNote(2, 1)).toBe(
-      "2 findings: 1 security risk (above), 1 leftover item (below).",
-    );
-    expect(totalFindingsNote(1, 1)).toBe("1 finding: 1 security risk (above).");
-    expect(totalFindingsNote(5, 0)).toBeNull();
-  });
-
-  it("totalFindingsNote on a paid page with kept malicious code says the list repeats it", () => {
-    expect(totalFindingsNote(13, 3, 2)).toBe(
-      "13 findings: 3 security risks (above), 10 leftover items (below, with the known malicious code listed again).",
-    );
-    expect(totalFindingsNote(2, 2, 2)).toBe(
-      "2 findings: 2 security risks (above) (the known malicious code is listed again below).",
-    );
-  });
-
-  // gc-xtno: "security risks" counts the banners; the findings they hold are
-  // named too when the numbers differ, so the leftover count still adds up.
-  it("totalFindingsNote counts distinct risks and names their findings when they differ", () => {
-    expect(totalFindingsNote(13, 3, 0, 1)).toBe(
-      "13 findings: 1 security risk (3 findings, above), 10 leftover items (below).",
-    );
-    expect(totalFindingsNote(6, 4, 3, 2)).toBe(
-      "6 findings: 2 security risks (4 findings, above), 2 leftover items (below, with the known malicious code listed again).",
-    );
-    expect(totalFindingsNote(3, 3, 0, 1)).toBe("3 findings: 1 security risk (3 findings, above).");
-    // Equal counts read as before.
-    expect(totalFindingsNote(13, 1, 0, 1)).toBe(
-      "13 findings: 1 security risk (above), 12 leftover items (below).",
-    );
-    // No distinct count (0): the finding count stands in, never "0 security risks".
-    expect(totalFindingsNote(5, 2, 0, 0)).toBe(
-      "5 findings: 2 security risks (above), 3 leftover items (below).",
-    );
-  });
-
-  it("countKeptSecurityRisks: advisories always, malicious banners with a kept finding", () => {
-    const mal = (ids: string[]): SecurityRisk => ({
-      kind: "malicious",
-      seenIn: "theme",
-      domain: "biliing.top",
-      note: null,
-      advice: null,
-      findings: ids.map((id) => ({ id, filename: "layout/theme.liquid", lineNumber: 1 })),
-      description: "x",
-    });
-    const adv: SecurityRisk = {
-      kind: "advisory",
-      finding: { id: "adv", filename: "layout/theme.liquid", lineNumber: 1 },
-      appName: null,
-      report: null,
-      reportedByDeveloper: false,
-      sourceUrl: null,
-      signal: "host",
-      scriptHost: null,
-      description: "x",
-    };
-    const risks = [mal(["a", "b", "c"]), mal(["d"]), adv];
-    expect(countKeptSecurityRisks(risks, new Set())).toBe(3);
-    // One of three lines ignored: the domain still counts.
-    expect(countKeptSecurityRisks(risks, new Set(["a"]))).toBe(3);
-    // Every line of a domain ignored: its banner still shows, but it is not in the total.
-    expect(countKeptSecurityRisks(risks, new Set(["d"]))).toBe(2);
-    expect(countKeptSecurityRisks([], new Set())).toBe(0);
-  });
-
+describe("security risk source words", () => {
   it("securityRiskSourceWords: null for the latest scan, dated words for an earlier one", () => {
     expect(securityRiskSourceWords({ earlierScan: null })).toBeNull();
     expect(securityRiskSourceWords({ earlierScan: "running" })).toEqual({
@@ -491,10 +409,6 @@ describe("counts copy", () => {
       before: "From your last completed scan on",
       after: ". Your latest scan did not complete.",
     });
-  });
-
-  it("homeRiskSummaryLine is null without a security risk", () => {
-    expect(homeRiskSummaryLine({ advisories: 0, malicious: 0, leftover: 9 })).toBeNull();
   });
 });
 

@@ -354,108 +354,45 @@ export function securityRiskSourceWords(
 export const SECURITY_RISK_PLAN_NOTE = "shown on every plan";
 
 // ---------------------------------------------------------------------------
-// Counts (Home's tile, the scan page's "Total findings" note)
+// Home's backup banner (gc-np1d.6, audit r1)
 // ---------------------------------------------------------------------------
 
 /**
- * The distinct security risks a set of banners makes once ignored findings
- * are left out (gc-xtno): every advisory and menu banner (only non-ignored
- * ones get one) and every malicious banner with at least one finding not in
- * `ignoredFindingIds`. The scan page's ignore-filtered total counts these.
+ * The never-paywalled security findings in the scan Home's banners come from,
+ * by kind (malicious code ignored or not, as its banner shows it; advisories
+ * and menu code kept and shown). `readFailed`: that scan's read threw, so
+ * nothing is known (scanId null when even the scan is unknown).
  */
-export function countKeptSecurityRisks(
+export interface SecurityFound {
+  scanId: string | null;
+  readFailed: boolean;
+  malicious: boolean;
+  advisory: boolean;
+  menu: boolean;
+}
+
+/** Home's backup banner: what it says and which scan it links to. */
+export interface SecurityBackup {
+  scanId: string | null;
+  copy: "malicious" | "security" | "unavailable";
+}
+
+/**
+ * Home's backup for the security banners, or null when they cover everything.
+ * It shows when the scan found a kind of security finding and no banner of
+ * that kind rendered (e.g. the banners' read failed), or when the read failed
+ * outright. "Malicious code" is named only when malicious code is the
+ * uncovered kind; otherwise the copy is neutral. Never paywalled.
+ */
+export function homeSecurityBackup(
+  found: SecurityFound | null,
   risks: readonly SecurityRisk[],
-  ignoredFindingIds: ReadonlySet<string>,
-): number {
-  return risks.filter(
-    (risk) => risk.kind !== "malicious" || risk.findings.some((f) => !ignoredFindingIds.has(f.id)),
-  ).length;
-}
-
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-/** The findings tile's subtitle: "13 findings, 1 security risk" (without the number). */
-export function findingsTileSubtitle(total: number, securityRisks: number): string {
-  const findings = total === 1 ? "finding" : "findings";
-  return securityRisks > 0
-    ? `${findings}, ${plural(securityRisks, "security risk", "security risks")}`
-    : findings;
-}
-
-/**
- * The scan page's note under "Total findings", or null when there is no
- * security risk: "13 findings: 1 security risk (above), 12 leftover items (below)."
- *
- * `riskFindings` is the security findings in `total` (lines, so the leftover
- * count adds up); `distinctRisks` is how many banners they make (gc-xtno: one
- * per malicious domain, one per advisory), the "security risks" number. When
- * they differ the findings are named too: "13 findings: 1 security risk (3
- * findings, above), 10 leftover items (below)."
- *
- * Both numbers are from the scan page's ignore-filtered total, so ignored
- * malicious code (still shown in its banner, as the security alert always
- * was) is not counted here, while Home's tile adds it back: the scan page's
- * total has never counted ignored findings.
- *
- * `maliciousAlsoListed`: kept malicious findings that the paid findings list
- * shows too (the list holds every non-advisory finding), so "below" says so
- * instead of under-counting the list. 0 on Free (malicious code is never a
- * preview row).
- */
-export function totalFindingsNote(
-  total: number,
-  riskFindings: number,
-  maliciousAlsoListed = 0,
-  distinctRisks = riskFindings,
-): string | null {
-  if (riskFindings <= 0) return null;
-  const leftover = Math.max(0, total - riskFindings);
-  const named = plural(
-    distinctRisks > 0 ? distinctRisks : riskFindings,
-    "security risk",
-    "security risks",
-  );
-  const risks =
-    distinctRisks > 0 && distinctRisks !== riskFindings
-      ? `${named} (${plural(riskFindings, "finding", "findings")}, above)`
-      : `${named} (above)`;
-  const where =
-    maliciousAlsoListed > 0 ? "below, with the known malicious code listed again" : "below";
-  const rest =
-    leftover > 0
-      ? `, ${plural(leftover, "leftover item", "leftover items")} (${where})`
-      : maliciousAlsoListed > 0
-        ? ` (the known malicious code is listed again below)`
-        : "";
-  return `${plural(total, "finding", "findings")}: ${risks}${rest}.`;
-}
-
-/**
- * Home's one line under "Most Recent Findings" when the scan found a security
- * risk, or null when it found none: "1 app security advisory, 12 leftover
- * items." (the "See all" link follows it).
- */
-export function homeRiskSummaryLine(input: {
-  advisories: number;
-  malicious: number;
-  leftover: number;
-  /** MENU_INJECTION findings left after ignores (gc-7gjj.1). Omitted = 0. */
-  menu?: number;
-}): string | null {
-  const menu = input.menu ?? 0;
-  if (input.advisories <= 0 && input.malicious <= 0 && menu <= 0) return null;
-  const parts: string[] = [];
-  if (input.malicious > 0) {
-    parts.push(
-      plural(input.malicious, "piece of known malicious code", "pieces of known malicious code"),
-    );
-  }
-  if (menu > 0) parts.push(plural(menu, "menu item with code", "menu items with code"));
-  if (input.advisories > 0) {
-    parts.push(plural(input.advisories, "app security advisory", "app security advisories"));
-  }
-  if (input.leftover > 0) parts.push(plural(input.leftover, "leftover item", "leftover items"));
-  return `${parts.join(", ")}.`;
+): SecurityBackup | null {
+  if (!found) return null;
+  if (found.readFailed) return { scanId: found.scanId, copy: "unavailable" };
+  const uncovered = (kind: SecurityRisk["kind"]) => !risks.some((risk) => risk.kind === kind);
+  const malicious = found.malicious && uncovered("malicious");
+  const other = (found.advisory && uncovered("advisory")) || (found.menu && uncovered("menu"));
+  if (!malicious && !other) return null;
+  return { scanId: found.scanId, copy: malicious ? "malicious" : "security" };
 }

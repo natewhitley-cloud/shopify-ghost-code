@@ -48,9 +48,16 @@ History, Ignored, Settings and Help are utilities with no value action.
   "Next scan <date>" and an upgrade link. Theme picker (Professional) and the usage line
   sit in one small row under the header, not in a card at the bottom.
 - **Allowed above the action card:** security risk banners and checkout-guard incidents.
-  Backup (gc-np1d.6): when the latest scan found known malicious code and no security
-  banner names it (e.g. its read failed), a critical "Your last scan found known
-  malicious code" banner links to the scan, on every plan.
+  Backup (gc-np1d.6, widened in audit r1): when the scan the banners come from (the
+  latest, or the last successful one while a rescan runs or after one failed) found a
+  never-paywalled security finding (known malicious code, ignored or not; an app
+  advisory or code in a menu, kept and shown) of a kind no banner shows (e.g. their read
+  failed), a critical banner links to that scan, on every plan, never paywalled. It says
+  "Your last scan found known malicious code" only when malicious code is the uncovered
+  kind, otherwise "Your last scan found a security issue". When the last successful
+  scan's security read itself fails during a rescan, a warning banner ("We couldn't load
+  your last scan's security check") links to that scan (or the scans list if even that
+  scan is unknown): unknown is never shown as nothing found.
 - **Action card (one, by plan and state):**
   - No scan yet: onboarding card, unchanged.
   - Professional paid, removable leftovers: "Remove N pieces of leftover code for you"
@@ -78,9 +85,11 @@ History, Ignored, Settings and Help are utilities with no value action.
 - **Notice slot (built gc-np1d.6, `pickHomeNotice`):** at most one, at the bottom of
   the page below "What it's costing you", in this priority: checkout guard email
   notice, "summary emails are on" notice, summary-email opt-in (its success or failure
-  line keeps the slot after "Turn on"), feedback ask, multi-theme upsell, app-removed
-  notice, new-high-findings notice. The two consent notices were not in the spec's
-  list; they rank first because they record consent. Dismissing or answering the
+  line keeps the slot after "Turn on"), feedback ask, app-removed notice,
+  new-high-findings notice, multi-theme upsell. The two consent notices were not in the
+  spec's list; they rank first because they record consent. The multi-theme upsell ranks
+  last (audit H1): it has no dismiss, so above them it would hide the notices tied to the
+  merchant's own data for good. Dismissing or answering the
   winner hands the slot to the next. Each keeps its existing copy, actions and
   dismiss intent, as a Polaris banner whose buttons are all tertiary: the slot is
   quiet, so Home's only primary actions stay the header Scan now and the action card. Only the winner records a "shown" stamp:
@@ -104,10 +113,12 @@ History, Ignored, Settings and Help are utilities with no value action.
 - **Action card:** same card as Home for the plan and state.
 - **Findings:** grouped by app (decision 3A), in the paid list and the Free preview: one
   card per app, headed by the app name and "N findings" (the app's total under the
-  active filters, across every page; Free adds "· K shown"). No install status: the scan
-  data does not say an app was uninstalled. Apps by worst severity, then count, then
-  name; findings with no app last, under "Other code"; severity then filename inside a
-  group. Pages follow the same order, so a group cut by a page boundary continues on
+  active filters, across every page; Free adds "· K shown"). On paid plans that count is
+  the rows the list holds, ignored ones included (the list shows ignored findings, marked);
+  on Free it leaves out ignored findings, security findings and the types Free withholds.
+  No install status: the scan data does not say an app was uninstalled. Apps by worst
+  severity, then count, then name; findings with no app (or a blank app name) last, under
+  "Other code"; severity then filename inside a group. Pages follow the same order, so a group cut by a page boundary continues on
   the next page under the same header. On a finding Clean copy can remove
   (Professional): an "Included in your clean copy" label, with the manual steps in a
   "Do it yourself" disclosure; no per-card button (the header and the action card hold
@@ -123,6 +134,12 @@ History, Ignored, Settings and Help are utilities with no value action.
   slot, so the stale notice shows there only when nothing is hidden. When it loses the
   slot, the status bar says "Your theme changed on {date}, so some findings may already
   be fixed." as plain text (no button, no link, no "shown" stamp).
+- **No summary tiles** (screenshot check vs the approved mockup, audit r1): the "Total
+  Findings / Severity Breakdown / Performance Impact" tiles between the action card and
+  the findings are gone, with the Total findings note under them; they repeated the
+  counts. Gone with them and shown nowhere else on the page: the "+N new / -M resolved"
+  line and the per-severity change since the previous scan (new findings keep their "New"
+  badge in the list), and the scripts / stylesheets count.
 - **Supporting:** filters, exports, App Impact Map, unrecognized scripts.
 
 ### Clean copy: select
@@ -140,13 +157,16 @@ History, Ignored, Settings and Help are utilities with no value action.
 ### Store speed
 
 - **Job:** "Is my store slow, and what's slowing it?"
-- **Value action:** the costliest app's row links to its leftovers ("See its N leftovers"):
+- **Value action:** the costliest app's row links to its leftovers ("See its leftover code"):
   the scan page of the live theme's latest successful scan, filtered to that app
   (`/app/scans/<id>?app=<name>`), where the plan's own action card leads (Clean copy on
-  Professional, the upgrade elsewhere). Only the costliest app of each page section (and the
-  free test's one app line) links; a plain link on every plan, never a primary button. A row
-  links only on an exact app name match (trim + lower-case) with leftover code above 0, ignored
-  findings and security findings left out; an app still installed has none, so it has no link.
+  Professional, Do it yourself on Standard). Only the costliest app of each page section
+  links; a plain link, never a primary button. A row links only on an exact app name match
+  (trim + lower-case; no Unicode lookalike folding, so a lookalike gets no link) with leftover
+  code above 0 once ignored and security findings are left out; an app still installed has
+  none, so it has no link. The text carries no number: the filtered page lists every kept
+  finding for the app, ignored ones included (audit r1). Plans that cannot view finding
+  details (Free, including its free test) get no link: Free's scan page ignores `?app=`.
 
 ### History, Ignored, Settings, Help
 
@@ -172,3 +192,4 @@ IDs and counts only, on the existing event sink.
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-11-14 | 1A: one summary on Home, "What it's costing you". 2A: every plan sees the Clean copy card (upgrade on Free/Standard). 3A: findings grouped by app. 4B (Nathan): Standard leads with do it yourself; "Upgrade to Professional to remove them for you" is the second action. Finding cards show "Included in your clean copy" (no per-card button); scan header keeps Make a clean copy. |
 | 2026-11-15 | A (Nathan, audit r1 M6): the Free scan page showed up to 3 upgrade asks. The UpgradePreview teaser and the upgrade-return banner fold into the scan page's one notice slot (slice 2); slice 1 ships as is.                                                                                                                                                                             |
+| 2026-11-15 | Value-tied notices outrank the multi-theme upsell (audit H1).                                                                                                                                                                                                                                                                                                                          |

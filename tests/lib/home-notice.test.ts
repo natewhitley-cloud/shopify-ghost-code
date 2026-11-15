@@ -16,10 +16,18 @@ describe("pickHomeNotice (gc-np1d.6)", () => {
       "summary_notice",
       "summary_optin",
       "feedback",
-      "multi_theme",
       "app_removed",
       "new_high",
+      "multi_theme",
     ]);
+  });
+
+  // Audit H1: the multi-theme upsell has no dismiss, so it must never hold the
+  // slot over a notice tied to the merchant's own data.
+  it("the multi-theme upsell loses to the removal notice and to new high findings", () => {
+    expect(pickHomeNotice({ multi_theme: true, app_removed: true })).toBe("app_removed");
+    expect(pickHomeNotice({ multi_theme: true, new_high: true })).toBe("new_high");
+    expect(pickHomeNotice({ multi_theme: true })).toBe("multi_theme");
   });
 
   it("nothing to show: null", () => {

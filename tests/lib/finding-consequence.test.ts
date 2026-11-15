@@ -19,7 +19,6 @@ import {
   URGENCY_RANK,
   computeLaneSummary,
   dominantLane,
-  dominantPhraseForLane,
   isLaneKey,
   laneForType,
   laneLabelForLane,
@@ -93,22 +92,6 @@ describe("LANES", () => {
   it("gives every lane a non-empty dominantPhrase", () => {
     for (const lane of LANES) {
       expect(lane.dominantPhrase.length).toBeGreaterThan(0);
-    }
-  });
-});
-
-describe("dominantPhraseForLane", () => {
-  it("returns the exact dominantPhrase for all 5 lanes", () => {
-    expect(dominantPhraseForLane("customers-see-it")).toBe("what your customers see");
-    expect(dominantPhraseForLane("discoverability")).toBe("how you're found by Google & AI");
-    expect(dominantPhraseForLane("speed")).toBe("your store's speed");
-    expect(dominantPhraseForLane("privacy")).toBe("tracking you didn't authorize");
-    expect(dominantPhraseForLane("housekeeping")).toBe("leftover housekeeping");
-  });
-
-  it("matches the phrase co-located on each LANES entry", () => {
-    for (const lane of LANES) {
-      expect(dominantPhraseForLane(lane.key)).toBe(lane.dominantPhrase);
     }
   });
 });

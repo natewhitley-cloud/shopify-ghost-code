@@ -58,6 +58,7 @@ import {
   getFindingFilterOptionsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
+  getIgnorableFindingsForApps,
   getFindingSummary,
   getMaliciousCountsForScans,
   getSeverityCountsForScans,
@@ -146,6 +147,34 @@ describe("createFindings", () => {
 // ---------------------------------------------------------------------------
 // getFindingsForScan
 // ---------------------------------------------------------------------------
+
+describe("getIgnorableFindingsForApps (gc-np1d.6, audit r1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads only the named apps' findings, with only the ignore-matching fields", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getIgnorableFindingsForApps(SCAN_ID, ["Klaviyo", "Judge.me"]);
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, appName: { in: ["Klaviyo", "Judge.me"] } },
+      select: {
+        appName: true,
+        findingType: true,
+        filename: true,
+        codeSnippet: true,
+        lineNumber: true,
+      },
+    });
+  });
+
+  it("no app names: no query", async () => {
+    expect(await getIgnorableFindingsForApps(SCAN_ID, [])).toEqual([]);
+    expect(mockDb.finding.findMany).not.toHaveBeenCalled();
+  });
+});
 
 describe("getFindingsForScan", () => {
   beforeEach(() => {
@@ -859,7 +888,35 @@ describe("getFindingsPageForScan", () => {
         OR: [{ appName: { in: ["Privy", "Loox", "Judge.me"] } }, { appName: null }],
       },
       orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
+      // Bounded: the whole groups' rows on this page, never more than the limit.
+      take: 10,
     });
+  });
+
+  // Audit r1 LOW: a blank or whitespace-only app name is "Other code", one
+  // group with the null rows, read together on whole and cut pages.
+  it("blank and whitespace-only app names join the Other code group, whole or cut by a page", async () => {
+    const rows = [
+      f("p1", "Privy", Severity.HIGH),
+      f("n1", null, Severity.LOW, "a.liquid"),
+      f("b1", "", Severity.HIGH, "b.liquid"),
+      f("w1", "   ", Severity.MEDIUM, "c.liquid"),
+    ];
+    serve(rows);
+
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+    expect(page.groups).toEqual([
+      { appName: "Privy", count: 1 },
+      { appName: null, count: 3 },
+    ]);
+    expect(page.items.map((r) => r.id)).toEqual(["p1", "b1", "w1", "n1"]);
+
+    // Cut: page 1 ends inside Other code, page 2 continues it.
+    const first = await getFindingsPageForScan(SCAN_ID, { limit: 2 });
+    expect(first.items.map((r) => r.id)).toEqual(["p1", "b1"]);
+    const second = await getFindingsPageForScan(SCAN_ID, { limit: 2, cursor: first.nextCursor! });
+    expect(second.items.map((r) => r.id)).toEqual(["w1", "n1"]);
+    expect(second.hasNextPage).toBe(false);
   });
 
   it("group totals follow the active filters", async () => {

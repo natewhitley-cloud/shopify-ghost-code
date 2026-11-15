@@ -30,3 +30,15 @@ export type ScanNoticeCandidates = Partial<Record<ScanNoticeKey, boolean>>;
 export function pickScanNotice(candidates: ScanNoticeCandidates): ScanNoticeKey | null {
   return SCAN_NOTICE_PRIORITY.find((key) => candidates[key] === true) ?? null;
 }
+
+/**
+ * The notice the slot renders in this view. After "Not now" on the return
+ * banner the slot stays empty for the rest of the view (audit r1 M3), even if
+ * a later load picks another notice: nothing takes the dismissed banner's spot.
+ */
+export function visibleScanNotice(
+  picked: ScanNoticeKey | null,
+  upgradeReturnDismissed: boolean,
+): ScanNoticeKey | null {
+  return upgradeReturnDismissed ? null : picked;
+}

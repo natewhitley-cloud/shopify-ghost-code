@@ -2,7 +2,7 @@ import { FindingType, Severity } from "@prisma/client";
 
 import db from "../db.server";
 import { isNeverPaywalledFindingType } from "../lib/finding-classification";
-import { rankFindingGroups } from "../lib/finding-groups";
+import { findingGroupKey, rankFindingGroups } from "../lib/finding-groups";
 import type { FindingGroupMeta } from "../lib/finding-groups";
 
 /**
@@ -129,6 +129,26 @@ export async function getFindingsForScan(
     // If the schema enum order ever changes this sort will silently break; keep
     // the declaration order in sync with this comment.
     orderBy: [{ severity: "asc" }, { filename: "asc" }],
+  });
+}
+
+/**
+ * The named apps' findings in a scan, with only the fields ignore matching
+ * needs (isFindingIgnored) plus the type (gc-np1d.6, audit r1: Store speed's
+ * leftovers for a shop with ignores, never the whole scan). `appNames` are
+ * exact stored names; none = no query.
+ */
+export async function getIgnorableFindingsForApps(scanId: string, appNames: readonly string[]) {
+  if (appNames.length === 0) return [];
+  return db.finding.findMany({
+    where: { scanId, appName: { in: [...appNames] } },
+    select: {
+      appName: true,
+      findingType: true,
+      filename: true,
+      codeSnippet: true,
+      lineNumber: true,
+    },
   });
 }
 
@@ -441,14 +461,17 @@ export async function getFindingGroupsForScan(
   scanId: string,
   filters: FindingsListFilters,
 ): Promise<FindingGroupMeta[]> {
+  return rankFindingGroups(await findingGroupRows(scanId, filters));
+}
+
+/** The per-(appName, severity) counts behind the groups: ONE groupBy. */
+async function findingGroupRows(scanId: string, filters: FindingsListFilters) {
   const rows = await db.finding.groupBy({
     by: ["appName", "severity"],
     where: findingsListWhere(scanId, filters),
     _count: { _all: true },
   });
-  return rankFindingGroups(
-    rows.map((r) => ({ appName: r.appName, severity: r.severity, count: r._count._all })),
-  );
+  return rows.map((r) => ({ appName: r.appName, severity: r.severity, count: r._count._all }));
 }
 
 /**
@@ -481,7 +504,21 @@ export async function getFindingsPageForScan(
 }> {
   const { limit, cursor, ...filters } = options;
   const where = findingsListWhere(scanId, filters);
-  const groups = await getFindingGroupsForScan(scanId, filters);
+  const groupRows = await findingGroupRows(scanId, filters);
+  const groups = rankFindingGroups(groupRows);
+  // Blank / whitespace-only app names share the "Other code" group with null
+  // (findingGroupKey), so that group's rows are read under every one of them.
+  const blankNames = [
+    ...new Set(
+      groupRows
+        .map((r) => r.appName)
+        .filter((a): a is string => a !== null && findingGroupKey(a) === null),
+    ),
+  ];
+  const otherCode = [
+    { appName: null },
+    ...(blankNames.length > 0 ? [{ appName: { in: blankNames } }] : []),
+  ];
   const total = groups.reduce((sum, g) => sum + g.count, 0);
   const offset = parseFindingsOffset(cursor);
   const end = Math.min(offset + limit, total);
@@ -508,7 +545,8 @@ export async function getFindingsPageForScan(
     { filename: "asc" as const },
     { id: "asc" as const },
   ];
-  const wholeApps = slices.filter((s) => s.whole).map((s) => s.appName);
+  const whole = slices.filter((s) => s.whole);
+  const wholeApps = whole.map((s) => s.appName);
   const namedWholeApps = wholeApps.filter((a): a is string => a !== null);
   const [wholeRows, ...cutRows] = await Promise.all([
     wholeApps.length > 0
@@ -517,17 +555,24 @@ export async function getFindingsPageForScan(
             ...where,
             OR: [
               ...(namedWholeApps.length > 0 ? [{ appName: { in: namedWholeApps } }] : []),
-              ...(wholeApps.includes(null) ? [{ appName: null }] : []),
+              ...(wholeApps.includes(null) ? otherCode : []),
             ],
           },
           orderBy,
+          // The whole groups' rows on this page (never more than `limit`).
+          take: whole.reduce((sum, s) => sum + s.take, 0),
         })
       : Promise.resolve([]),
     ...slices
       .filter((s) => !s.whole)
       .map((s) =>
         db.finding.findMany({
-          where: { ...where, appName: s.appName },
+          where: {
+            ...where,
+            ...(s.appName !== null || blankNames.length === 0
+              ? { appName: s.appName }
+              : { OR: otherCode }),
+          },
           orderBy,
           skip: s.skip,
           take: s.take,
@@ -537,7 +582,9 @@ export async function getFindingsPageForScan(
 
   let cut = 0;
   const items = slices.flatMap((s) =>
-    s.whole ? wholeRows.filter((row) => row.appName === s.appName) : cutRows[cut++],
+    s.whole
+      ? wholeRows.filter((row) => findingGroupKey(row.appName) === s.appName)
+      : cutRows[cut++],
   );
   const hasNextPage = end < total;
   return { items, hasNextPage, nextCursor: hasNextPage ? String(end) : null, groups };

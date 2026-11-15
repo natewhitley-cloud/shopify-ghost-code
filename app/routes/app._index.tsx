@@ -48,8 +48,11 @@ import { getNextScanPeriodStart, getScanQuotaPeriod } from "../lib/scan-quota";
 import type { ScanQuotaPeriod } from "../lib/scan-quota";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import {
+  homeSecurityBackup,
   securityRiskAnchorId,
   securityRiskSourceWords,
+  type SecurityBackup,
+  type SecurityFound,
   type SecurityRisk,
   type SecurityRiskSource,
 } from "../lib/security-risk";
@@ -171,10 +174,32 @@ const HOME_SECURITY_TYPES: readonly FindingType[] = [
   FindingType.MENU_INJECTION,
 ];
 
-/** Home's malicious-code backup banner (gc-np1d.6), shown on every plan. */
+/** Home's security backup banner (gc-np1d.6, audit r1), shown on every plan. */
 export const MALICIOUS_FALLBACK_HEADING = "Your last scan found known malicious code";
 export const MALICIOUS_FALLBACK_BODY =
   "Code from a known malicious source is in your theme or on your live homepage. It can steal shopper data or send your customers to other sites. Open the scan to see where it is and what to do.";
+export const SECURITY_FALLBACK_HEADING = "Your last scan found a security issue";
+export const SECURITY_FALLBACK_BODY =
+  "Your theme has code tied to a security risk, such as an app named in a security incident or code in a store menu. Open the scan to see where it is and what to do.";
+export const SECURITY_UNAVAILABLE_HEADING = "We couldn't load your last scan's security check";
+export const SECURITY_UNAVAILABLE_BODY =
+  "Open your last completed scan to see whether it found anything to fix.";
+const SECURITY_BACKUP_COPY: Record<
+  SecurityBackup["copy"],
+  { heading: string; body: string; tone: "critical" | "warning" }
+> = {
+  malicious: {
+    heading: MALICIOUS_FALLBACK_HEADING,
+    body: MALICIOUS_FALLBACK_BODY,
+    tone: "critical",
+  },
+  security: { heading: SECURITY_FALLBACK_HEADING, body: SECURITY_FALLBACK_BODY, tone: "critical" },
+  unavailable: {
+    heading: SECURITY_UNAVAILABLE_HEADING,
+    body: SECURITY_UNAVAILABLE_BODY,
+    tone: "warning",
+  },
+};
 
 /** The scan action's error when no published theme is found (gc-tib.12: with the Canvas hint). */
 const NO_PUBLISHED_THEME_ERROR = `No published theme found. Please publish a theme before scanning. ${CANVAS_THEME_HINT}`;
@@ -223,6 +248,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       summaryNotice: null as SummaryNotice | null,
       summaryOptIn: null as SummaryOptInPrompt | null,
       maliciousFound: false,
+      securityBackup: null as SecurityBackup | null,
     };
   }
 
@@ -389,6 +415,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // more indexed read finds the most recent successful scan.
   let securityRisks: SecurityRisk[] = [];
   let securityRiskSource: SecurityRiskSource | null = null;
+  // The never-paywalled security findings behind the banners, by kind, for the
+  // backup banner (audit r1): which scan they are from and whether its read
+  // failed outright.
+  let securityFound: SecurityFound | null = null;
   // The fallback scan's inputs to loadHomeSecurityRisks, or null when it has
   // no security finding to show (the poll then reads nothing more). Malicious
   // code counts ignored or not; an advisory or menu finding counts only when
@@ -439,7 +469,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scanDate: latestScan.completedAt ?? latestScan.createdAt,
       earlierScan: null,
     };
+    securityFound = {
+      scanId: latestScan.id,
+      readFailed: false,
+      malicious: maliciousCount > 0,
+      advisory: (latestTypeCounts.APP_INCIDENT_ADVISORY ?? 0) > 0,
+      menu: (latestTypeCounts.MENU_INJECTION ?? 0) > 0,
+    };
   } else if (latestScan && completedScanCheck) {
+    // Known once found, so a later failed read still links the backup to it.
+    let fallbackScanId: string | null = null;
     try {
       const fallback =
         previousScan && isSuccessfulScan(previousScan.status)
@@ -447,8 +486,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           : await getCompletedScansForShop(shop.id, { limit: 1 }).then(([scan]) =>
               scan ? { id: scan.id, date: scan.completedAt } : null,
             );
+      fallbackScanId = fallback?.id ?? null;
       const counts = fallback ? await fallbackSecurityCounts(fallback.id) : null;
       if (fallback && counts) {
+        securityFound = {
+          scanId: fallback.id,
+          readFailed: false,
+          malicious: counts.maliciousFound > 0,
+          advisory: (counts.keptByType.APP_INCIDENT_ADVISORY ?? 0) > 0,
+          menu: (counts.keptByType.MENU_INJECTION ?? 0) > 0,
+        };
         securityRisks = await loadHomeSecurityRisks({
           shopId: shop.id,
           scanId: fallback.id,
@@ -468,8 +515,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         ...safeErrorFields(err),
       });
+      // Unknown is never "nothing found": the backup asks the merchant to
+      // check the last successful scan (fails closed).
+      securityFound = {
+        scanId: fallbackScanId,
+        readFailed: true,
+        malicious: false,
+        advisory: false,
+        menu: false,
+      };
     }
   }
+  const securityBackup = homeSecurityBackup(securityFound, securityRisks);
 
   // Compute scan usage for plans with caps (Free = monthly, Standard = weekly,
   // Professional = daily). nextScanAt: when the next period starts (shown at the cap).
@@ -682,6 +739,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     summaryNotice,
     summaryOptIn,
     maliciousFound,
+    securityBackup,
   };
 };
 
@@ -1147,6 +1205,7 @@ export default function Dashboard() {
     summaryNotice,
     summaryOptIn,
     maliciousFound,
+    securityBackup,
     valueAction = null,
     pricingPlansUrl,
   } = useLoaderData<typeof loader>();
@@ -1316,7 +1375,7 @@ export default function Dashboard() {
   const actionError = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
   // Every scan-start control on Home (onboarding, main button, rescan and
-  // theme-change nudges, trend empty state) posts through here: source=home.
+  // theme-change nudges) posts through here: source=home.
   const handleStartScan = () => {
     fetcher.submit(homeScanStartPayload(selectedThemeId), { method: "POST" });
   };
@@ -1388,23 +1447,27 @@ export default function Dashboard() {
             </SecurityRiskBanner>
           ))}
 
-        {/* Known malicious code backup (gc-np1d.6): the latest scan found
-          malicious code (ignored or not) but no banner above names it, e.g.
-          because the banners' read failed. Every plan, never paywalled. */}
-        {maliciousFound &&
-          latestScanId &&
-          !(securityRisks ?? []).some((risk) => risk.kind === "malicious") && (
-            <s-banner tone="critical" heading={MALICIOUS_FALLBACK_HEADING}>
-              <s-stack direction="block" gap="base">
-                <s-paragraph>{MALICIOUS_FALLBACK_BODY}</s-paragraph>
-                <div>
-                  <Link to={`/app/scans/${latestScanId}`}>
-                    <s-button variant="secondary">See what to check</s-button>
-                  </Link>
-                </div>
-              </s-stack>
-            </s-banner>
-          )}
+        {/* Security backup (gc-np1d.6, audit r1): the scan the banners are
+          from found a security finding (malicious code, an app advisory, code
+          in a menu) of a kind no banner above shows, e.g. because the banners'
+          read failed, or that read threw. Every plan, never paywalled. */}
+        {securityBackup && (
+          <s-banner
+            tone={SECURITY_BACKUP_COPY[securityBackup.copy].tone}
+            heading={SECURITY_BACKUP_COPY[securityBackup.copy].heading}
+          >
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{SECURITY_BACKUP_COPY[securityBackup.copy].body}</s-paragraph>
+              <div>
+                <Link
+                  to={securityBackup.scanId ? `/app/scans/${securityBackup.scanId}` : "/app/scans"}
+                >
+                  <s-button variant="secondary">See what to check</s-button>
+                </Link>
+              </div>
+            </s-stack>
+          </s-banner>
+        )}
 
         {/* Checkout guard (gc-1q1s.6): incidents the scan banners above do not
           already name, on EVERY plan, then the guard's status line. */}

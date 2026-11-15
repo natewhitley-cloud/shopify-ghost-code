@@ -34,8 +34,6 @@ import { getRemovalSafety } from "../../app/lib/finding-safety";
 import { FINDING_TYPE_LABELS } from "../../app/lib/finding-type-labels";
 import { SKIPPABLE_CATEGORY_INFO, skippedCategoryLabels } from "../../app/lib/optional-scopes";
 import {
-  countKeptSecurityRisks,
-  homeRiskSummaryLine,
   MENU_RISK_GROUP_FACTS,
   MENU_RISK_ITEMS_SHOWN,
   MENU_RISK_TITLE,
@@ -247,7 +245,6 @@ describe("Security risk banner", () => {
       expect(securityRiskBody(risks[0])).toContain(MENU_RISK_GROUP_FACTS);
       expect(securityRiskBody(risks[0])).toMatch(/GhostCode found it in these menu items:$/);
       expect(securityRiskTitle(risks[1])).toBe(MENU_RISK_TITLE);
-      expect(countKeptSecurityRisks(risks, new Set())).toBe(2);
     });
 
     const render = (props: Record<string, unknown>) =>
@@ -324,20 +321,6 @@ describe("Security risk banner", () => {
     expect(html).toContain(`id="finding-f-menu"`);
     expect(html).not.toContain("<img src=x");
     expect(html).toContain("&lt;img src=x onerror=x()&gt;");
-  });
-
-  it("counts as one kept risk (an ignored one has no banner at all)", () => {
-    expect(countKeptSecurityRisks([risk], new Set(["f-menu"]))).toBe(1);
-  });
-
-  it("Home's summary line names menu items with code", () => {
-    expect(homeRiskSummaryLine({ advisories: 0, malicious: 0, leftover: 3, menu: 1 })).toBe(
-      "1 menu item with code, 3 leftover items.",
-    );
-    expect(homeRiskSummaryLine({ advisories: 1, malicious: 2, leftover: 0, menu: 2 })).toBe(
-      "2 pieces of known malicious code, 2 menu items with code, 1 app security advisory.",
-    );
-    expect(homeRiskSummaryLine({ advisories: 0, malicious: 0, leftover: 3 })).toBeNull();
   });
 });
 

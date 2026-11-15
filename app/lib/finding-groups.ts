@@ -17,6 +17,14 @@
 /** Header of the group of findings with no app. */
 export const OTHER_CODE_GROUP_LABEL = "Other code";
 
+/**
+ * The group a finding belongs to: its app, or null ("Other code") for no app
+ * or a blank / whitespace-only name, so those share one group and one header.
+ */
+export function findingGroupKey(appName: string | null): string | null {
+  return appName !== null && appName.trim() !== "" ? appName : null;
+}
+
 /** One group's place in the order and its size under the active filters. */
 export type FindingGroupMeta = { appName: string | null; count: number };
 
@@ -35,10 +43,11 @@ export function rankFindingGroups(
   const byApp = new Map<string | null, { count: number; worst: number }>();
   for (const row of rows) {
     if (row.count <= 0) continue;
-    const entry = byApp.get(row.appName) ?? { count: 0, worst: Number.POSITIVE_INFINITY };
+    const key = findingGroupKey(row.appName);
+    const entry = byApp.get(key) ?? { count: 0, worst: Number.POSITIVE_INFINITY };
     entry.count += row.count;
     entry.worst = Math.min(entry.worst, severityRank(row.severity));
-    byApp.set(row.appName, entry);
+    byApp.set(key, entry);
   }
   return [...byApp.entries()]
     .sort(([nameA, a], [nameB, b]) => {
@@ -50,9 +59,9 @@ export function rankFindingGroups(
     .map(([appName, { count }]) => ({ appName, count }));
 }
 
-/** The group header: the app name, or "Other code". */
+/** The group header: the app name, or "Other code" (no app, or a blank name). */
 export function findingGroupHeading(appName: string | null): string {
-  return appName ?? OTHER_CODE_GROUP_LABEL;
+  return findingGroupKey(appName) ?? OTHER_CODE_GROUP_LABEL;
 }
 
 /**
@@ -79,9 +88,10 @@ export function groupFindingRuns<T extends { appName: string | null }>(
   const totals = new Map(groups.map((g) => [g.appName, g.count]));
   const runs: FindingGroupRun<T>[] = [];
   for (const finding of findings) {
+    const key = findingGroupKey(finding.appName);
     const last = runs[runs.length - 1];
-    if (last && last.appName === finding.appName) last.findings.push(finding);
-    else runs.push({ appName: finding.appName, count: 0, findings: [finding] });
+    if (last && last.appName === key) last.findings.push(finding);
+    else runs.push({ appName: key, count: 0, findings: [finding] });
   }
   for (const run of runs) {
     run.count = Math.max(totals.get(run.appName) ?? 0, run.findings.length);
@@ -102,8 +112,8 @@ export function sortIntoGroups<
     appName === null ? Number.MAX_SAFE_INTEGER : (index.get(appName) ?? groups.length);
   return [...findings].sort(
     (a, b) =>
-      groupIndex(a.appName) - groupIndex(b.appName) ||
-      compareText(a.appName ?? "", b.appName ?? "") ||
+      groupIndex(findingGroupKey(a.appName)) - groupIndex(findingGroupKey(b.appName)) ||
+      compareText(findingGroupKey(a.appName) ?? "", findingGroupKey(b.appName) ?? "") ||
       severityRank(a.severity) - severityRank(b.severity) ||
       compareText(a.filename, b.filename),
   );

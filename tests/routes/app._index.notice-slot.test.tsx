@@ -348,10 +348,12 @@ describe("Home render: one notice slot (gc-np1d.6)", () => {
     expect(slotNotices(html)).toEqual(["summary_optin"]);
   });
 
-  it("multi-theme upsell beside the removal notice: only the upsell", async () => {
+  // Audit H1: Standard with 2 themes (the upsell, which has no dismiss) never
+  // hides the removal notice.
+  it("multi-theme upsell beside the removal notice: only the removal notice", async () => {
     const html = await renderHome({ multiTheme: true, removal: true });
 
-    expect(slotNotices(html)).toEqual(["multi_theme"]);
+    expect(slotNotices(html)).toEqual(["app_removed"]);
   });
 
   it("the removal notice alone shows, with its own copy", async () => {

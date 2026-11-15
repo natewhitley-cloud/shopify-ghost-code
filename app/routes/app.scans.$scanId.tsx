@@ -1,7 +1,11 @@
 import type { FindingType } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import type {
+  ActionFunctionArgs,
+  LoaderFunctionArgs,
+  ShouldRevalidateFunction,
+} from "react-router";
 import { Link, useFetcher, useLoaderData, useNavigate } from "react-router";
 
 import { CleanCopyRunLines } from "../components/CleanCopyRunLines";
@@ -77,13 +81,11 @@ import {
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
-import { pickScanNotice } from "../lib/scan-notice";
+import { pickScanNotice, visibleScanNotice } from "../lib/scan-notice";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
   advisoryCheckSteps,
-  countKeptSecurityRisks,
   securityRiskAnchorId,
-  totalFindingsNote,
   type AdvisoryRisk,
   type MenuRisk,
 } from "../lib/security-risk";
@@ -176,17 +178,12 @@ import {
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_SUCCESS,
-  COLOR_WARNING,
   INFO_BD,
   INFO_BG,
-  SEV_HIGH_FILL,
-  SEV_LOW_FILL,
-  SEV_MED_FILL,
   groundStyle,
   hairline,
   htmlTableCss,
   sectionCard,
-  TEXT_DISABLED,
   TEXT_PRIMARY,
   textSubduedSm,
   TEXT_SUBDUED,
@@ -1602,22 +1599,33 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       : [];
   // gc-np1d.6 (decision 3A): the preview rows grouped by app like the paid
   // list. Each group's total is the app's findings the Free view counts
-  // (never the always-shown types; ignores excluded like the summary): X's
-  // count on an app-scoped view, the kept rows for a shop with ignores, else
-  // one groupBy. No read when nothing is previewed.
+  // (never the always-shown types or the types this plan withholds; ignores
+  // excluded like the summary): X's count on an app-scoped view, the kept
+  // rows for a shop with ignores, else one groupBy. No read when nothing is
+  // previewed.
   const previewGroups: FindingGroupMeta[] =
     rawPreviewFindings.length === 0
       ? []
       : freeScope
-        ? [{ appName: freeScope.appName, count: freeScope.count }]
+        ? [
+            {
+              appName: freeScope.appName,
+              count: freeScope.findings.filter((f) => !withheldTypes.includes(f.findingType))
+                .length,
+            },
+          ]
         : keptFindings !== null
           ? rankFindingGroups(
               keptFindings
-                .filter((f) => !isNeverPaywalledFindingType(f.findingType))
+                .filter(
+                  (f) =>
+                    !isNeverPaywalledFindingType(f.findingType) &&
+                    !withheldTypes.includes(f.findingType),
+                )
                 .map((f) => ({ appName: f.appName, severity: f.severity, count: 1 })),
             )
           : await getFindingGroupsForScan(scanId, {
-              excludeFindingTypes: NEVER_PAYWALLED_FINDING_TYPES,
+              excludeFindingTypes: [...NEVER_PAYWALLED_FINDING_TYPES, ...withheldTypes],
             });
   const previewFindings = sortIntoGroups(rawPreviewFindings, previewGroups).map((f) => ({
     ...f,
@@ -1968,6 +1976,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 // exception on Free is an affected-app advisory (see canIgnoreAnyFinding).
 // ---------------------------------------------------------------------------
 
+/**
+ * "Not now" on the return-visit banner (audit r1 M3) must not re-run this
+ * loader: the dismissal frees the slot, so the loader would pick the
+ * UpgradePreview teaser for the same spot and record its "shown" stamp while
+ * the client keeps the slot empty. Every other submission and navigation
+ * keeps react-router's default.
+ */
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  formData,
+  defaultShouldRevalidate,
+}) => {
+  if (formData?.get("intent") === "dismiss-upgrade-return") return false;
+  return defaultShouldRevalidate;
+};
+
 /** The action's answer to an ignore a Free shop may not make. */
 const IGNORE_NEEDS_PAID_PLAN = "Ignoring findings is available on Standard and Professional.";
 
@@ -2266,12 +2289,15 @@ export default function ScanDetail() {
 
   // Return-visit banner "Not now" (gc-97k.9): hide optimistically, then post
   // the dismissal to this route's action (same idiom as the home-page nudges).
+  // The notice slot stays empty for the rest of this view (audit r1 M3), and
+  // the dismissal does not re-run the loader (shouldRevalidate).
   const dismissFetcher = useFetcher();
   const [upgradeReturnDismissed, setUpgradeReturnDismissed] = useState(false);
   const handleDismissUpgradeReturn = () => {
     setUpgradeReturnDismissed(true);
     dismissFetcher.submit({ intent: "dismiss-upgrade-return" }, { method: "POST" });
   };
+  const shownNotice = visibleScanNotice(noticeSlot, upgradeReturnDismissed);
 
   // Stale-results "Rescan now" (gc-mgi): Home's scan-start action (POST /app
   // with no intent: main theme, plan-gated, redirects to the new scan's page),
@@ -2338,7 +2364,6 @@ export default function ScanDetail() {
   }, [isCompleted, canUseDiffing, scan.id]);
 
   const status = scan.status as ScanStatus;
-  const summary = findingSummary.bySeverity;
 
   const isFailed = scan.status === "FAILED";
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
@@ -2346,55 +2371,8 @@ export default function ScanDetail() {
   // Diff from the lazy resource route — null until the fetcher resolves.
   const scanDiff = diffFetcher.data?.scanDiff ?? null;
 
-  // Compute per-severity diff counts from scanDiff arrays.
-  const severityDiff = scanDiff
-    ? {
-        newHigh: scanDiff.newFindings.filter((f) => f.severity === "HIGH").length,
-        newMedium: scanDiff.newFindings.filter((f) => f.severity === "MEDIUM").length,
-        newLow: scanDiff.newFindings.filter((f) => f.severity === "LOW").length,
-        resolvedHigh: scanDiff.resolvedFindings.filter((f) => f.severity === "HIGH").length,
-        resolvedMedium: scanDiff.resolvedFindings.filter((f) => f.severity === "MEDIUM").length,
-        resolvedLow: scanDiff.resolvedFindings.filter((f) => f.severity === "LOW").length,
-      }
-    : null;
-
-  // Net change per severity: positive = worse (more findings), negative = better.
-  const severityNet = severityDiff
-    ? {
-        HIGH: severityDiff.newHigh - severityDiff.resolvedHigh,
-        MEDIUM: severityDiff.newMedium - severityDiff.resolvedMedium,
-        LOW: severityDiff.newLow - severityDiff.resolvedLow,
-      }
-    : null;
-
-  const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
-  // Security risks in the (ignore-filtered) total: non-ignored malicious code
-  // and the non-ignored advisories (gc-q5z8), as findings (so the leftover
-  // count adds up) and as distinct risks, the banners (gc-xtno).
-  const keptMalicious = findingSummary.byType.MALICIOUS_SCRIPT ?? 0;
-  const riskNote = totalFindingsNote(
-    totalFindings,
-    keptMalicious + alwaysShownFindings.length,
-    // The paid list shows kept malicious findings again (Free never previews them).
-    canViewDetails ? keptMalicious : 0,
-    countKeptSecurityRisks(
-      securityRisks,
-      new Set(maliciousFindings.filter((f) => f.isIgnored).map((f) => f.id)),
-    ),
-  );
   // Findings the LIST can hold: everything but the advisories shown above it.
   const listTotal = findingSummary.total - alwaysShownFindings.length;
-  const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
-  const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
-
-  // Performance impact counts derived from the findingSummary aggregate (covers
-  // all findings, not just the current page). Previously computed by filtering
-  // the full findings array; now derived from the summary to avoid sending the
-  // full findings to the client.
-  const scriptCount = findingSummary.byType.GHOST_SCRIPT;
-  const styleCount = findingSummary.byType.GHOST_STYLE;
-  const externalResourceCount = scriptCount + styleCount;
-
   // Build app attribution map from the pre-fetched lean attribution data
   // (appName, filename, findingType only — no codeSnippet/description).
   const appAttribution = new Map<
@@ -2522,115 +2500,6 @@ export default function ScanDetail() {
           color: ${TEXT_PRIMARY};
           margin: 0;
         }
-        .scan-tiles-row {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-          gap: 16px;
-          margin-top: 8px;
-          align-items: stretch;
-        }
-        @media (max-width: 640px) {
-          .scan-tiles-row {
-            grid-template-columns: 1fr;
-          }
-        }
-        .scan-tile-wrapper {
-          display: flex;
-          flex-direction: column;
-        }
-        .scan-tile {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          padding: 24px;
-          border-radius: 12px;
-          border: 1px solid ${BORDER_DEFAULT};
-          background: ${BG_WHITE};
-          flex: 1;
-        }
-        .scan-tile__big-number {
-          font-size: 48px;
-          font-weight: 700;
-          line-height: 1;
-          letter-spacing: -2px;
-        }
-        .scan-tile__big-number--warning { color: ${COLOR_WARNING}; }
-        .scan-tile__big-number--critical { color: ${COLOR_CRITICAL}; }
-        .scan-tile__big-number--neutral { color: ${TEXT_PRIMARY}; }
-        .scan-tile__subtitle {
-          font-size: 14px;
-          color: ${TEXT_SUBDUED};
-          margin-top: 4px;
-        }
-        .scan-tile__diff {
-          font-size: 13px;
-          margin-top: 8px;
-        }
-        .scan-tile__diff--positive { color: ${COLOR_CRITICAL}; }
-        .scan-tile__diff--negative { color: ${COLOR_SUCCESS}; }
-        .scan-tile__diff--neutral { color: ${TEXT_SUBDUED}; }
-        .severity-breakdown {
-          display: flex;
-          flex-direction: column;
-          gap: 0;
-          width: 100%;
-        }
-        .severity-breakdown__header {
-          display: flex;
-          justify-content: space-between;
-          padding-bottom: 8px;
-          margin-bottom: 12px;
-          border-bottom: 1px solid ${BORDER_DEFAULT};
-          font-size: 11px;
-          font-weight: 600;
-          color: ${TEXT_DISABLED};
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-        .severity-row {
-          margin-bottom: 12px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-        .severity-row__left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .severity-row__count {
-          font-size: 24px;
-          font-weight: 700;
-          line-height: 1;
-          min-width: 32px;
-        }
-        .severity-row__count--high { color: ${COLOR_CRITICAL}; }
-        .severity-row__count--medium { color: ${COLOR_WARNING}; }
-        .severity-row__count--low { color: ${COLOR_INFO}; }
-        .severity-row__label {
-          font-size: 14px;
-          font-weight: 500;
-          color: ${TEXT_SUBDUED};
-        }
-        .severity-row__dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          flex-shrink: 0;
-        }
-        .severity-row__dot--high { background: ${SEV_HIGH_FILL}; }
-        .severity-row__dot--medium { background: ${SEV_MED_FILL}; }
-        .severity-row__dot--low { background: ${SEV_LOW_FILL}; }
-        .severity-row__diff {
-          font-size: 12px;
-          font-weight: 500;
-          white-space: nowrap;
-        }
-        .severity-row__diff--positive { color: ${COLOR_CRITICAL}; }
-        .severity-row__diff--negative { color: ${COLOR_SUCCESS}; }
-        .severity-row__diff--neutral { color: ${TEXT_DISABLED}; }
       `}</style>
 
         {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
@@ -2726,10 +2595,11 @@ export default function ScanDetail() {
         {/* gc-np1d.6 (decision A): the one notice slot, directly below the
             action card: the return-visit banner, else the upgrade teaser, else
             the stale-results notice (app/lib/scan-notice). Quiet: no primary
-            buttons. "Not now" on the return banner empties it for this view. */}
-        {noticeSlot !== null && !(noticeSlot === "upgrade_return" && upgradeReturnDismissed) && (
+            buttons. "Not now" on the return banner empties it for this view:
+            no other notice takes its place. */}
+        {shownNotice !== null && (
           <div className="scan-notice-slot">
-            {noticeSlot === "upgrade_return" && upgradeReturn && !upgradeReturnDismissed && (
+            {shownNotice === "upgrade_return" && upgradeReturn && (
               <UpgradeReturnBanner
                 preview={upgradeReturn}
                 pricingPlansUrl={pricingPlansUrl}
@@ -2737,14 +2607,14 @@ export default function ScanDetail() {
                 onDismiss={handleDismissUpgradeReturn}
               />
             )}
-            {noticeSlot === "upgrade_preview" && upgradePreview && (
+            {shownNotice === "upgrade_preview" && upgradePreview && (
               <UpgradePreviewBanner
                 preview={upgradePreview}
                 pricingPlansUrl={pricingPlansUrl}
                 trialEligible={trialEligible}
               />
             )}
-            {noticeSlot === "stale_results" && staleResults && (
+            {shownNotice === "stale_results" && staleResults && (
               <StaleResultsBanner
                 staleResults={staleResults}
                 pricingPlansUrl={pricingPlansUrl}
@@ -2814,131 +2684,7 @@ export default function ScanDetail() {
               )}
             </s-stack>
           </s-card>
-        ) : (
-          <div className="scan-tiles-row" style={{ ...sectionCard, marginTop: 0, marginBottom: 0 }}>
-            {/* Tile 1: Total Findings */}
-            <div className="scan-tile-wrapper">
-              <h2 className="scan-section-title">Total Findings</h2>
-              <div className="scan-tile" style={{ marginTop: "8px" }}>
-                <div className="scan-tile__big-number scan-tile__big-number--neutral">
-                  {totalFindings}
-                </div>
-                <div className="scan-tile__subtitle">
-                  {totalFindings === 1 ? "finding detected" : "findings detected"}
-                </div>
-                {/* gc-q5z8: how the total splits between the banners above and
-                    the list below (both ignore-filtered, like the total). */}
-                {riskNote && (
-                  <div style={{ ...textSubduedSm, marginTop: "6px", textAlign: "center" }}>
-                    {riskNote}
-                  </div>
-                )}
-                {scanDiff && (totalNew > 0 || totalResolved > 0) && (
-                  <div
-                    className={`scan-tile__diff ${
-                      totalNew > totalResolved
-                        ? "scan-tile__diff--positive"
-                        : totalResolved > totalNew
-                          ? "scan-tile__diff--negative"
-                          : "scan-tile__diff--neutral"
-                    }`}
-                  >
-                    {totalNew > 0 && <span style={{ color: COLOR_CRITICAL }}>+{totalNew} new</span>}
-                    {totalNew > 0 && totalResolved > 0 && " / "}
-                    {totalResolved > 0 && (
-                      <span style={{ color: COLOR_SUCCESS }}>-{totalResolved} resolved</span>
-                    )}
-                  </div>
-                )}
-                {scanDiff && totalNew === 0 && totalResolved === 0 && (
-                  <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
-                )}
-              </div>
-            </div>
-
-            {/* Tile 2: Severity Breakdown */}
-            <div className="scan-tile-wrapper">
-              <h2 className="scan-section-title">Severity Breakdown</h2>
-              <div className="scan-tile" style={{ marginTop: "8px" }}>
-                <div className="severity-breakdown">
-                  <div className="severity-breakdown__header">
-                    <span>Severity</span>
-                    <span>Change</span>
-                  </div>
-                  {(
-                    [
-                      { key: "HIGH", label: "High", mod: "high" },
-                      { key: "MEDIUM", label: "Medium", mod: "medium" },
-                      { key: "LOW", label: "Low", mod: "low" },
-                    ] as const
-                  ).map(({ key, label, mod }) => {
-                    const count = summary[key];
-                    const net = severityNet ? severityNet[key] : null;
-                    return (
-                      <div key={key} className="severity-row">
-                        <div className="severity-row__left">
-                          <span className={`severity-row__dot severity-row__dot--${mod}`} />
-                          <span className={`severity-row__count severity-row__count--${mod}`}>
-                            {count}
-                          </span>
-                          <span className="severity-row__label">{label}</span>
-                        </div>
-                        {net !== null && net !== 0 && (
-                          <span
-                            className={`severity-row__diff ${
-                              net > 0
-                                ? "severity-row__diff--positive"
-                                : "severity-row__diff--negative"
-                            }`}
-                          >
-                            {net > 0 ? `+${net}` : String(net)}
-                          </span>
-                        )}
-                        {net !== null && net === 0 && (
-                          <span className="severity-row__diff severity-row__diff--neutral">—</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Tile 3: Performance Impact (conditional) */}
-            {externalResourceCount > 0 && (
-              <div className="scan-tile-wrapper">
-                <h2 className="scan-section-title">Performance Impact</h2>
-                <div className="scan-tile" style={{ marginTop: "8px" }}>
-                  <div
-                    className={`scan-tile__big-number ${externalResourceCount > 3 ? "scan-tile__big-number--critical" : externalResourceCount > 1 ? "scan-tile__big-number--warning" : "scan-tile__big-number--neutral"}`}
-                  >
-                    {externalResourceCount}
-                  </div>
-                  <div className="scan-tile__subtitle">external resources loading</div>
-                  <div
-                    style={{
-                      marginTop: "8px",
-                      fontSize: "13px",
-                      color: TEXT_SUBDUED,
-                      textAlign: "center",
-                    }}
-                  >
-                    {scriptCount > 0 && (
-                      <div>
-                        {scriptCount} script{scriptCount !== 1 ? "s" : ""}
-                      </div>
-                    )}
-                    {styleCount > 0 && (
-                      <div>
-                        {styleCount} stylesheet{styleCount !== 1 ? "s" : ""}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        ) : null}
 
         {/* Oversized-file skip notice — these files were too large (>1 MB) for
           the full detector suite (gc-06e.19); see skippedFilesNotice. */}

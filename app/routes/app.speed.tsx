@@ -26,6 +26,7 @@ import { FormattedDate } from "../components/FormattedDate";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
 import { buildPricingPlansUrl } from "../lib/billing.server";
 import { RUNTIME_MALICIOUS_STEPS } from "../lib/finding-remediation";
+import { canViewFindingDetails } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { securityRiskAnchorId, type MaliciousRisk } from "../lib/security-risk";
 import {
@@ -148,15 +149,14 @@ export type SpeedLoaderData = SpeedSecurityRisks &
 
 /**
  * The speed rows that can carry the leftovers link: the costliest app of each
- * tested page section (what its headline names first), or the free test's
- * costliest app. The same rule the components use, so they always agree.
+ * tested page section (what its headline names first). The same rule the
+ * component uses, so they always agree. None on a plan that cannot view
+ * finding details (Free, audit r1): its scan page ignores `?app=`, so the link
+ * would promise a filtered list it cannot show. Free's one free test is the
+ * only free-test view, so it never links.
  */
-function costliestSpeedAppNames(report: SpeedPageReport): string[] {
-  if (report.access === "free") {
-    const name = report.freeTest.result?.costliestApp?.name;
-    return name ? [name] : [];
-  }
-  if (report.access !== "report") return [];
+function costliestSpeedAppNames(report: SpeedPageReport, plan: string): string[] {
+  if (report.access !== "report" || !canViewFindingDetails(plan)) return [];
   const names = (report.view.lastResults?.pages ?? [])
     .filter((page) => page.status === "OK" && page.metrics)
     .map((page) => costliestAppName(page.apps ?? []))
@@ -182,7 +182,7 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
     shopId: shop.id,
     shopDomain: session.shop,
     admin,
-    appNames: costliestSpeedAppNames(report),
+    appNames: costliestSpeedAppNames(report, shop.plan),
   });
   const security: SpeedSecurityRisks & SpeedLeftovers = {
     ...(speedRisks.testedAt && speedRisks.risks.length > 0
@@ -658,16 +658,8 @@ function FreeAttemptBanner({
   );
 }
 
-export function FreeTestResult({
-  result,
-  leftovers,
-}: {
-  result: FreeSpeedTestResult;
-  /** gc-np1d.6: leftover counts for the costliest app's link. */
-  leftovers?: SpeedAppLeftovers;
-}) {
+export function FreeTestResult({ result }: { result: FreeSpeedTestResult }) {
   const m = result.metrics;
-  const link = speedLeftoversLink(result.costliestApp?.name, leftovers);
   const tone = speedScoreTone(m.score);
   return (
     <div style={{ ...sectionCard, marginBottom: 0 }}>
@@ -699,11 +691,6 @@ export function FreeTestResult({
         <s-paragraph>
           {result.costliestApp ? costliestAppLine(result.costliestApp) : FREE_TEST_NO_APP}
         </s-paragraph>
-        {link && (
-          <s-paragraph>
-            <Link to={link.href}>{link.label}</Link>
-          </s-paragraph>
-        )}
       </div>
       <div style={{ ...textSubduedSm, marginTop: "12px" }}>{SPEED_CAVEAT}</div>
     </div>
@@ -714,19 +701,15 @@ export function FreeSpeedTest({
   freeTest,
   runAvailableAt,
   pollingTimedOut,
-  leftovers,
 }: {
   freeTest: FreeSpeedTestView;
   runAvailableAt: string | null;
   pollingTimedOut: boolean;
-  leftovers?: SpeedAppLeftovers;
 }) {
   if (freeTest.state === "used") {
     // Read-only: no further runs. A used stamp without its report (should not
     // happen) still shows no run control.
-    return freeTest.result ? (
-      <FreeTestResult result={freeTest.result} leftovers={leftovers} />
-    ) : null;
+    return freeTest.result ? <FreeTestResult result={freeTest.result} /> : null;
   }
   if (freeTest.state === "exhausted") {
     // The retry cap was reached without a result: no run control (the action
@@ -811,7 +794,6 @@ export default function StoreSpeed() {
               freeTest={data.freeTest}
               runAvailableAt={data.runAvailableAt}
               pollingTimedOut={pollingTimedOut}
-              leftovers={data.appLeftovers}
             />
             {/* The page's one upgrade ask. */}
             <LockedTeaser

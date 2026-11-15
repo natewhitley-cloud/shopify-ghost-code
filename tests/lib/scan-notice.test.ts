@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pickScanNotice, SCAN_NOTICE_PRIORITY } from "../../app/lib/scan-notice";
+import { pickScanNotice, SCAN_NOTICE_PRIORITY, visibleScanNotice } from "../../app/lib/scan-notice";
 
 describe("pickScanNotice (decision A)", () => {
   it("priority: return banner, then teaser, then stale results", () => {
@@ -26,4 +26,19 @@ describe("pickScanNotice (decision A)", () => {
   it.each(["upgrade_return", "upgrade_preview", "stale_results"] as const)("alone: %s", (key) => {
     expect(pickScanNotice({ [key]: true })).toBe(key);
   });
+});
+
+describe("visibleScanNotice (audit r1 M3)", () => {
+  it("before Not now: the picked notice", () => {
+    for (const key of [...SCAN_NOTICE_PRIORITY, null]) {
+      expect(visibleScanNotice(key, false)).toBe(key);
+    }
+  });
+
+  it.each([...SCAN_NOTICE_PRIORITY, null])(
+    "after Not now the slot stays empty, even when %s is picked next",
+    (key) => {
+      expect(visibleScanNotice(key, true)).toBeNull();
+    },
+  );
 });

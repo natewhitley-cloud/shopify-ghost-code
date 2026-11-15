@@ -643,10 +643,6 @@ describe("app._index loader — no finding trend or trend chart (gc-np1d.6)", ()
     completedAt: new Date("2026-03-19T10:05:00Z"),
   };
 
-  afterEach(() => {
-    delete process.env.ENABLE_TREND_CHART;
-  });
-
   it("with a previous successful scan: reads only the latest scan's severity counts", async () => {
     mockGetScansForShop.mockResolvedValue({
       items: [COMPLETED_SCAN, PREVIOUS_SCAN],
@@ -660,9 +656,8 @@ describe("app._index loader — no finding trend or trend chart (gc-np1d.6)", ()
   });
 
   it.each(["Standard", "Professional"])(
-    "%s with ENABLE_TREND_CHART on: no trend scans read and no trend fields",
+    "%s: no trend scans read and no trend fields",
     async (plan) => {
-      process.env.ENABLE_TREND_CHART = "true";
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
       mockGetPlanFeatures.mockReturnValue(plan === "Standard" ? STANDARD_FEATURES : PRO_FEATURES);
 
@@ -1301,12 +1296,7 @@ describe("app._index loader — ignore-filtered counts (FIX 1/2)", () => {
     completedAt: new Date("2026-03-13T10:00:00Z"),
   };
 
-  afterEach(() => {
-    delete process.env.ENABLE_TREND_CHART;
-  });
-
   beforeEach(() => {
-    process.env.ENABLE_TREND_CHART = "true";
     mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
     mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
     mockGetScanUsage.mockResolvedValue({

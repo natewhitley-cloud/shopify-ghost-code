@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   findingGroupHeading,
+  findingGroupKey,
   findingGroupSubline,
   groupFindingRuns,
   OTHER_CODE_GROUP_LABEL,
@@ -54,6 +55,17 @@ describe("group header copy", () => {
     expect(OTHER_CODE_GROUP_LABEL).toBe("Other code");
   });
 
+  // Audit r1 LOW: a blank name is no app name.
+  it.each(["", " ", "\t \n"])("a blank app name (%j) is Other code", (name) => {
+    expect(findingGroupHeading(name)).toBe(OTHER_CODE_GROUP_LABEL);
+    expect(findingGroupKey(name)).toBeNull();
+  });
+
+  it("a name with spaces around it is still that app", () => {
+    expect(findingGroupKey(" Privy ")).toBe(" Privy ");
+    expect(findingGroupKey(null)).toBeNull();
+  });
+
   it("counts the group, and how many are shown only when fewer", () => {
     expect(findingGroupSubline(1)).toBe("1 finding");
     expect(findingGroupSubline(3)).toBe("3 findings");
@@ -63,6 +75,49 @@ describe("group header copy", () => {
 
   it("never claims an install status", () => {
     expect(findingGroupSubline(3)).not.toMatch(/uninstall|installed|leftover/i);
+  });
+});
+
+describe("blank app names group with no app (audit r1)", () => {
+  it("rankFindingGroups merges them into the one Other code group, last", () => {
+    expect(
+      rankFindingGroups([
+        { appName: "", severity: "HIGH", count: 2 },
+        { appName: null, severity: "LOW", count: 1 },
+        { appName: "  ", severity: "MEDIUM", count: 1 },
+        { appName: "Privy", severity: "LOW", count: 1 },
+      ]),
+    ).toEqual([
+      { appName: "Privy", count: 1 },
+      { appName: null, count: 4 },
+    ]);
+  });
+
+  it("groupFindingRuns puts consecutive blank and null rows in one Other code run", () => {
+    const runs = groupFindingRuns(
+      [{ appName: "Privy" }, { appName: "" }, { appName: null }, { appName: " " }],
+      [
+        { appName: "Privy", count: 1 },
+        { appName: null, count: 3 },
+      ],
+    );
+    expect(runs.map((r) => [r.appName, r.count, r.findings.length])).toEqual([
+      ["Privy", 1, 1],
+      [null, 3, 3],
+    ]);
+  });
+
+  it("sortIntoGroups puts blank-named rows with the no-app rows, last", () => {
+    const sorted = sortIntoGroups(
+      [
+        { appName: "", severity: "HIGH", filename: "a" },
+        { appName: "Privy", severity: "LOW", filename: "b" },
+        { appName: null, severity: "LOW", filename: "c" },
+        { appName: " ", severity: "MEDIUM", filename: "d" },
+      ],
+      [{ appName: "Privy", count: 1 }],
+    );
+    expect(sorted.map((f) => f.filename)).toEqual(["b", "a", "d", "c"]);
   });
 });
 

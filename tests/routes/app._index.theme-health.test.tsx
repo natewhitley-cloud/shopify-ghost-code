@@ -109,7 +109,6 @@ vi.mock("../../inngest/client", () => ({
   inngest: { send: vi.fn() },
 }));
 
-import { THEME_HEALTH_HEADING } from "../../app/components/ThemeHealthChecklist";
 import {
   advisoryDescription,
   APP_INCIDENT_ADVISORIES,
@@ -144,6 +143,10 @@ import Dashboard, {
   loader,
   MALICIOUS_FALLBACK_BODY,
   MALICIOUS_FALLBACK_HEADING,
+  SECURITY_FALLBACK_BODY,
+  SECURITY_FALLBACK_HEADING,
+  SECURITY_UNAVAILABLE_BODY,
+  SECURITY_UNAVAILABLE_HEADING,
 } from "../../app/routes/app._index";
 import { getFilteredFindingSummaryAndKept } from "../../app/services/finding-aggregation.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
@@ -301,16 +304,10 @@ const REMOVED_HOME_FIELDS = [
 ] as const;
 
 describe("Home has one summary: no theme health, tile, trend or Start here (gc-np1d.6)", () => {
-  afterEach(() => {
-    delete process.env.ENABLE_TREND_CHART;
-  });
-
   it.each(["free", "Standard", "Professional"])(
     "%s: none of the removed sections render, and none of their reads run",
     async (plan) => {
       setPlan(plan);
-      // The trend chart's flag on: it still adds nothing to Home.
-      process.env.ENABLE_TREND_CHART = "true";
 
       const data = await runLoader();
 
@@ -322,7 +319,8 @@ describe("Home has one summary: no theme health, tile, trend or Start here (gc-n
 
       const html = renderDashboard(data);
       expect(html).toContain("What it&#x27;s costing you");
-      expect(html).not.toContain(THEME_HEALTH_HEADING);
+      // The removed checklist's heading ("Theme health").
+      expect(html).not.toMatch(/>Theme health</);
       expect(html).not.toContain("theme-health-heading");
       expect(html).not.toContain("top-findings-heading");
       expect(html).not.toContain("health-score-tile");
@@ -430,8 +428,14 @@ describe("Home: known malicious code backup banner (gc-np1d.6)", () => {
     createdAt: new Date("2026-10-11T10:00:00Z"),
   };
 
+  // The advisory and menu kill switches on, so their stored findings show.
+  const SHOWN_FLAGS = ["APP_INCIDENT_ADVISORY_LIVE_ENABLED", "MENU_INJECTION_LIVE_ENABLED"];
   beforeEach(() => {
+    for (const flag of SHOWN_FLAGS) process.env[flag] = "true";
     mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 1 });
+  });
+  afterEach(() => {
+    for (const flag of SHOWN_FLAGS) delete process.env[flag];
   });
 
   it("the banner rendered: no fallback (no duplicate)", async () => {
@@ -479,14 +483,153 @@ describe("Home: known malicious code backup banner (gc-np1d.6)", () => {
     expect(renderDashboard(await runLoader())).not.toContain(MALICIOUS_FALLBACK_HEADING);
   });
 
-  it("while a scan runs: no fallback (the last completed scan's banners speak for it)", async () => {
-    mockScans.mockResolvedValue({
-      items: [{ ...SCAN, id: "scan-2", status: "IN_PROGRESS", completedAt: null }, SCAN],
-      hasNextPage: false,
-    });
+  // gc-xtno path: while a rescan runs (or after one failed) the banners come
+  // from the last successful scan. A failed read there never hides it.
+  const RUNNING = { ...SCAN, id: "scan-2", status: "IN_PROGRESS", completedAt: null };
+
+  /** The backup banner's markup, or null when none renders. */
+  function backupBanner(html: string, heading: string): string | null {
+    const start = html.indexOf(`heading="${heading.replace(/'/g, "&#x27;")}"`);
+    if (start === -1) return null;
+    return html.slice(html.lastIndexOf("<s-banner", start), html.indexOf("</s-banner>", start));
+  }
+
+  it("while a scan runs and the last scan's banners' read failed: the backup, linked to that scan", async () => {
+    mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
     (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
 
-    expect(renderDashboard(await runLoader())).not.toContain(MALICIOUS_FALLBACK_HEADING);
+    const banner = backupBanner(renderDashboard(await runLoader()), MALICIOUS_FALLBACK_HEADING);
+
+    expect(banner).not.toBeNull();
+    expect(banner).toMatch(/<a href="\/app\/scans\/scan-1"/);
+  });
+
+  it("while a scan runs and the last scan's security read throws: the unavailable backup, linked to that scan", async () => {
+    mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+    mockTypeCounts.mockImplementation(async (_id: string, types?: unknown) => {
+      // The fallback's lean security groupBy fails; nothing else reads it here.
+      if (types) throw new Error("db down");
+      return TYPE_COUNTS;
+    });
+
+    const data = await runLoader();
+    const html = renderDashboard(data);
+
+    expect(data.securityBackup).toEqual({ scanId: "scan-1", copy: "unavailable" });
+    const banner = backupBanner(html, SECURITY_UNAVAILABLE_HEADING);
+    expect(banner).not.toBeNull();
+    expect(banner).toContain(SECURITY_UNAVAILABLE_BODY);
+    expect(banner).toMatch(/<a href="\/app\/scans\/scan-1"/);
+    expect(banner).not.toMatch(/pricing_plans|Upgrade|free trial/i);
+    expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
+  });
+
+  it("after a failed scan, when finding the last successful scan throws: the unavailable backup, to the scans list", async () => {
+    mockScans.mockResolvedValue({
+      items: [
+        { ...RUNNING, status: "FAILED" },
+        { ...SCAN, status: "FAILED" },
+      ],
+      hasNextPage: false,
+    });
+    (getCompletedScansForShop as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+    const banner = backupBanner(renderDashboard(await runLoader()), SECURITY_UNAVAILABLE_HEADING);
+
+    expect(banner).not.toBeNull();
+    expect(banner).toMatch(/<a href="\/app\/scans"/);
+  });
+
+  it("while a scan runs and the last scan has no security finding: no backup", async () => {
+    mockScans.mockResolvedValue({ items: [RUNNING, SCAN], hasNextPage: false });
+    mockTypeCounts.mockResolvedValue(TYPE_COUNTS);
+
+    const data = await runLoader();
+
+    expect(data.securityBackup).toBeNull();
+    expect(renderDashboard(data)).not.toMatch(/<s-banner tone="(critical|warning)"/);
+  });
+
+  // Audit r1: the backup covers every never-paywalled type, not only malicious code.
+  it.each([
+    ["only an app advisory", { APP_INCIDENT_ADVISORY: 1 }],
+    ["only code in a menu", { MENU_INJECTION: 1 }],
+  ])(
+    "%s, and the banners' read failed: the neutral backup on every plan, never paywalled",
+    async (_what, counts) => {
+      for (const plan of ["free", "Standard", "Professional"]) {
+        setPlan(plan);
+        mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, ...counts });
+        (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+        const data = await runLoader();
+        const html = renderDashboard(data);
+
+        expect(data.securityRisks).toEqual([]);
+        const banner = backupBanner(html, SECURITY_FALLBACK_HEADING);
+        expect(banner).not.toBeNull();
+        expect(banner).toMatch(/^<s-banner tone="critical"/);
+        expect(banner).toContain(SECURITY_FALLBACK_BODY);
+        expect(banner).toMatch(
+          /<a href="\/app\/scans\/scan-1"[^>]*><s-button[^>]*>See what to check</,
+        );
+        expect(banner).not.toMatch(/malicious|pricing_plans|Upgrade|free trial/i);
+        expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
+      }
+    },
+  );
+
+  it("an advisory whose banner rendered: no backup (no duplicate)", async () => {
+    const advisory = APP_INCIDENT_ADVISORIES[0];
+    mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, APP_INCIDENT_ADVISORY: 1 });
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_id: string, f?: { findingType?: string }) =>
+        f?.findingType === "MALICIOUS_SCRIPT"
+          ? []
+          : [
+              {
+                ...ROW,
+                id: "a1",
+                findingType: "APP_INCIDENT_ADVISORY",
+                appName: advisory.appName,
+                description: advisoryDescription({ advisory, scriptHost: advisory.scriptHosts[0] }),
+              },
+            ],
+    );
+
+    const data = await runLoader();
+
+    expect(data.securityRisks.map((r) => r.kind)).toEqual(["advisory"]);
+    expect(data.securityBackup).toBeNull();
+    const html = renderDashboard(data);
+    expect(html).not.toContain(SECURITY_FALLBACK_HEADING);
+    expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
+  });
+
+  it("malicious code with its banner, and an advisory without one: the neutral backup", async () => {
+    mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 1, MENU_INJECTION: 1 });
+    // The malicious read works; the menu read finds no rows (no banner).
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_id: string, f?: { findingType?: string }) =>
+        f?.findingType === "MALICIOUS_SCRIPT" ? [ROW] : [],
+    );
+
+    const data = await runLoader();
+
+    expect(data.securityRisks.map((r) => r.kind)).toEqual(["malicious"]);
+    expect(data.securityBackup).toEqual({ scanId: "scan-1", copy: "security" });
+  });
+
+  it("no security findings at all: no backup", async () => {
+    mockTypeCounts.mockResolvedValue(TYPE_COUNTS);
+
+    const data = await runLoader();
+
+    expect(data.securityBackup).toBeNull();
+    const html = renderDashboard(data);
+    expect(html).not.toContain(SECURITY_FALLBACK_HEADING);
+    expect(html).not.toContain(SECURITY_UNAVAILABLE_HEADING);
+    expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
   });
 });
 
