@@ -194,6 +194,84 @@ export function groupCandidatesByApp(cands: readonly CleanCopyCandidate[]): Cand
 }
 
 // ---------------------------------------------------------------------------
+// Select page in about two clicks (gc-np1d.1, Nathan 2026-11-14): everything
+// removable starts selected, one checkbox per app, one consent line.
+// ---------------------------------------------------------------------------
+
+/** Every removable piece, in page order, capped at what the trial still allows. */
+export function initialSelection(groups: readonly CandidateGroup[], remaining: number): Set<string> {
+  const out = new Set<string>();
+  for (const g of groups) {
+    for (const c of g.selectable) {
+      if (out.size >= remaining) return out;
+      out.add(c.findingId);
+    }
+  }
+  return out;
+}
+
+export type AppSelectionState = "all" | "some" | "none";
+
+export function appSelectionState(
+  group: CandidateGroup,
+  selected: ReadonlySet<string>,
+): AppSelectionState {
+  const picked = group.selectable.filter((c) => selected.has(c.findingId)).length;
+  if (picked === 0) return "none";
+  return picked === group.selectable.length ? "all" : "some";
+}
+
+/** Tick or untick a whole app. Ticking adds only up to what the trial still allows. */
+export function toggleApp(
+  group: CandidateGroup,
+  selected: ReadonlySet<string>,
+  on: boolean,
+  remaining: number,
+): Set<string> {
+  const next = new Set(selected);
+  for (const c of group.selectable) {
+    if (!on) next.delete(c.findingId);
+    else if (!next.has(c.findingId) && next.size < remaining) next.add(c.findingId);
+  }
+  return next;
+}
+
+const PIECE_NOUN: Record<string, [string, string]> = {
+  GHOST_SCRIPT: ["script", "scripts"],
+  GHOST_STYLE: ["stylesheet", "stylesheets"],
+  GHOST_SNIPPET: ["snippet", "snippets"],
+  GHOST_PRECONNECT: ["connection hint", "connection hints"],
+};
+
+/** "1 script, 1 stylesheet, 1 snippet": what the app's removable pieces are. */
+export function appPiecesSummary(group: CandidateGroup): string {
+  const counts = new Map<string, number>();
+  for (const c of group.selectable) {
+    counts.set(c.findingType, (counts.get(c.findingType) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([type, n]) => {
+      const [one, many] = PIECE_NOUN[type] ?? ["piece of code", "pieces of code"];
+      return `${n} ${n === 1 ? one : many}`;
+    })
+    .join(", ");
+}
+
+/** One consent line for every app with a selection. */
+export function consentLabel(apps: readonly string[]): string {
+  const list =
+    apps.length <= 1
+      ? (apps[0] ?? "")
+      : `${apps.slice(0, -1).join(", ")} and ${apps[apps.length - 1]}`;
+  return `I've uninstalled ${list}.`;
+}
+
+export function selectionHeading(count: number): string {
+  if (count === 0) return "Nothing selected yet";
+  return `${count} ${count === 1 ? "piece" : "pieces"} of leftover code selected`;
+}
+
+// ---------------------------------------------------------------------------
 // Run refusals and failures
 // ---------------------------------------------------------------------------
 

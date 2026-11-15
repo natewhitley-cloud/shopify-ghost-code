@@ -267,12 +267,19 @@ describe("upgradeAsksConvertedBy", () => {
     expect(upgradeAsksConvertedBy("free", "Standard")).toEqual(FREE_ASKS);
   });
 
-  it("free -> Professional converts the Free asks and the speed teaser", () => {
-    expect(upgradeAsksConvertedBy("free", "Professional")).toEqual([...FREE_ASKS, "speed_teaser"]);
+  it("free -> Professional converts the Free asks, the speed teaser and the Clean copy card", () => {
+    expect(upgradeAsksConvertedBy("free", "Professional")).toEqual([
+      ...FREE_ASKS,
+      "speed_teaser",
+      "clean_copy_upsell",
+    ]);
   });
 
-  it("Standard -> Professional converts the speed teaser only", () => {
-    expect(upgradeAsksConvertedBy("Standard", "Professional")).toEqual(["speed_teaser"]);
+  it("Standard -> Professional converts the Professional asks only (gc-np1d.5)", () => {
+    expect(upgradeAsksConvertedBy("Standard", "Professional")).toEqual([
+      "speed_teaser",
+      "clean_copy_upsell",
+    ]);
   });
 
   it("Professional -> Professional converts nothing", () => {

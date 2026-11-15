@@ -13,6 +13,12 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// gc-np1d.4: the value-action card has its own tests (app._index.value-action);
+// here it renders nothing so the existing assertions keep their meaning.
+vi.mock("../../app/services/value-action.server", () => ({
+  loadValueAction: vi.fn(async () => ({ card: null, cleanCopyFindingIds: [] })),
+}));
+
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
 }));

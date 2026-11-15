@@ -12,6 +12,12 @@ import type { LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 
+// gc-np1d.4: the value-action card has its own tests (app._index.value-action);
+// here it renders nothing so the existing assertions keep their meaning.
+vi.mock("../../app/services/value-action.server", () => ({
+  loadValueAction: vi.fn(async () => ({ card: null, cleanCopyFindingIds: [] })),
+}));
+
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
 }));
@@ -115,6 +121,7 @@ import {
   getScanUsage,
 } from "../../app/lib/plan-gating.server";
 import type { HealthRow } from "../../app/lib/theme-health";
+import type { ValueActionCard } from "../../app/lib/value-action";
 import {
   getFindingSummary,
   getFindingsForScan,
@@ -135,6 +142,7 @@ import { isSoftLaunchLive } from "../../app/services/soft-launch-flags.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
+import { loadValueAction } from "../../app/services/value-action.server";
 import { authenticate } from "../../app/shopify.server";
 import { COLOR_SUCCESS, COLOR_WARNING, LANE_GREY_FILL } from "../../app/styles/shared";
 import {
@@ -535,7 +543,7 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     const html = renderDashboard(data);
     expect(html).not.toContain("theme-health-heading");
     expect(html).toContain('<h2 class="dashboard-section-title">Findings</h2>');
-    expect(html).toContain("Scan Actions");
+    expect(html).toMatch(/<s-button slot="primary-action"[^>]*>Scan now<\/s-button>/);
   });
 
   it("a vintage theme is flagged", async () => {
@@ -572,9 +580,6 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     expect(html.indexOf("What it&#x27;s costing you")).toBeGreaterThan(-1);
     expect(html.indexOf(`>${THEME_HEALTH_HEADING}</h2>`)).toBeGreaterThan(
       html.indexOf("What it&#x27;s costing you"),
-    );
-    expect(html.indexOf(`>${THEME_HEALTH_HEADING}</h2>`)).toBeLessThan(
-      html.indexOf("Scan Actions"),
     );
     const section = sectionOf(html);
     expect(section).toContain("What your last scan checked, beyond the findings above.");
@@ -1994,11 +1999,17 @@ describe("Home: an affected-app advisory is a security risk, not malicious code 
 // ---------------------------------------------------------------------------
 
 describe("Home scan control: manual-scan limit copy (gc-d0ui)", () => {
-  /** The "New Scan" card of a rendered Home. */
+  /**
+   * Home's scan control (gc-np1d.4): the header's Scan now button plus the
+   * "Scan controls" row under the header (usage, next scan, upgrade link). It
+   * replaced the old "New Scan" card at the bottom of the page.
+   */
   function scanCardOf(html: string): string {
-    const start = html.indexOf("<s-heading>New Scan</s-heading>");
+    const button = /<s-button slot="primary-action"[^>]*>Scan now<\/s-button>/.exec(html);
+    expect(button).not.toBeNull();
+    const start = html.indexOf('aria-label="Scan controls"');
     expect(start).toBeGreaterThan(-1);
-    return html.slice(start, html.indexOf("<s-heading>Scan History</s-heading>", start));
+    return `${button![0]}${html.slice(start, html.indexOf("</div>", start))}`;
   }
 
   function usage(used: number, limit: number, period: "day" | "week" | "month", start: string) {
@@ -2511,5 +2522,87 @@ describe("Home: security risks never vanish during a rescan, and count per banne
         summary: 0,
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-np1d.4: Home's value actions (rule ~/.claude/rules/merchant-ux.md).
+// The card model has its own tests (tests/lib/value-action.test.ts); these
+// check where Home puts it and what its buttons do.
+// ---------------------------------------------------------------------------
+
+describe("Home value actions (gc-np1d.4)", () => {
+  const CLEAN_COPY_CARD: ValueActionCard = {
+    kind: "clean_copy",
+    heading: "Remove 12 pieces of leftover code for you",
+    body: "4 apps you uninstalled left code in your theme.",
+    note: "Saves paying a developer or editing theme code yourself.",
+    apps: [{ name: "Privy", count: 3 }],
+    primary: { label: "Make a clean copy", action: "clean_copy" },
+    secondary: null,
+    telemetryKey: "clean_copy_action",
+    upsellKey: null,
+  };
+  const DIY_CARD: ValueActionCard = {
+    ...CLEAN_COPY_CARD,
+    kind: "diy",
+    heading: "Fix 12 pieces of leftover code",
+    note: null,
+    primary: { label: "See how to fix them", action: "diy" },
+    secondary: { label: "Upgrade to Professional to remove them for you", action: "upgrade" },
+    telemetryKey: "clean_copy_diy",
+    upsellKey: "clean_copy_upsell",
+  };
+
+  it("loads the card for the latest finished scan, reusing its kept findings", async () => {
+    vi.mocked(loadValueAction).mockResolvedValue({ card: CLEAN_COPY_CARD, cleanCopyFindingIds: [] });
+    const data = await runLoader();
+    expect(loadValueAction).toHaveBeenCalledWith(
+      expect.objectContaining({ scan: expect.objectContaining({ id: SCAN.id }) }),
+    );
+    expect(data.valueAction).toEqual(CLEAN_COPY_CARD);
+  });
+
+  it("no card while the latest scan is running (the 3s poll reads nothing for it)", async () => {
+    mockScans.mockResolvedValue({ items: [{ ...SCAN, status: "IN_PROGRESS" }], hasNextPage: false });
+    const data = await runLoader();
+    expect(loadValueAction).not.toHaveBeenCalled();
+    expect(data.valueAction).toBeNull();
+  });
+
+  it("puts Scan now in the header and the card above the findings summary", async () => {
+    vi.mocked(loadValueAction).mockResolvedValue({ card: CLEAN_COPY_CARD, cleanCopyFindingIds: [] });
+    const html = renderDashboard(await runLoader());
+    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Scan now<\/s-button>/);
+    const cardAt = html.indexOf("Remove 12 pieces of leftover code for you");
+    expect(cardAt).toBeGreaterThan(-1);
+    expect(cardAt).toBeLessThan(html.indexOf('<h2 class="dashboard-section-title">Findings</h2>'));
+    // Its button opens the select page for the latest scan.
+    expect(html).toMatch(
+      /<a href="\/app\/scans\/scan-1\/clean-copy"[^>]*><s-button variant="primary">Make a clean copy<\/s-button><\/a>/,
+    );
+    // The old bottom card is gone.
+    expect(html).not.toContain("Scan Actions");
+    expect(html).not.toContain("Start New Scan");
+  });
+
+  it("Standard: do it yourself first, the upgrade second, to Shopify's plan page", async () => {
+    setPlan("Standard");
+    vi.mocked(loadValueAction).mockResolvedValue({ card: DIY_CARD, cleanCopyFindingIds: [] });
+    const html = renderDashboard(await runLoader());
+    const diyAt = html.indexOf('href="/app/scans/scan-1#scan-findings"');
+    const upgradeAt = html.indexOf("Upgrade to Professional to remove them for you");
+    expect(diyAt).toBeGreaterThan(-1);
+    expect(upgradeAt).toBeGreaterThan(diyAt);
+    expect(html).toMatch(
+      /<a href="https:\/\/admin\.shopify\.com\/store\/x\/charges\/ghostcode\/pricing_plans" target="_top"[^>]*>Upgrade to Professional to remove them for you<\/a>/,
+    );
+  });
+
+  it("onboarding (no scan yet) shows neither the header button nor a card", async () => {
+    mockScans.mockResolvedValue({ items: [], hasNextPage: false });
+    const html = renderDashboard(await runLoader());
+    expect(html).not.toContain('slot="primary-action"');
+    expect(html).toContain("Start First Scan");
   });
 });

@@ -131,6 +131,24 @@ export async function getFindingsForScan(
 }
 
 /**
+ * Per-app counts of the given finding types for a scan, in ONE groupBy
+ * (gc-np1d.2: the value-action card's leftover count for a shop with no
+ * ignores, so plans without Clean copy never read the full findings list).
+ * `appName` null rows are the unknown app.
+ */
+export async function countFindingsByApp(
+  scanId: string,
+  findingTypes: readonly string[],
+): Promise<Array<{ appName: string | null; count: number }>> {
+  const rows = await db.finding.groupBy({
+    by: ["appName"],
+    where: { scanId, findingType: { in: findingTypes as FindingType[] } },
+    _count: { _all: true },
+  });
+  return rows.map((r) => ({ appName: r.appName, count: r._count._all }));
+}
+
+/**
  * Summary aggregate for a scan: total count + breakdown by both axes.
  * Executed as two parallel queries to minimise latency.
  */

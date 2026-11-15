@@ -32,6 +32,8 @@ import {
 import { CleanCopyRunLines } from "../components/CleanCopyRunLines";
 import { readChecked } from "../components/polaris-events";
 import {
+  appPiecesSummary,
+  appSelectionState,
   type CleanCopyCandidate,
   CANDIDATE_BLOCK_REASONS,
   type CandidateBlockReason,
@@ -40,10 +42,14 @@ import {
   CLEAN_COPY_SCOPE,
   cleanCopyRunPath,
   type CleanCopyRunLine,
+  consentLabel,
   type CleanCopyTrialView,
   findingRefusalCopy,
   groupCandidatesByApp,
+  initialSelection,
   runRefusalCopy,
+  selectionHeading,
+  toggleApp,
   trialNotice,
   trialOverSelectionNote,
   trialRemaining,
@@ -69,11 +75,14 @@ import {
 import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { authenticate } from "../shopify.server";
 import {
+  ACCENT_BORDER,
+  ACCENT_FILL,
+  BG_HOVER,
   BORDER_DEFAULT,
   BG_SURFACE,
+  COLOR_INFO,
   groundStyle,
   hairline,
-  TEXT_SUBDUED,
   textSubdued,
 } from "../styles/shared";
 
@@ -363,6 +372,13 @@ export const CLEAN_COPY_NOTHING_TO_SELECT =
   "None of the leftover code in this scan can be removed in a clean copy.";
 export const CLEAN_COPY_SUBMIT = "Make a clean copy";
 export const CLEAN_COPY_ALLOW_SCOPE = "Allow theme changes";
+export const SCAN_BREADCRUMB = "Scan results";
+export const CONSENT_DETAILS = "Removing code for an app you still use can break it.";
+export const SCOPE_PROMPT_NOTE =
+  "The first time, Shopify asks you to allow theme changes. We start right after.";
+export const SHOW_WHATS_REMOVED = "Show what's removed";
+export const SHOW_WHY_NOT = "Show why";
+export const APP_NOTHING_REMOVABLE = "Nothing from this app can be removed in a clean copy.";
 export const CLEAN_COPY_SCOPE_DECLINED =
   "GhostCode needs permission to change themes to make a clean copy. Nothing was changed.";
 export const CLEAN_COPY_SCOPE_UNAVAILABLE =
@@ -434,6 +450,7 @@ const codeBlockStyle: React.CSSProperties = {
   wordBreak: "break-all",
 };
 
+/** One removable piece inside an app's "Show what's removed" (untick to leave it out). */
 function CandidateRow({
   candidate,
   checked,
@@ -470,6 +487,98 @@ function BlockedRow({ candidate, note }: { candidate: CleanCopyCandidate; note: 
   );
 }
 
+const actionCardStyle: React.CSSProperties = {
+  background: "#ffffff",
+  borderRadius: "12px",
+  padding: "22px 24px",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+  border: `1px solid ${ACCENT_BORDER}`,
+  borderLeft: `6px solid ${ACCENT_FILL}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: "14px",
+};
+
+const appListStyle: React.CSSProperties = {
+  background: "#ffffff",
+  borderRadius: "12px",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+  overflow: "hidden",
+};
+
+const appRowStyle: React.CSSProperties = {
+  padding: "14px 20px",
+  borderBottom: `1px solid ${BG_HOVER}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+};
+
+/** One collapsed row per app: tick to include all its pieces, open to see (or untick) each one. */
+function AppRow({
+  group,
+  selected,
+  onToggleApp,
+  onTogglePiece,
+  refusedFindings,
+}: {
+  group: CandidateGroup;
+  selected: ReadonlySet<string>;
+  onToggleApp: (on: boolean) => void;
+  onTogglePiece: (findingId: string, on: boolean) => void;
+  refusedFindings: ReadonlyMap<string, string>;
+}) {
+  const appLabel = group.appName ?? "Unknown app";
+  const state = appSelectionState(group, selected);
+  const summary = appPiecesSummary(group);
+  const removable = group.selectable.length;
+  return (
+    <div style={appRowStyle}>
+      {removable > 0 ? (
+        <s-checkbox
+          label={`${appLabel} · ${removable} ${removable === 1 ? "piece" : "pieces"}`}
+          details={summary}
+          checked={state === "all" ? true : undefined}
+          indeterminate={state === "some" ? true : undefined}
+          onChange={(e: unknown) => onToggleApp(readChecked(e))}
+        />
+      ) : (
+        <div>
+          <strong style={{ fontSize: "14px" }}>{appLabel}</strong>
+          <p style={{ ...textSubdued, margin: "2px 0 0" }}>{APP_NOTHING_REMOVABLE}</p>
+        </div>
+      )}
+      <details>
+        <summary style={{ cursor: "pointer", color: COLOR_INFO, fontSize: "13px" }}>
+          {removable > 0 ? SHOW_WHATS_REMOVED : SHOW_WHY_NOT}
+        </summary>
+        <s-stack direction="block" gap="base">
+          {group.selectable.map((c) => (
+            <CandidateRow
+              key={c.findingId}
+              candidate={c}
+              checked={selected.has(c.findingId)}
+              onToggle={(on) => onTogglePiece(c.findingId, on)}
+              note={
+                refusedFindings.has(c.findingId)
+                  ? findingRefusalCopy(refusedFindings.get(c.findingId) as string)
+                  : null
+              }
+            />
+          ))}
+          {group.blocked.map((c) => (
+            <BlockedRow
+              key={c.findingId}
+              candidate={c}
+              note={candidateBlockCopy(c.blocked as CandidateBlockReason)}
+            />
+          ))}
+        </s-stack>
+      </details>
+    </div>
+  );
+}
+
 export default function CleanCopySelect() {
   const {
     scanId,
@@ -484,24 +593,30 @@ export default function CleanCopySelect() {
   const actionData = useActionData<typeof action>() as CleanCopySelectActionData | undefined;
   const navigation = useNavigation();
   const submit = useSubmit();
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [confirmed, setConfirmed] = useState<ReadonlySet<string>>(new Set());
+  const remaining = trialRemaining(trial);
+  // gc-np1d.1: everything removable starts selected; the merchant unticks what to keep.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() =>
+    initialSelection(groups, remaining),
+  );
+  const [consented, setConsented] = useState(false);
   const [scopeNote, setScopeNote] = useState<string | null>(null);
 
   const submitting = navigation.state === "submitting";
-  const remaining = trialRemaining(trial);
   const overTrial = selected.size > remaining;
+  const appsToConfirm = appsNeedingConfirmation(groups, selected);
+  const confirmed = new Set(consented ? appsToConfirm : []);
   const canSubmit = canSubmitSelection(groups, selected, confirmed, remaining) && !submitting;
   const trialBanner = trial ? trialNotice(trial) : null;
   const refusedFindings = new Map((actionData?.findings ?? []).map((f) => [f.findingId, f.reason]));
   const shownRefusal = actionData?.refusal ?? refusal;
 
-  const toggle = (set: ReadonlySet<string>, key: string, on: boolean) => {
-    const next = new Set(set);
-    if (on) next.add(key);
-    else next.delete(key);
-    return next;
-  };
+  const togglePiece = (findingId: string, on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (!on) next.delete(findingId);
+      else if (next.size < remaining) next.add(findingId);
+      return next;
+    });
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -515,7 +630,7 @@ export default function CleanCopySelect() {
     }
     const form = new FormData();
     for (const id of selected) form.append("findingIds", id);
-    for (const app of appsNeedingConfirmation(groups, selected)) form.append("confirmedApps", app);
+    for (const app of appsToConfirm) form.append("confirmedApps", app);
     submit(form, { method: "post" });
   }
 
@@ -523,83 +638,65 @@ export default function CleanCopySelect() {
 
   return (
     <s-page heading={CLEAN_COPY_HEADING}>
-      <Link to={`/app/scans/${encodeURIComponent(scanId)}`} slot="primary-action">
-        Back to scan
+      <Link to={scanPath(scanId)} slot="breadcrumb-actions">
+        {SCAN_BREADCRUMB}
       </Link>
       <div style={hairline} />
       <div style={groundStyle}>
         <CleanCopyRunLines lines={runLines} />
         {shownRefusal && <s-banner tone="critical">{runRefusalCopy(shownRefusal)}</s-banner>}
-        {scopeNote && <s-banner tone="warning">{scopeNote}</s-banner>}
         {trialBanner && <s-banner tone={trialBanner.tone}>{trialBanner.text}</s-banner>}
-        <p style={{ margin: 0, color: TEXT_SUBDUED, fontSize: "14px", lineHeight: "21px" }}>
-          {CLEAN_COPY_INTRO}
-        </p>
-        {omittedFiles > 0 && (
-          <s-banner tone="info">{omittedFilesNotice(omittedFiles, fileLimit)}</s-banner>
-        )}
         {!refusal && groups.length === 0 && (
           <s-banner tone="info">{CLEAN_COPY_NOTHING_TO_SELECT}</s-banner>
         )}
-        {groups.map((group) => {
-          const appLabel = group.appName ?? "Unknown app";
-          const hasSelection = group.selectable.some((c) => selected.has(c.findingId));
-          return (
-            <s-section key={group.appName ?? "unknown-app"} heading={appLabel}>
-              <s-stack direction="block" gap="base">
-                {group.appName !== null && group.selectable.length > 0 && (
-                  <s-checkbox
-                    label={`I've uninstalled ${group.appName}`}
-                    checked={confirmed.has(group.appName) ? true : undefined}
-                    onChange={(e: unknown) =>
-                      setConfirmed((prev) => toggle(prev, group.appName as string, readChecked(e)))
-                    }
-                  />
-                )}
-                {group.appName !== null && hasSelection && !confirmed.has(group.appName) && (
-                  <p style={{ ...textSubdued, margin: 0 }}>
-                    {`Confirm you've uninstalled ${group.appName} to continue.`}
-                  </p>
-                )}
-                {group.selectable.map((c) => (
-                  <CandidateRow
-                    key={c.findingId}
-                    candidate={c}
-                    checked={selected.has(c.findingId)}
-                    onToggle={(on) => setSelected((prev) => toggle(prev, c.findingId, on))}
-                    note={
-                      refusedFindings.has(c.findingId)
-                        ? findingRefusalCopy(refusedFindings.get(c.findingId) as string)
-                        : null
-                    }
-                  />
-                ))}
-                {group.blocked.map((c) => (
-                  <BlockedRow
-                    key={c.findingId}
-                    candidate={c}
-                    note={candidateBlockCopy(c.blocked as CandidateBlockReason)}
-                  />
-                ))}
-              </s-stack>
-            </s-section>
-          );
-        })}
         {hasSelectable && (
-          <div>
-            <s-button
-              variant="primary"
-              disabled={canSubmit ? undefined : true}
-              loading={submitting ? true : undefined}
-              onClick={() => void handleSubmit()}
-            >
-              {hasWriteScope ? CLEAN_COPY_SUBMIT : CLEAN_COPY_ALLOW_SCOPE}
-            </s-button>
-            {overTrial && remaining > 0 && (
-              <p style={{ ...textSubdued, margin: "8px 0 0" }}>
-                {trialOverSelectionNote(remaining)}
-              </p>
+          <div style={actionCardStyle}>
+            <h2 style={{ margin: 0, fontSize: "20px", lineHeight: "28px", fontWeight: 650 }}>
+              {selectionHeading(selected.size)}
+            </h2>
+            <p style={{ margin: 0, fontSize: "14px", lineHeight: "21px", maxWidth: "760px" }}>
+              {CLEAN_COPY_INTRO}
+            </p>
+            {appsToConfirm.length > 0 && (
+              <s-checkbox
+                label={consentLabel(appsToConfirm)}
+                details={CONSENT_DETAILS}
+                checked={consented ? true : undefined}
+                onChange={(e: unknown) => setConsented(readChecked(e))}
+              />
             )}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
+              <s-button
+                variant="primary"
+                disabled={canSubmit ? undefined : true}
+                loading={submitting ? true : undefined}
+                onClick={() => void handleSubmit()}
+              >
+                {CLEAN_COPY_SUBMIT}
+              </s-button>
+              {!hasWriteScope && <span style={textSubdued}>{SCOPE_PROMPT_NOTE}</span>}
+            </div>
+            {scopeNote && <s-banner tone="warning">{scopeNote}</s-banner>}
+            {overTrial && remaining > 0 && (
+              <p style={{ ...textSubdued, margin: 0 }}>{trialOverSelectionNote(remaining)}</p>
+            )}
+          </div>
+        )}
+        {omittedFiles > 0 && (
+          <s-banner tone="info">{omittedFilesNotice(omittedFiles, fileLimit)}</s-banner>
+        )}
+        {groups.length > 0 && (
+          <div style={appListStyle}>
+            {groups.map((group) => (
+              <AppRow
+                key={group.appName ?? "unknown-app"}
+                group={group}
+                selected={selected}
+                onToggleApp={(on) => setSelected((prev) => toggleApp(group, prev, on, remaining))}
+                onTogglePiece={togglePiece}
+                refusedFindings={refusedFindings}
+              />
+            ))}
           </div>
         )}
       </div>

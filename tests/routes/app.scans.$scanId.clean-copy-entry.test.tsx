@@ -90,6 +90,7 @@ vi.mock("../../app/models/app-removal.server", () => ({
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
+  countFindingsByApp: vi.fn(async () => []),
   getFindingSummary: vi.fn(),
   getFindingsForScan: vi.fn(),
   getTopFindingsOfTypes: vi.fn(),
@@ -164,6 +165,7 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 import { canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import {
   getFindingsForScan,
+  countFindingsByApp,
   getAppAttributionForScan,
   getFindingFilterOptionsForScan,
   getFindingSummary,
@@ -260,7 +262,20 @@ const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const unfilteredFindingReads = () =>
   mockGetFindingsForScan.mock.calls.filter((call) => call[1] === undefined).length;
 
-type Entry = { cleanCopy: { eligible: boolean; count: number } };
+type Entry = {
+  valueAction: { primary: { action: string } | null; heading: string } | null;
+};
+
+/**
+ * gc-np1d.3: the old `cleanCopy: { eligible, count }` is now the value-action
+ * card. Eligible = the card's action is Clean copy; count = the number in its
+ * heading ("Remove N pieces of leftover code for you").
+ */
+function entryOf(res: unknown): { eligible: boolean; count: number } {
+  const card = (res as Entry).valueAction;
+  if (card?.primary?.action !== "clean_copy") return { eligible: false, count: 0 };
+  return { eligible: true, count: Number(/(\d+) piece/.exec(card.heading)?.[1] ?? NaN) };
+}
 
 const run = () =>
   loader({
@@ -305,6 +320,24 @@ beforeEach(() => {
   (getTypeSeverityCountsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   (getTopFindingsInGroup as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   mockGetFindingsForScan.mockResolvedValue([]);
+  // gc-np1d.2: the card's leftover count is one groupBy over the same findings
+  // (read through the mock's implementation, so it never counts as a findings read).
+  vi.mocked(countFindingsByApp).mockImplementation(async (_scanId, types) => {
+    const impl = mockGetFindingsForScan.getMockImplementation() as
+      | ((...args: unknown[]) => unknown)
+      | undefined;
+    const rows = (impl ? await Promise.resolve(impl()).catch(() => []) : []) as Array<{
+      findingType: string;
+      appName?: string | null;
+    }>;
+    const counts = new Map<string | null, number>();
+    for (const r of rows) {
+      if (!types.includes(r.findingType)) continue;
+      const key = r.appName ?? null;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts].map(([appName, count]) => ({ appName, count }));
+  });
   (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
     fingerprints: new Set(),
     appNames: new Set(),
@@ -347,14 +380,14 @@ describe("scan page Clean copy entry point (loader)", () => {
       { id: "d", findingType: "GHOST_STYLE", spanStart: null, spanEnd: null, spanSha256: null },
     ]);
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: true, count: 2 });
+    expect(entryOf(res)).toEqual({ eligible: true, count: 2 });
   });
 
   it("not eligible, and no findings read, when the flag is off", async () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+    expect(entryOf(res)).toEqual({ eligible: false, count: 0 });
     expect(unfilteredFindingReads()).toBe(0);
   });
 
@@ -363,7 +396,7 @@ describe("scan page Clean copy entry point (loader)", () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
       mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
       const res = (await run()) as unknown as Entry;
-      expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+      expect(entryOf(res)).toEqual({ eligible: false, count: 0 });
     }
     expect(unfilteredFindingReads()).toBe(0);
   });
@@ -373,12 +406,12 @@ describe("scan page Clean copy entry point (loader)", () => {
       { id: "a", findingType: "GHOST_SCRIPT", spanStart: null, spanEnd: null, spanSha256: null },
     ]);
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+    expect(entryOf(res)).toEqual({ eligible: false, count: 0 });
   });
 
   it("not eligible for a scan with no findings", async () => {
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+    expect(entryOf(res)).toEqual({ eligible: false, count: 0 });
   });
 });
 
@@ -396,7 +429,7 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
       withSpan("unknown", "GHOST_SCRIPT", { appName: null }),
     ]);
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: true, count: 1 });
+    expect(entryOf(res)).toEqual({ eligible: true, count: 1 });
   });
 
   it("not on an older scan: no button, no findings read", async () => {
@@ -404,7 +437,7 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
     dbMock.scan.findFirst.mockResolvedValue({ id: "scan-2" });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
     const res = (await run()) as unknown as Entry;
-    expect(res.cleanCopy).toEqual({ eligible: false, count: 0 });
+    expect(entryOf(res)).toEqual({ eligible: false, count: 0 });
     expect(unfilteredFindingReads()).toBe(0);
   });
 
@@ -414,7 +447,7 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
       lastThemePublishAt: new Date("2026-03-21T00:00:00Z"),
     });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
-    expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
+    expect(entryOf(await run()).eligible).toBe(false);
   });
 
   it("r4: counts only findings in the files the select page can show", async () => {
@@ -424,18 +457,18 @@ describe("gc-tib.10: the count matches what the select page can offer", () => {
       }),
     );
     mockGetFindingsForScan.mockResolvedValue(many);
-    expect(((await run()) as unknown as Entry).cleanCopy.count).toBe(50);
+    expect(entryOf(await run()).count).toBe(50);
   });
 
   it("not when the scan's live-embed status is unknown", async () => {
     (getScanById as ReturnType<typeof vi.fn>).mockResolvedValue({ ...SCAN, liveAppHooks: null });
     mockGetFindingsForScan.mockResolvedValue([withSpan("a")]);
-    expect(((await run()) as unknown as Entry).cleanCopy.eligible).toBe(false);
+    expect(entryOf(await run()).eligible).toBe(false);
   });
 });
 
 describe("gc-tib.21: no button the select page would refuse", () => {
-  const eligible = async () => ((await run()) as unknown as Entry).cleanCopy;
+  const eligible = async () => entryOf(await run());
   const main = (over: Record<string, unknown>) => ({
     ok: true,
     value: {
@@ -566,18 +599,51 @@ describe("scan page Clean copy entry point (rendered)", () => {
     );
   }
 
-  it("shows one secondary button linking to clean-copy when eligible", async () => {
+  // gc-np1d.3 (Nathan 2026-11-14, "where's Waldo"): the Clean copy action is the
+  // page header's primary action and a card at the top, never a small button
+  // under the Findings heading.
+  it("puts Make a clean copy in the header and in a card above the results", async () => {
     mockGetFindingsForScan.mockResolvedValue([withSpan("a"), withSpan("b")]);
     const html = await renderPage();
-    expect(html.match(/Make a clean copy \(2\)/g)).toHaveLength(1);
+    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Make a clean copy<\/s-button>/);
+    expect(html).toContain("Remove 2 pieces of leftover code for you");
     expect(html).toMatch(
-      /<a href="\/app\/scans\/scan-1\/clean-copy"[^>]*><s-button variant="secondary">Make a clean copy \(2\)<\/s-button><\/a>/,
+      /<a href="\/app\/scans\/scan-1\/clean-copy"[^>]*><s-button variant="primary">Make a clean copy<\/s-button><\/a>/,
     );
+    // The card comes before the findings list.
+    expect(html.indexOf("Remove 2 pieces")).toBeLessThan(html.indexOf('id="scan-findings"'));
+    // No "Back" in the header: the scan history is the breadcrumb.
+    expect(html).toMatch(/<a [^>]*slot="breadcrumb-actions"[^>]*>Scan History<\/a>/);
+    expect(html).not.toContain("Back to History");
+    // The old small button is gone.
+    expect(html).not.toMatch(/Make a clean copy \(\d+\)/);
   });
 
-  it("shows no button when not eligible", async () => {
+  it("labels the findings the copy removes and folds their manual steps under Do it yourself", async () => {
+    const a = withSpan("a");
+    const c = withSpan("c", "GHOST_PAGE");
+    mockGetFindingsForScan.mockResolvedValue([a, c]);
+    (getFindingsPageForScan as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [a, c],
+      hasNextPage: false,
+      nextCursor: null,
+    });
+    const html = await renderPage();
+    // One label, for the removable finding only.
+    expect(html.match(/Included in your clean copy/g)).toHaveLength(1);
+    const rowA = html.slice(html.indexOf('id="finding-a"'), html.indexOf('id="finding-c"'));
+    expect(rowA).toContain("Included in your clean copy");
+    expect(rowA).toMatch(/<details><summary[^>]*>Do it yourself<\/summary>[\s\S]*Copy removal steps[\s\S]*<\/details>/);
+    // The other finding keeps its steps and buttons in the open.
+    const rowC = html.slice(html.indexOf('id="finding-c"'));
+    expect(rowC.slice(0, rowC.indexOf("</li>"))).not.toContain("Do it yourself");
+  });
+
+  it("offers no clean copy while Clean copy is off; the header asks for a new scan instead", async () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
-    expect(await renderPage()).not.toContain("clean copy");
+    const html = await renderPage();
+    expect(html).not.toContain("clean copy");
+    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Scan again<\/s-button>/);
   });
 });
 

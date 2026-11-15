@@ -2,7 +2,7 @@ import type { FindingType } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData, useNavigate } from "react-router";
 
 import { CleanCopyRunLines } from "../components/CleanCopyRunLines";
 import { FormattedDate } from "../components/FormattedDate";
@@ -14,6 +14,7 @@ import {
   useGuardIncidentBanners,
 } from "../components/StorefrontIncidentBanner";
 import { TopFindings } from "../components/TopFindings";
+import { ValueActionCard } from "../components/ValueActionCard";
 import {
   adminResourceLinkLabel,
   adminResourceLocatorLabel,
@@ -55,7 +56,6 @@ import type { RemovalSafety } from "../lib/finding-safety";
 import { FINDING_TYPE_LABELS } from "../lib/finding-type-labels";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
-import { logger } from "../lib/logger.server";
 import { skippedCategoryLabels } from "../lib/optional-scopes";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
@@ -91,6 +91,11 @@ import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upg
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { isScanRunning, useScanPolling } from "../lib/use-scan-polling";
 import {
+  recordValueActionClick,
+  SCAN_AGAIN_LABEL,
+  SCAN_FINDINGS_ANCHOR,
+} from "../lib/value-action";
+import {
   parseWalkCoverage,
   walkCoverageBelowCaps,
   walkCoverageNotices,
@@ -115,7 +120,6 @@ import {
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
 import type { ShopIgnores } from "../models/ignored-finding.server";
-import { getScanManifest } from "../models/scan-manifest.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
@@ -124,9 +128,8 @@ import {
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
-import { appLeftoverFindings, parseLiveAppHooks } from "../services/app-removal.server";
+import { appLeftoverFindings } from "../services/app-removal.server";
 import { createCleanCopyAdmin } from "../services/clean-copy-admin.server";
-import { checkCleanCopyFreshness, offerableCleanCopyFiles } from "../services/clean-copy.server";
 import {
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
@@ -143,7 +146,6 @@ import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.serve
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanCoverage, ScanDiff } from "../services/scan-differ.server";
 import { advisoryStartHereCopy, buildSecurityRisks } from "../services/security-risk.server";
-import { isCleanCopyEnabled } from "../services/soft-launch-flags.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
@@ -151,6 +153,7 @@ import { getFreeTopFindings, getFullListTopFindings } from "../services/top-find
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrade-return.server";
+import { loadValueAction } from "../services/value-action.server";
 import { authenticate } from "../shopify.server";
 import {
   BG_BADGE_SUCCESS,
@@ -812,6 +815,15 @@ function CopyRemovalStepsButton({
   );
 }
 
+export const IN_CLEAN_COPY_LABEL = "Included in your clean copy";
+export const DO_IT_YOURSELF_LABEL = "Do it yourself";
+const doItYourselfSummary: React.CSSProperties = {
+  cursor: "pointer",
+  color: COLOR_INFO,
+  fontSize: "14px",
+  margin: "4px 0",
+};
+
 /** What the old confidence chip and its tooltip said, as one plain sentence. */
 const CONFIDENCE_SENTENCES = {
   signature: "Matched a known app signature.",
@@ -825,6 +837,7 @@ export function FindingRow({
   shopDomain,
   themeId,
   anchor,
+  inCleanCopy = false,
 }: {
   finding: FindingLike;
   isNew?: boolean;
@@ -837,6 +850,11 @@ export function FindingRow({
    * (a malicious finding is anchored in the security alert, not the list).
    */
   anchor?: boolean;
+  /**
+   * gc-np1d.3: the page's clean copy removes this finding. The card says so,
+   * and its manual steps and buttons fold under "Do it yourself".
+   */
+  inCleanCopy?: boolean;
 }) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   const confidence = getFindingConfidence(finding.findingType);
@@ -943,46 +961,99 @@ export function FindingRow({
           {impact}
         </div>
       )}
-      <div style={findingNote}>
-        <strong style={findingNoteLabel}>{cardCopy.stepsHeading}</strong>
-        {cardCopy.steps ? (
-          <ol style={findingSteps}>
-            {cardCopy.steps.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-        ) : (
-          getFindingRemediation(finding.findingType, finding.filename)
-        )}
-      </div>
-      {/* Actions, in order: open the place to fix it (primary, when the finding
+      {inCleanCopy ? (
+        <>
+          <div style={findingSafetyRow}>
+            <s-badge tone="success">{IN_CLEAN_COPY_LABEL}</s-badge>
+          </div>
+          <details>
+            <summary style={doItYourselfSummary}>{DO_IT_YOURSELF_LABEL}</summary>
+            <div style={findingNote}>
+              <strong style={findingNoteLabel}>{cardCopy.stepsHeading}</strong>
+              {cardCopy.steps ? (
+                <ol style={findingSteps}>
+                  {cardCopy.steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              ) : (
+                getFindingRemediation(finding.findingType, finding.filename)
+              )}
+            </div>
+            {/* Actions, in order: open the place to fix it (primary, when the finding
           has one), copy a precise, self-contained removal instruction for THIS
           finding (file + line + full snippet + how-to), then Ignore, tucked
           away on the right. Detection-only: nothing here writes to the theme. */}
-      <div style={findingActions}>
-        {themeEditorUrl && (
-          <s-button
-            variant={cardCopy.primaryEditorButton ? "primary" : "secondary"}
-            href={themeEditorUrl}
-            target="_top"
-          >
-            Open in code editor
-          </s-button>
-        )}
-        {adminResourceUrl && (
-          <s-button variant="primary" href={adminResourceUrl} target="_top">
-            {adminResourceLinkLabel(finding.findingType)}
-          </s-button>
-        )}
-        <CopyRemovalStepsButton
-          text={buildRemovalInstructions(finding, typeLabel)}
-          findingType={finding.findingType}
-          filename={finding.filename}
-        />
-        {/* Suppression control — only in the paid findings list (scanId set)
+            <div style={findingActions}>
+              {themeEditorUrl && (
+                <s-button
+                  variant={cardCopy.primaryEditorButton ? "primary" : "secondary"}
+                  href={themeEditorUrl}
+                  target="_top"
+                >
+                  Open in code editor
+                </s-button>
+              )}
+              {adminResourceUrl && (
+                <s-button variant="primary" href={adminResourceUrl} target="_top">
+                  {adminResourceLinkLabel(finding.findingType)}
+                </s-button>
+              )}
+              <CopyRemovalStepsButton
+                text={buildRemovalInstructions(finding, typeLabel)}
+                findingType={finding.findingType}
+                filename={finding.filename}
+              />
+            </div>
+          </details>
+          <div style={findingActions}>
+            {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={findingNote}>
+            <strong style={findingNoteLabel}>{cardCopy.stepsHeading}</strong>
+            {cardCopy.steps ? (
+              <ol style={findingSteps}>
+                {cardCopy.steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            ) : (
+              getFindingRemediation(finding.findingType, finding.filename)
+            )}
+          </div>
+          {/* Actions, in order: open the place to fix it (primary, when the finding
+          has one), copy a precise, self-contained removal instruction for THIS
+          finding (file + line + full snippet + how-to), then Ignore, tucked
+          away on the right. Detection-only: nothing here writes to the theme. */}
+          <div style={findingActions}>
+            {themeEditorUrl && (
+              <s-button
+                variant={cardCopy.primaryEditorButton ? "primary" : "secondary"}
+                href={themeEditorUrl}
+                target="_top"
+              >
+                Open in code editor
+              </s-button>
+            )}
+            {adminResourceUrl && (
+              <s-button variant="primary" href={adminResourceUrl} target="_top">
+                {adminResourceLinkLabel(finding.findingType)}
+              </s-button>
+            )}
+            <CopyRemovalStepsButton
+              text={buildRemovalInstructions(finding, typeLabel)}
+              findingType={finding.findingType}
+              filename={finding.filename}
+            />
+            {/* Suppression control — only in the paid findings list (scanId set)
             and only when the finding has a stable id to fingerprint from. */}
-        {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
-      </div>
+            {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
+          </div>
+        </>
+      )}
     </li>
   );
 }
@@ -1665,63 +1736,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Exposed to the component so it knows whether to issue the useFetcher call.
   const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
-  // gc-tib: the Clean copy entry point. The reads run only with the flag on,
-  // on Professional, for a successful scan with known embed status, so every
-  // other shop pays nothing for them.
-  // gc-tib.10 / gc-tib.21: the button shows only when the select page would
-  // offer what it counts: the service's own freshness check (latest scan of
-  // the theme, no publish since, MAIN unchanged since the scan: one Admin
-  // read), the service's own block rule, the select page's file cap, and a
-  // scan-time md5 for the file. Never throws: a failed read hides the button.
-  let cleanCopy = { eligible: false, count: 0 };
-  const embedApps =
-    isCleanCopyEnabled(shop.domain) &&
-    shop.plan === PLANS.PROFESSIONAL &&
-    isSuccessfulScan(scan.status)
-      ? (parseLiveAppHooks(scan.liveAppHooks)?.embed ?? null)
-      : null;
-  if (embedApps !== null) {
-    try {
-      const fresh = await checkCleanCopyFreshness({
-        shopId: shop.id,
-        lastThemePublishAt: shop.lastThemePublishAt,
-        scan: {
-          id: scan.id,
-          themeId: scan.themeId,
-          status: scan.status,
-          completedAt: scan.completedAt,
-        },
+  // gc-np1d.2: the page's value-action card (rule ~/.claude/rules/merchant-ux.md,
+  // page map docs/ux/page-map.md), the same card Home shows for this plan and
+  // state. Professional's Clean copy count is what the select page would offer
+  // (cleanCopyOfferFor: freshness, block rule, file cap, scan-time md5; it
+  // reads Admin only with the flag on, and never throws). The trial read runs
+  // only when there is something to offer.
+  const { card: valueAction, cleanCopyFindingIds } = isSuccessfulScan(scan.status)
+    ? await loadValueAction({
+        shop,
+        scan,
+        keptFindings,
+        ignores,
         admin: createCleanCopyAdmin(admin),
-      });
-      if (fresh.ok) {
-        const [findings, manifest] = await Promise.all([
-          getFindingsForScan(scan.id),
-          getScanManifest(scan.id),
-        ]);
-        // The select page's own steps (block rule, sorted 50-file cap), then
-        // its md5 check as far as the scan page can tell: a file with no
-        // scan-time md5 is refused there (gc-tib.21).
-        const offer = offerableCleanCopyFiles(findings, ignores, embedApps);
-        const shownFiles = new Set(offer.shownFiles);
-        const withMd5 = new Set(
-          (manifest?.entries ?? []).filter((e) => Boolean(e[1])).map((e) => e[0]),
-        );
-        const count = offer.drafts.filter(
-          (d) =>
-            d.blocked === null &&
-            shownFiles.has(d.finding.filename) &&
-            withMd5.has(d.finding.filename),
-        ).length;
-        cleanCopy = { eligible: count > 0, count };
-      }
-    } catch (error) {
-      logger.warn("clean-copy entry check failed", {
-        shopId: shop.id,
-        scanId: scan.id,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+        shopDomain: session.shop,
+      })
+    : { card: null, cleanCopyFindingIds: [] as string[] };
 
   // gc-tib.20: the way back to recent clean copies' result pages, on every
   // plan (a downgrade must not hide a "don't publish" warning). One indexed read.
@@ -1732,7 +1762,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const cleanCopyRuns = !isScanRunning(scan.status) ? await loadCleanCopyRunLines(shop.id) : [];
 
   return {
-    cleanCopy,
+    valueAction,
+    cleanCopyFindingIds,
     cleanCopyRuns,
     // Shop domain (e.g. `my-store.myshopify.com`) — used to build the theme
     // code editor deep-link (`admin.shopify.com/store/{handle}/...`) client-side.
@@ -2088,7 +2119,8 @@ export default function ScanDetail() {
     guardIncidents,
     findingSummary,
     // Defaulted: loader data from before this field (or a stub) may not carry it.
-    cleanCopy = { eligible: false, count: 0 },
+    valueAction = null,
+    cleanCopyFindingIds = [],
     cleanCopyRuns = [],
     canViewDetails,
     canUseDiffing,
@@ -2159,6 +2191,8 @@ export default function ScanDetail() {
   // reused rather than duplicated. An error string (e.g. the quota was used in
   // another tab) is shown in the banner. Posts source=scan_page (telemetry).
   const rescanFetcher = useFetcher<{ error?: string }>();
+  const navigate = useNavigate();
+  const cleanCopyIdSet = new Set(cleanCopyFindingIds);
   const handleRescan = () => {
     rescanFetcher.submit(SCAN_PAGE_RESCAN_PAYLOAD, { method: "POST", action: "/app?index" });
   };
@@ -2353,9 +2387,33 @@ export default function ScanDetail() {
 
   return (
     <s-page heading={`Scan: ${scan.themeName}`}>
-      <Link to="/app/scans" slot="primary-action">
-        Back to History
+      <Link to="/app/scans" slot="breadcrumb-actions">
+        Scan History
       </Link>
+      {/* gc-np1d.3: the header holds the page's top value action, never "Back". */}
+      {valueAction?.primary?.action === "clean_copy" ? (
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={() => {
+            recordValueActionClick("clean_copy_action");
+            navigate("clean-copy");
+          }}
+        >
+          {valueAction.primary.label}
+        </s-button>
+      ) : (
+        (isCompleted || isFailed) && (
+          <s-button
+            slot="primary-action"
+            variant="primary"
+            loading={rescanFetcher.state !== "idle" ? true : undefined}
+            onClick={handleRescan}
+          >
+            {SCAN_AGAIN_LABEL}
+          </s-button>
+        )
+      )}
       <div style={hairline} />
       <div style={groundStyle}>
         <style>{`
@@ -2559,6 +2617,22 @@ export default function ScanDetail() {
             onAcknowledge={guardMerge.acknowledge}
           />
         ))}
+
+        {/* gc-np1d.3: the value-action card, below only security and guard
+            alerts. The stale-results banner already asks for a new scan, so a
+            card whose action is the same scan steps aside for it. */}
+        {valueAction && !(staleResults && valueAction.primary?.action === "scan") && (
+          <ValueActionCard
+            card={valueAction}
+            targets={{
+              cleanCopyHref: "clean-copy",
+              diyHref: `#${SCAN_FINDINGS_ANCHOR}`,
+              pricingPlansUrl,
+              onScan: handleRescan,
+              scanning: rescanFetcher.state !== "idle",
+            }}
+          />
+        )}
 
         {/* Stale-results banner (gc-mgi): the theme changed after this scan.
             Below only the security alert (safety outranks everything). */}
@@ -2870,7 +2944,7 @@ export default function ScanDetail() {
         {/* Findings detail list — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
-            <div>
+            <div id={SCAN_FINDINGS_ANCHOR}>
               <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <div
@@ -2914,13 +2988,6 @@ export default function ScanDetail() {
                       </div>
                     )}
                   </div>
-                  {cleanCopy.eligible && (
-                    <div>
-                      <Link to="clean-copy">
-                        <s-button variant="secondary">{`Make a clean copy (${cleanCopy.count})`}</s-button>
-                      </Link>
-                    </div>
-                  )}
                   {/* Filter bar — only when the scan actually has findings to
                     filter (a paid + successful view). Stays visible even when
                     the active filters match zero rows so the merchant can
@@ -3031,6 +3098,7 @@ export default function ScanDetail() {
                             shopDomain={shopDomain}
                             themeId={scan.themeId}
                             anchor={finding.findingType !== "MALICIOUS_SCRIPT"}
+                            inCleanCopy={cleanCopyIdSet.has(finding.id)}
                             isNew={newFindingKeys.has(
                               `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
                             )}

@@ -85,6 +85,7 @@ vi.mock("../../app/models/app-removal.server", () => ({
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
+  countFindingsByApp: vi.fn(async () => []),
   getFindingSummary: vi.fn(),
   getFindingsForScan: vi.fn(),
   getTopFindingsOfTypes: vi.fn(),

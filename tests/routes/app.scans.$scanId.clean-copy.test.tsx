@@ -65,6 +65,9 @@ import {
   CLEAN_COPY_INTRO,
   CLEAN_COPY_NOTHING_TO_SELECT,
   CLEAN_COPY_SUBMIT,
+  APP_NOTHING_REMOVABLE,
+  SCOPE_PROMPT_NOTE,
+  SHOW_WHATS_REMOVED,
   omittedFilesNotice,
   action,
   loader,
@@ -607,28 +610,48 @@ const DATA: CleanCopySelectData = {
 };
 
 describe("selection page", () => {
-  it("renders the intro, one section per app, the confirm checkbox, rows and the submit button", () => {
+  // gc-np1d.1 (Nathan 2026-11-14): about two clicks. Everything removable starts
+  // selected, one row per app, one consent tick, one button at the top.
+  it("starts with every removable piece selected, one row per app, one consent tick and one button", () => {
     const html = render(DATA);
+    expect(html).toContain("3 pieces of leftover code selected");
     expect(html).toContain(CLEAN_COPY_INTRO);
-    expect(html).toContain('heading="Klaviyo"');
-    expect(html).toContain('heading="Loox"');
-    expect(html).toContain("I&#x27;ve uninstalled Klaviyo");
-    expect(html).toContain("layout/theme.liquid, line 2");
-    expect(html).toContain("static.klaviyo.com/a.js");
-    expect(html).toMatch(new RegExp(`<s-button[^>]*>${CLEAN_COPY_SUBMIT}</s-button>`));
+    expect(html).toContain("Klaviyo · 2 pieces");
+    expect(html).toContain("Loox · 1 piece");
+    expect(html).toContain("2 scripts");
+    // One consent line names every app with a selection.
+    expect(html).toContain("I&#x27;ve uninstalled Klaviyo and Loox.");
+    expect(html.match(/I&#x27;ve uninstalled/g)).toHaveLength(1);
+    // The code sits behind "Show what's removed".
+    expect(html).toMatch(/<details>[\s\S]*static\.klaviyo\.com\/a\.js[\s\S]*<\/details>/);
+    expect(html).toContain(SHOW_WHATS_REMOVED.replace(/'/g, "&#x27;"));
+    // Every piece and both apps start checked; only the consent tick does not.
+    expect(html.match(/<s-checkbox[^>]*\schecked/g)).toHaveLength(5);
+    // One button, which waits for the consent tick.
+    expect(html.match(/<s-button/g)).toHaveLength(1);
+    expect(html).toMatch(new RegExp(`<s-button[^>]*disabled[^>]*>${CLEAN_COPY_SUBMIT}</s-button>`));
     expect(html).not.toContain(CLEAN_COPY_ALLOW_SCOPE);
-    // Nothing starts checked.
-    expect(html).not.toMatch(/<s-checkbox[^>]*\schecked/);
-    // The button starts disabled.
-    expect(html).toMatch(/<s-button[^>]*disabled/);
+    // The page header holds no "Back" action; the scan is the breadcrumb.
+    expect(html).toContain('slot="breadcrumb-actions"');
+    expect(html).not.toContain('slot="primary-action"');
   });
 
-  it("the button asks for theme permission when write_themes is missing", () => {
+  it("the same button asks for theme permission first when write_themes is missing", () => {
     const html = render({ ...DATA, hasWriteScope: false });
-    expect(html).toContain(CLEAN_COPY_ALLOW_SCOPE);
+    expect(html.match(/<s-button/g)).toHaveLength(1);
+    expect(html).toContain(`>${CLEAN_COPY_SUBMIT}</s-button>`);
+    expect(html).toContain(SCOPE_PROMPT_NOTE);
   });
 
-  it("shows blocked rows greyed with their reason copy, and no checkbox for them", () => {
+  it("during the trial starts with only what the trial still allows", () => {
+    const html = render({
+      ...DATA,
+      trial: { used: 3, limit: 5, endsAt: "2026-11-21T00:00:00.000Z" },
+    });
+    expect(html).toContain("2 pieces of leftover code selected");
+  });
+
+  it("an app with nothing removable has no checkbox and says why behind Show why", () => {
     const html = render({
       ...DATA,
       groups: [
@@ -641,7 +664,8 @@ describe("selection page", () => {
       ],
     });
     expect(html).toContain(candidateBlockCopy("APP_HAS_LIVE_EMBED").replace(/'/g, "&#x27;"));
-    expect(html).toContain('heading="Unknown app"');
+    expect(html).toContain("Unknown app");
+    expect(html).toContain(APP_NOTHING_REMOVABLE);
     expect(html).not.toContain("<s-checkbox");
     expect(html).not.toContain("<s-button");
   });

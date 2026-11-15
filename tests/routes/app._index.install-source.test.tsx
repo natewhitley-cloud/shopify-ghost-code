@@ -13,6 +13,12 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// gc-np1d.4: the value-action card has its own tests (app._index.value-action);
+// here it renders nothing so the existing assertions keep their meaning.
+vi.mock("../../app/services/value-action.server", () => ({
+  loadValueAction: vi.fn(async () => ({ card: null, cleanCopyFindingIds: [] })),
+}));
+
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
 }));
@@ -278,7 +284,7 @@ beforeEach(() => {
 const HEADING = INSTALL_SOURCE_COPY.heading;
 
 describe("Home loader: install-source card (gc-3twe)", () => {
-  it("with results: shows the card at the very end, after Scan Actions, and records `shown` once", async () => {
+  it("with results: shows the card at the very end of the page, and records `shown` once", async () => {
     const data = await load();
     expect(data.showInstallSourceCard).toBe(true);
     expect(recordNudgeStageOnce).toHaveBeenCalledWith("install_source", "shown", DOMAIN);
@@ -296,9 +302,13 @@ describe("Home loader: install-source card (gc-3twe)", () => {
     expect(html).toContain(`placeholder="${INSTALL_SOURCE_COPY.otherPlaceholder}"`);
     expect(html).toMatch(/<s-button variant="secondary">Send<\/s-button>/);
     expect(html).toMatch(/<s-button variant="tertiary">Skip<\/s-button>/);
-    // The last section on the page: after Scan Actions.
-    expect(html.indexOf("Scan Actions")).toBeLessThan(html.indexOf(esc(HEADING)));
-    expect(html.indexOf(esc(HEADING))).toBeGreaterThan(html.indexOf("View Scan History"));
+    // The last section on the page (gc-np1d.4: the old Scan Actions card it
+    // used to follow is gone; the scan control is the header's Scan now).
+    const lastSection = html.lastIndexOf("<section");
+    const headingAt = html.indexOf(esc(HEADING));
+    expect(headingAt).toBeGreaterThan(-1);
+    expect(headingAt).toBeGreaterThan(html.indexOf("What it"));
+    expect(lastSection === -1 || lastSection < headingAt).toBe(true);
   });
 
   it("already shown: renders without another claim (reloads and the 3s poll write nothing)", async () => {

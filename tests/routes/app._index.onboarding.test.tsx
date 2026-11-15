@@ -5,7 +5,7 @@
  * and this child loader run IN PARALLEL. If the child's getShopMetadata lands
  * before the parent's upsert commits, it used to take the `!shop` early return,
  * which made `showOnboarding` false: no welcome card, no "Start First Scan",
- * only the dashboard shell with a DISABLED "Start New Scan" button.
+ * only the dashboard shell with a DISABLED header "Scan now" button.
  *
  * Strategy: mock I/O, run the REAL loader, then render the REAL Dashboard
  * component with that loader data (createRoutesStub + hydrationData) to static
@@ -15,6 +15,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// gc-np1d.4: the value-action card has its own tests (app._index.value-action);
+// here it renders nothing so the existing assertions keep their meaning.
+vi.mock("../../app/services/value-action.server", () => ({
+  loadValueAction: vi.fn(async () => ({ card: null, cleanCopyFindingIds: [] })),
+}));
 
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
@@ -202,7 +208,7 @@ beforeEach(() => {
 });
 
 describe("gc-bj4: what the old `!shop` minimal data renders", () => {
-  it("renders NO onboarding card and a DISABLED Start New Scan button", () => {
+  it("renders NO onboarding card and a DISABLED header Scan now button", () => {
     // Exactly the object the pre-fix `!shop` branch returned. Kept as the
     // explicit defensive fallback, so this documents what it shows.
     const html = renderDashboard({
@@ -233,9 +239,9 @@ describe("gc-bj4: what the old `!shop` minimal data renders", () => {
 
     expect(html).not.toContain("Welcome to GhostCode");
     expect(html).not.toContain("Start First Scan");
-    // The dashboard shell renders instead, with its scan button disabled.
-    expect(html).toContain("Scan Actions");
-    expect(html).toMatch(/<s-button[^>]*disabled[^>]*>Start New Scan<\/s-button>/);
+    // The dashboard shell renders instead, with the header's scan button
+    // disabled (gc-np1d.4: Scan now moved from the bottom card to the header).
+    expect(html).toMatch(/<s-button slot="primary-action"[^>]*disabled[^>]*>Scan now<\/s-button>/);
   });
 });
 
@@ -321,7 +327,8 @@ describe("Home scan wait experience (ScanProgress)", () => {
       completedAt: new Date("2026-10-08T10:01:00Z"),
     });
 
-    expect(html).toContain("Scan Actions"); // the real dashboard rendered
+    // The real dashboard rendered (gc-np1d.4: its scan control is the header's Scan now).
+    expect(html).toMatch(/<s-button slot="primary-action"[^>]*>Scan now<\/s-button>/);
     expect(html).not.toContain("Scanning your theme...");
     expect(html).not.toContain("Scan in progress");
     expect(html).not.toContain(SCAN_DURATION_EXPECTATION);

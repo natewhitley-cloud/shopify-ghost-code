@@ -422,7 +422,17 @@ export type NudgeStageColumn =
   | "feedbackNudgeDismissedAt"
   | "feedbackSubmittedAt"
   | "installSourceShownAt"
-  | "installSourceSkippedAt";
+  | "installSourceSkippedAt"
+  | "cleanCopyActionShownAt"
+  | "cleanCopyActionClickedAt"
+  | "cleanCopyActionConvertedAt"
+  | "cleanCopyUpsellShownAt"
+  | "cleanCopyUpsellClickedAt"
+  | "cleanCopyUpsellConvertedAt"
+  | "cleanCopyDiyShownAt"
+  | "cleanCopyDiyClickedAt"
+  | "scanHeaderClickedAt"
+  | "cleanCopyPreviewClickedAt";
 
 /** The durable journey milestone stamps (gc-dpm.1). */
 export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";

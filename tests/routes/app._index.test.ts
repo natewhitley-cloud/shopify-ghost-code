@@ -16,6 +16,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Module mocks (hoisted by Vitest)
 // ---------------------------------------------------------------------------
 
+// gc-np1d.4: the value-action card has its own tests (app._index.value-action);
+// here it renders nothing so the existing assertions keep their meaning.
+vi.mock("../../app/services/value-action.server", () => ({
+  loadValueAction: vi.fn(async () => ({ card: null, cleanCopyFindingIds: [] })),
+}));
+
 vi.mock("../../app/shopify.server", () => ({
   authenticate: {
     admin: vi.fn(),
@@ -102,6 +108,7 @@ vi.mock("../../app/services/theme-health.server", () => ({
 
 vi.mock("../../app/lib/billing.server", () => ({
   getPlanFeatures: vi.fn(),
+  buildPricingPlansUrl: vi.fn(() => "https://admin.shopify.com/store/x/charges/ghostcode/pricing_plans"),
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({

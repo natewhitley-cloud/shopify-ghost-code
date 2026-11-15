@@ -27,9 +27,10 @@ import {
 } from "../components/StorefrontIncidentBanner";
 import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
+import { ValueActionCard } from "../components/ValueActionCard";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
 import type { RemovalNotice } from "../lib/app-removal-notice";
-import { getPlanFeatures } from "../lib/billing.server";
+import { buildPricingPlansUrl , getPlanFeatures } from "../lib/billing.server";
 import { CANVAS_THEME_HINT } from "../lib/canvas-theme";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
@@ -96,6 +97,11 @@ import { useClaimRenderedNotice } from "../lib/use-claim-rendered-notice";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
+import {
+  SCAN_FINDINGS_ANCHOR,
+  SCAN_NOW_LABEL,
+  type ValueActionCard as ValueActionCardModel,
+} from "../lib/value-action";
 import { getRemovalNoticeRows } from "../models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
@@ -113,6 +119,7 @@ import {
   getShopMetadata,
 } from "../models/shop.server";
 import { acknowledgeGuardIncident } from "../models/storefront-guard.server";
+import { createCleanCopyAdmin } from "../services/clean-copy-admin.server";
 import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
 import type { FindingRow } from "../services/finding-aggregation.server";
 import { recordInstallSourceAnswer } from "../services/install-source.server";
@@ -148,6 +155,7 @@ import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { loadThemeHealth } from "../services/theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
+import { loadValueAction } from "../services/value-action.server";
 import { authenticate } from "../shopify.server";
 import { LANE_COLOR } from "../styles/lane-colors";
 import {
@@ -157,7 +165,6 @@ import {
   ACCENT_TINT,
   BG_BADGE_SUCCESS,
   BG_SURFACE,
-  BG_SURFACE_ALT,
   BG_WHITE,
   BORDER_DEFAULT,
   BORDER_STRONG,
@@ -210,6 +217,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // renders the dashboard shell with a disabled scan button, not onboarding.
     logger.warn("dashboard-shop-missing-after-create", { shop: session.shop });
     return {
+      valueAction: null as ValueActionCardModel | null,
+      pricingPlansUrl: buildPricingPlansUrl(session.shop),
       shop: null,
       latestScan: null,
       latestScanId: null,
@@ -891,7 +900,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Pre-checked on the loaded row: no query on most loads.
   const guardEmailNotice = await guardEmailNoticeForHome(shop, admin);
 
+  // gc-np1d.4: Home's value-action card, the same card the scan page shows for
+  // this plan and state (rule ~/.claude/rules/merchant-ux.md). Only for a
+  // finished latest scan; never while a scan runs (the 3s poll adds nothing).
+  // Reuses the kept findings the summary already read; never throws.
+  const { card: valueAction } = latestSuccessful
+    ? await loadValueAction({
+        shop,
+        scan: latestSuccessful,
+        keptFindings: latestKeptFindings,
+        ignores,
+        admin: createCleanCopyAdmin(admin),
+        shopDomain: session.shop,
+      })
+    : { card: null };
+
   return {
+    valueAction,
+    pricingPlansUrl: buildPricingPlansUrl(session.shop),
     shop,
     latestScan,
     latestScanId,
@@ -1048,6 +1074,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // loaded before that banner was removed (owner decision 2A).
   if (intent !== null) {
     return { ignored: true };
+  }
+
+  // gc-np1d.5: the header's Scan now (first click per merchant; telemetry only).
+  if (formData.get("via") === "header") {
+    await recordNudgeStageOnce(NUDGE_KEYS.SCAN_HEADER, "clicked", session.shop);
   }
 
   // Plan-gate: check if this shop is allowed to start a new scan.
@@ -1400,6 +1431,8 @@ export default function Dashboard() {
     summaryOptIn,
     themeHealth,
     maliciousHealth,
+    valueAction = null,
+    pricingPlansUrl,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -1550,6 +1583,10 @@ export default function Dashboard() {
   const handleStartScan = () => {
     fetcher.submit(homeScanStartPayload(selectedThemeId), { method: "POST" });
   };
+  // gc-np1d.4: the header's Scan now (same scan; `via` is telemetry only).
+  const handleHeaderScan = () => {
+    fetcher.submit({ ...homeScanStartPayload(selectedThemeId), via: "header" }, { method: "POST" });
+  };
 
   // Whether the latest scan is still running (findings not yet available).
   const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
@@ -1595,6 +1632,19 @@ export default function Dashboard() {
 
   return (
     <s-page heading="GhostCode Scanner">
+      {/* gc-np1d.4: the header holds Home's first value action (rule
+          ~/.claude/rules/merchant-ux.md). Onboarding has its own single button. */}
+      {!showOnboarding && (
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={handleHeaderScan}
+          {...(isSubmitting ? { loading: true } : {})}
+          {...(!shop || scanLimitReached || scanInProgress ? { disabled: true } : {})}
+        >
+          {SCAN_NOW_LABEL}
+        </s-button>
+      )}
       <div style={hairline} />
       <div style={groundStyle}>
         {/* Security risk (gc-q5z8): known malicious code, and apps named in a
@@ -1632,6 +1682,80 @@ export default function Dashboard() {
           />
         ))}
         {guard?.status && <GuardStatusLine status={guard.status} />}
+
+        {/* gc-np1d.4: what to scan and how many scans are left, right under the
+            header's Scan now (it used to be a card at the bottom of the page). */}
+        {!showOnboarding && shop && (
+          <div
+            role="group"
+            aria-label="Scan controls"
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "6px 16px",
+              alignItems: "center",
+              fontSize: "13px",
+              color: TEXT_SUBDUED,
+            }}
+          >
+            {allThemes.length > 0 && (
+              <label style={{ display: "inline-flex", gap: "6px", alignItems: "center" }}>
+                Theme
+                {/* Native <select>: Polaris Web Components expose no select we can style here. */}
+                <select
+                  id="theme-picker"
+                  className="theme-picker-select"
+                  value={selectedThemeId}
+                  onChange={(e) => setSelectedThemeId(e.target.value)}
+                  disabled={!canSelectTheme || isSubmitting}
+                  aria-label="Select theme to scan"
+                  style={{ width: "auto" }}
+                >
+                  {allThemes.map((theme) => (
+                    <option key={theme.id} value={theme.id}>
+                      {theme.name}
+                      {theme.role === "MAIN" ? " (Published)" : " (Draft)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {!canSelectTheme && allThemes.length > 0 && (
+              <Link to="/app/settings" style={{ color: COLOR_INFO }}>
+                Upgrade to Professional to scan any theme
+              </Link>
+            )}
+            {scanUsage !== null && !isFirstScan && <span>{scanUsageLine(scanUsage)}</span>}
+            {scanLimitReached && scanUsage.period === "day" && (
+              <span>
+                Your next scan is available{" "}
+                <FormattedDate value={scanUsage.nextScanAt} includeTime />
+              </span>
+            )}
+            {scanLimitReached && scanUsage.period !== "day" && (
+              <Link to="/app/settings" style={{ color: COLOR_INFO }}>
+                Upgrade for more scans
+              </Link>
+            )}
+            <Link to="/app/scans" style={{ color: COLOR_INFO }}>
+              Scan history
+            </Link>
+          </div>
+        )}
+
+        {/* gc-np1d.4: Home's value-action card, below only security alerts. */}
+        {!showOnboarding && !scanInProgress && valueAction && (
+          <ValueActionCard
+            card={valueAction}
+            targets={{
+              cleanCopyHref: latestScanId ? `/app/scans/${latestScanId}/clean-copy` : null,
+              diyHref: latestScanId ? `/app/scans/${latestScanId}#${SCAN_FINDINGS_ANCHOR}` : "/app/scans",
+              pricingPlansUrl,
+              onScan: scanLimitReached ? null : handleStartScan,
+              scanning: isSubmitting,
+            }}
+          />
+        )}
 
         {/* Error banner — only rendered when the action returns an error */}
         {actionError && (
@@ -1738,7 +1862,7 @@ export default function Dashboard() {
         )}
 
         {/* Rescan nudge — Standard plan only, >30 days since last completed scan */}
-        {showRescanNudge && (
+        {showRescanNudge && valueAction?.primary?.action !== "scan" && (
           <s-banner tone="info">
             <s-stack direction="block" gap="base">
               <s-paragraph>
@@ -1757,7 +1881,7 @@ export default function Dashboard() {
         )}
 
         {/* Theme change nudge — shown when a theme was published since the last scan */}
-        {showThemeChangeNudge && (
+        {showThemeChangeNudge && valueAction?.primary?.action !== "scan" && (
           <s-banner tone="info">
             <s-stack direction="block" gap="base">
               <s-paragraph>
@@ -2338,143 +2462,6 @@ export default function Dashboard() {
               isSubmitting={isSubmitting}
               scanDisabled={!shop || scanLimitReached}
             />
-
-            {/* Scan Actions — heading lives inside its own floating card */}
-            <div style={{ ...sectionCard, marginBottom: 0 }}>
-              <s-stack direction="block" gap="base">
-                <h2 className="dashboard-section-title">Scan Actions</h2>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                  {/* Left: scan action */}
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      padding: "20px 16px",
-                      borderRadius: "12px",
-                      border: `1px solid ${BORDER_DEFAULT}`,
-                      background: scanLimitReached ? BG_SURFACE_ALT : BG_WHITE,
-                      textAlign: "center",
-                      gap: "12px",
-                    }}
-                  >
-                    <s-heading>New Scan</s-heading>
-                    {isFirstScan ? (
-                      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>
-                        Your first scan is free
-                      </div>
-                    ) : scanUsage !== null ? (
-                      <div style={{ width: "100%" }}>
-                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginBottom: "6px" }}>
-                          {scanUsageLine(scanUsage)}
-                        </div>
-                        <div
-                          className="usage-bar-track"
-                          style={{ margin: "0 auto", maxWidth: "160px" }}
-                        >
-                          <div
-                            className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
-                            style={{
-                              width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-                    {/* Theme picker — hidden on Free, disabled on Standard, active on Professional.
-                      allThemes is only populated for Standard and Professional (loader skips
-                      the fetch on Free), so checking length > 0 is sufficient to gate display. */}
-                    {allThemes.length > 0 ? (
-                      <div style={{ width: "100%", textAlign: "left" }}>
-                        <label htmlFor="theme-picker" className="theme-picker-label">
-                          Select theme to scan
-                        </label>
-                        {/* Native <select> used because Polaris Web Components do not expose <s-select> */}
-                        <select
-                          id="theme-picker"
-                          className="theme-picker-select"
-                          value={selectedThemeId}
-                          onChange={(e) => setSelectedThemeId(e.target.value)}
-                          disabled={!canSelectTheme || isSubmitting}
-                          aria-label="Select theme to scan"
-                        >
-                          {allThemes.map((theme) => (
-                            <option key={theme.id} value={theme.id}>
-                              {theme.name}
-                              {theme.role === "MAIN" ? " (Published)" : " (Draft)"}
-                            </option>
-                          ))}
-                        </select>
-                        {!canSelectTheme && (
-                          <div className="theme-picker-nudge">
-                            <Link to="/app/settings">Upgrade to Professional</Link> to scan any
-                            theme
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                    <s-button
-                      variant="primary"
-                      onClick={handleStartScan}
-                      {...(isSubmitting ? { loading: true } : {})}
-                      {...(!shop || scanLimitReached ? { disabled: true } : {})}
-                    >
-                      {isSubmitting ? "Starting..." : "Start New Scan"}
-                    </s-button>
-                    {scanLimitReached && scanUsage.period === "day" && (
-                      // Professional at its daily cap: no upgrade path, just when.
-                      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
-                        Your next scan is available{" "}
-                        <FormattedDate value={scanUsage.nextScanAt} includeTime />
-                      </div>
-                    )}
-                    {scanLimitReached && scanUsage.period !== "day" && (
-                      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
-                        <Link to="/app/settings" style={{ color: COLOR_INFO }}>
-                          Upgrade for more scans
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                  {/* Right: scan history */}
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      padding: "20px 16px",
-                      borderRadius: "12px",
-                      border: `1px solid ${BORDER_DEFAULT}`,
-                      background: BG_WHITE,
-                      textAlign: "center",
-                      gap: "12px",
-                    }}
-                  >
-                    <s-heading>Scan History</s-heading>
-                    <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                      View all past scans and findings
-                    </div>
-                    <Link
-                      to="/app/scans"
-                      style={{
-                        display: "inline-block",
-                        padding: "8px 24px",
-                        borderRadius: "8px",
-                        background: COLOR_INFO,
-                        color: BG_WHITE,
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        textDecoration: "none",
-                        textAlign: "center",
-                      }}
-                    >
-                      View Scan History
-                    </Link>
-                  </div>
-                </div>
-              </s-stack>
-            </div>
 
             {/* How did you find GhostCode? (gc-3twe): once, after results. */}
             {showInstallSourceCard && <InstallSourceCard />}

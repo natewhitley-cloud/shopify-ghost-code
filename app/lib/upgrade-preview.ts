@@ -29,6 +29,7 @@ export const UPGRADE_ASK_KEYS = [
   "upgrade_return",
   "stale_results",
   "speed_teaser",
+  "clean_copy_upsell",
 ] as const;
 
 export type UpgradeAskKey = (typeof UPGRADE_ASK_KEYS)[number];
@@ -49,12 +50,15 @@ const FREE_UPGRADE_ASK_KEYS: readonly UpgradeAskKey[] = [
  * already established it is an upgrade). Each conversion claim also requires
  * that ask's own `shown` stamp, so an ask the merchant never saw is not counted.
  *   - Free -> any paid plan: the Free-only asks.
- *   - any plan -> Professional: the Store speed teaser (it asks for Professional,
- *     so Standard -> Professional counts too; Free -> Standard does not).
+ *   - any plan -> Professional: the Store speed teaser and the Clean copy upgrade
+ *     card (both ask for Professional, so Standard -> Professional counts too;
+ *     Free -> Standard does not).
  */
 export function upgradeAsksConvertedBy(fromPlan: string, toPlan: string): UpgradeAskKey[] {
   const keys: UpgradeAskKey[] = fromPlan === PLANS.FREE ? [...FREE_UPGRADE_ASK_KEYS] : [];
-  if (toPlan === PLANS.PROFESSIONAL && fromPlan !== PLANS.PROFESSIONAL) keys.push("speed_teaser");
+  if (toPlan === PLANS.PROFESSIONAL && fromPlan !== PLANS.PROFESSIONAL) {
+    keys.push("speed_teaser", "clean_copy_upsell");
+  }
   return keys;
 }
 

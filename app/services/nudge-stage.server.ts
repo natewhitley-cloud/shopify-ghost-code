@@ -106,6 +106,46 @@ const NUDGE_STAGE_CLAIMS = {
       extraWhere: { installSourceShownAt: { not: null }, installSourceAnsweredAt: null },
     },
   },
+  // Value actions (gc-np1d.5). Clicked and converted count only a merchant who
+  // SAW that action's card, so a crafted request can't record a click or a
+  // conversion for a card the merchant was never shown.
+  [NUDGE_KEYS.CLEAN_COPY_ACTION]: {
+    shown: { column: "cleanCopyActionShownAt" },
+    clicked: {
+      column: "cleanCopyActionClickedAt",
+      extraWhere: { cleanCopyActionShownAt: { not: null } },
+    },
+    converted: {
+      column: "cleanCopyActionConvertedAt",
+      extraWhere: { cleanCopyActionShownAt: { not: null } },
+    },
+  },
+  [NUDGE_KEYS.CLEAN_COPY_UPSELL]: {
+    shown: { column: "cleanCopyUpsellShownAt" },
+    clicked: {
+      column: "cleanCopyUpsellClickedAt",
+      extraWhere: { cleanCopyUpsellShownAt: { not: null } },
+    },
+    converted: {
+      column: "cleanCopyUpsellConvertedAt",
+      extraWhere: { cleanCopyUpsellShownAt: { not: null } },
+    },
+  },
+  [NUDGE_KEYS.CLEAN_COPY_DIY]: {
+    shown: { column: "cleanCopyDiyShownAt" },
+    clicked: {
+      column: "cleanCopyDiyClickedAt",
+      extraWhere: { cleanCopyDiyShownAt: { not: null } },
+    },
+  },
+  [NUDGE_KEYS.SCAN_HEADER]: {
+    clicked: { column: "scanHeaderClickedAt" },
+  },
+  // Clicked only by a merchant with a clean copy run (the result page is the
+  // only place Preview shows).
+  [NUDGE_KEYS.CLEAN_COPY_PREVIEW]: {
+    clicked: { column: "cleanCopyPreviewClickedAt" },
+  },
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

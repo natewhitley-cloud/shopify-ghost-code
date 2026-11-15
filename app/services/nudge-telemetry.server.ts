@@ -42,6 +42,12 @@ export const NUDGE_KEYS = {
   STALE_RESULTS: "stale_results", // gc-mgi
   SPEED_TEASER: "speed_teaser", // gc-iirv
   INSTALL_SOURCE: "install_source", // gc-3twe
+  // Value actions (gc-np1d.5): first time each is shown / clicked / completed.
+  CLEAN_COPY_ACTION: "clean_copy_action",
+  CLEAN_COPY_UPSELL: "clean_copy_upsell",
+  CLEAN_COPY_DIY: "clean_copy_diy",
+  SCAN_HEADER: "scan_header",
+  CLEAN_COPY_PREVIEW: "clean_copy_preview",
 } as const;
 
 export type NudgeKey = (typeof NUDGE_KEYS)[keyof typeof NUDGE_KEYS];

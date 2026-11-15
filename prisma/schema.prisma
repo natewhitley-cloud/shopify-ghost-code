@@ -167,6 +167,22 @@ model Shop {
   speedTeaserShownAt           DateTime?
   speedTeaserClickedAt         DateTime?
   speedTeaserConvertedAt       DateTime?
+  // Value-action funnels (gc-np1d.5, Nathan 2026-11-14): first time each value
+  // action was shown / clicked / completed, once per merchant via claimShopStamp.
+  // Clean copy card (Professional): converted = first run started after seeing it.
+  cleanCopyActionShownAt       DateTime?
+  cleanCopyActionClickedAt     DateTime?
+  cleanCopyActionConvertedAt   DateTime?
+  // Clean copy upgrade card (Free, Standard): converted = upgrade to Professional.
+  cleanCopyUpsellShownAt       DateTime?
+  cleanCopyUpsellClickedAt     DateTime?
+  cleanCopyUpsellConvertedAt   DateTime?
+  // Standard's "do it yourself" card action.
+  cleanCopyDiyShownAt          DateTime?
+  cleanCopyDiyClickedAt        DateTime?
+  // Header Scan now, and the clean copy result page's Preview.
+  scanHeaderClickedAt          DateTime?
+  cleanCopyPreviewClickedAt    DateTime?
   // Durable "has ever been on a paid plan" (audit fix, gc-97k.8). Stamped ONCE,
   // via claimShopStamp, the first time reconcileShopPlan observes a paid plan
   // (every reconcile path: redirect and stale/backstop). Backfilled from
