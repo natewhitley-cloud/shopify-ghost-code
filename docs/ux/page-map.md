@@ -72,11 +72,23 @@ History, Ignored, Settings and Help are utilities with no value action.
   - Some leftovers removable, some not: upgrade copy says "removes N of them".
 - **Status line:** last scan date, what's new since the previous scan, value so far
   (e.g. "Removed 12 leftovers").
-- **Notice slot:** at most one of: summary-email opt-in, feedback ask, multi-theme
-  upsell, app-removed notice, new-high-findings notice (in that priority after security).
+- **Notice slot (built gc-np1d.6, `pickHomeNotice`):** at most one, at the bottom of
+  the page below "What it's costing you", in this priority: checkout guard email
+  notice, "summary emails are on" notice, summary-email opt-in (its success or failure
+  line keeps the slot after "Turn on"), feedback ask, multi-theme upsell, app-removed
+  notice, new-high-findings notice. The two consent notices were not in the spec's
+  list; they rank first because they record consent. Dismissing or answering the
+  winner hands the slot to the next. Each keeps its existing copy, buttons and
+  dismiss intent, still as a Polaris banner. Only the winner records a "shown" stamp:
+  while a consent notice is offered, or was claimed in the last 24h (it may still be
+  on screen), the loader resolves no opt-in or feedback prompt at all.
+  Outside the slot: the scan-start error, security and checkout-guard banners, the
+  scan-limit copy, the rescan and theme-changed nudges, the install-source card.
 - **Supporting content (quieter):** "What it's costing you" (the one summary, decision
-  1A); Theme health, trend, Most recent findings, Start here: cut or folded (no second
-  summary of the same findings).
+  1A); its Start here chip follows the lane ranking. Removed from Home in gc-np1d.6
+  (no second summary of the same findings): the findings count tile and its change
+  since the last scan, "Most recent findings", the Start here findings block, the
+  Theme health checklist and the findings trend chart (and its empty state).
 
 ### Scan results
 

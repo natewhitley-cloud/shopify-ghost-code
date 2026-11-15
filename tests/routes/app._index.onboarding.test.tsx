@@ -134,7 +134,6 @@ import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
-import { LANE_COLOR } from "../../app/styles/lane-colors";
 
 const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetOrCreate = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
@@ -227,14 +226,12 @@ describe("gc-bj4: what the old `!shop` minimal data renders", () => {
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
       showFeedbackNudge: false,
-      healthScoreTrend: null,
-      showTrendEmptyState: false,
-      scansNeeded: 0,
-      trendChartEnabled: false,
       laneSummary: [],
       startHere: null,
-      dominant: null,
-      findingTrend: null,
+      removalBanner: null,
+      summaryNotice: null,
+      summaryOptIn: null,
+      maliciousFound: false,
     });
 
     expect(html).not.toContain("Welcome to GhostCode");
@@ -369,16 +366,13 @@ describe("Home results summary: no 0-100 score (gc-k2ub)", () => {
     return renderDashboard(await runLoader());
   }
 
-  it('heads the findings count "Findings", not "Theme Health"', async () => {
+  it("has no findings tile and no second summary: the lanes are Home's one summary (gc-np1d.6)", async () => {
     const html = await renderResults();
 
-    expect(html).toMatch(
-      /<h2 class="dashboard-section-title">Findings<\/h2>(?:(?!<h2)[\s\S])*?<div class="health-score-number[^"]*">4<\/div>/,
-    );
-    // The findings count is never headed "Theme Health" again (gc-k2ub). The
-    // only "Theme health" on Home is the checklist section (gc-i6du), a plain
-    // list with no score; it has no rows in this file (see the mock above) and
-    // is covered in app._index.theme-health.test.tsx.
+    expect(html).toContain("What it&#x27;s costing you");
+    expect(html).not.toContain('class="health-score-number');
+    expect(html).not.toContain("Most Recent Findings");
+    expect(html).not.toMatch(/<h2 class="dashboard-section-title">Findings<\/h2>/);
     expect(html).not.toMatch(/theme health/i);
     expect(html).not.toMatch(/health score/i);
     expect(html).not.toMatch(/out of 100/i);
@@ -444,10 +438,10 @@ describe("Home in-progress accessibility", () => {
   });
 });
 
-// gc-bn0x: Home's "Start here" block, with the REAL loader and Dashboard. The
-// ranking and its reads are covered in tests/services/top-findings.server.test.ts;
-// here: which reads Home asks for, when, and what renders.
-describe("Home Start here (gc-bn0x)", () => {
+// gc-bn0x put a "Start here" block of top findings on Home; gc-np1d.6 removed
+// it (decision 1A: "What it's costing you" is Home's one summary). With the
+// REAL loader and Dashboard: Home reads no top findings and renders no block.
+describe("Home: no Start here block (gc-np1d.6)", () => {
   const COMPLETED = {
     id: "scan-1",
     shopId: NEW_SHOP.id,
@@ -485,90 +479,35 @@ describe("Home Start here (gc-bn0x)", () => {
     return runLoader();
   }
 
-  it("Free: ranks only what Free shows (the Free reader), and renders the block", async () => {
-    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([TOP_ROW]);
-
-    const data = await load(COMPLETED);
-
-    // Free withholds the Standard+ types (a downgraded shop's old findings).
-    expect(getFreeTopFindings).toHaveBeenCalledWith("scan-1", TYPE_COUNTS, null, [
-      "DANGLING_REFERENCE",
-      "CHECKOUT_SUNSET",
-    ]);
-    expect(getFullListTopFindings).not.toHaveBeenCalled();
-    const html = renderDashboard(data);
-    expect(html).toMatch(/<h2 id="top-findings-heading"[^>]*>Start here<\/h2>/);
-    expect(html).toContain("layout/theme.liquid, line 12");
-    expect(html).toContain('href="/app/scans/scan-1#finding-f-1"');
-    // Between the scan summary and the consequence lanes.
-    expect(html.indexOf("Most Recent Findings")).toBeLessThan(html.indexOf("Start here"));
-    expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("What it&#x27;s costing you"));
-  });
-
-  it.each(["Standard", "Professional"])(
-    "%s: ranks the whole scan and links into the type-filtered list",
+  it.each(["free", "Standard", "Professional"])(
+    "%s: no top-finding read and no block; the lanes still render",
     async (plan) => {
+      (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([TOP_ROW]);
       (getFullListTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([TOP_ROW]);
 
       const data = await load(COMPLETED, plan);
 
-      expect(getFullListTopFindings).toHaveBeenCalledWith("scan-1", null);
       expect(getFreeTopFindings).not.toHaveBeenCalled();
-      expect(renderDashboard(data)).toContain(
-        'href="/app/scans/scan-1?type=GHOST_SCRIPT#finding-f-1"',
-      );
+      expect(getFullListTopFindings).not.toHaveBeenCalled();
+      expect(data).not.toHaveProperty("topFindings");
+      const html = renderDashboard(data);
+      expect(html).not.toContain("top-findings-heading");
+      expect(html).not.toContain("layout/theme.liquid, line 12");
+      expect(html).toContain("What it&#x27;s costing you");
     },
   );
 
-  // gc-g034: the real loader feeds the lane-coloured cards.
-  it("renders one lane-coloured card per finding, in a grid of that many columns", async () => {
-    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { ...TOP_ROW, appName: "Privy" },
-      { ...TOP_ROW, id: "px", findingType: "GHOST_PIXEL", severity: "MEDIUM", appName: null },
-    ]);
-
-    const html = renderDashboard(await load(COMPLETED));
-    const start = html.indexOf('<section aria-labelledby="top-findings-heading"');
-    const block = html.slice(start, html.indexOf("</section>", start));
-
-    expect(block).toContain('<ol class="top-findings__grid top-findings__grid--2"');
-    // Mixed severities: a plain intro and a badge per card.
-    expect(block).toMatch(/>Fix these 2 first\.<\/p>/);
-    expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
-    expect(block).toContain('<s-badge tone="warning">MEDIUM</s-badge>');
-    // Each card in its own lane's colour and chip (shared with the lane cards).
-    expect(block).toContain(`border-top-color:${LANE_COLOR.speed.fill.toLowerCase()}`);
-    expect(block).toContain(`border-top-color:${LANE_COLOR.privacy.fill.toLowerCase()}`);
-    expect(block).toMatch(/aria-hidden="true"><\/span>Speed<\/span>/);
-    expect(block).toMatch(/aria-hidden="true"><\/span>Still tracking you<\/span>/);
-    expect(block).toContain('<span class="top-findings__app"> from Privy</span>');
-    expect(block.match(/ from /g)).toHaveLength(1);
-    expect(block).toMatch(
-      /<a aria-label="See how to fix: Scripts, layout\/theme\.liquid, line 12" href="\/app\/scans\/scan-1#finding-f-1"[^>]*><s-button variant="secondary">See how to fix<\/s-button><\/a>/,
-    );
-  });
-
-  // Audit fix: both say "Start here", so the lane chip follows the block.
-  it("the lanes' Start here chip follows the block's first finding, not the lane ranking", async () => {
-    // Lane ranking alone: Speed (3 act-now) beats Still tracking you (1 act-now).
-    // The block's first finding is the pixel, so the chip moves to its lane.
-    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { ...TOP_ROW, id: "px", findingType: "GHOST_PIXEL" },
-    ]);
-
+  it("the lanes' Start here chip follows the lane ranking", async () => {
+    // Speed (3 act-now) beats Still tracking you (1 act-now).
     const data = await load(COMPLETED);
 
-    expect(data.startHere).toBe("privacy");
+    expect(data.startHere).toBe("speed");
     const html = renderDashboard(data);
     expect(html.match(/lane__chip--start/g)).toHaveLength(2); // the CSS rule + one chip
-    expect(html).toMatch(/aria-label="Review 1 Still tracking you finding\. Act now, start here"/);
-    expect(html).not.toMatch(/aria-label="Review 3 Speed findings\. Act now, start here"/);
-  });
-
-  it("with no block, the chip keeps the lane ranking", async () => {
-    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    const data = await load(COMPLETED);
-    expect(data.startHere).toBe("speed");
+    expect(html).toMatch(/aria-label="Review 3 Speed findings\. Act now, start here"/);
+    expect(html).not.toMatch(
+      /aria-label="Review 1 Still tracking you finding\. Act now, start here"/,
+    );
   });
 
   it.each(["PENDING", "IN_PROGRESS"])(

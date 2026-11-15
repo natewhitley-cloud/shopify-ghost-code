@@ -187,6 +187,7 @@ import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
+import { loadValueAction } from "../../app/services/value-action.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -266,6 +267,23 @@ type SeverityRecord = { HIGH: number; MEDIUM: number; LOW: number };
  * FINDING_SUMMARY.bySeverity). Mirrors the real function's contract: every
  * requested id is present in the returned Map.
  */
+/** Loader fields that only fed Home sections removed in gc-np1d.6. */
+const REMOVED_HOME_FIELDS = [
+  "dominant",
+  "advisoryCount",
+  "riskSummaryLine",
+  "findingTrend",
+  "findingsTile",
+  "topFindings",
+  "newlyInactiveApps",
+  "themeHealth",
+  "maliciousHealth",
+  "healthScoreTrend",
+  "showTrendEmptyState",
+  "scansNeeded",
+  "trendChartEnabled",
+] as const;
+
 function severityCountsImpl(
   perScan: Record<string, SeverityRecord> = {},
   fallback: SeverityRecord = FINDING_SUMMARY.bySeverity,
@@ -546,7 +564,7 @@ describe("app._index loader", () => {
 // ---------------------------------------------------------------------------
 
 describe("app._index loader — consequence lanes", () => {
-  it("computes laneSummary, startHere, and dominant for a successful scan with findings", async () => {
+  it("computes laneSummary and startHere for a successful scan with findings", async () => {
     // GHOST_PIXEL -> privacy / act-now (count 2); SETTINGS_DRIFT -> housekeeping / whenever (count 3).
     mockGetTypeCounts.mockResolvedValue({
       [FindingType.GHOST_PIXEL]: 2,
@@ -556,15 +574,14 @@ describe("app._index loader — consequence lanes", () => {
     const result = (await loader(makeLoaderArgs())) as {
       laneSummary: Array<{ lane: string; count: number; urgency: string; hasAgentic: boolean }>;
       startHere: string | null;
-      dominant: string | null;
     };
 
     // Rows returned in LANES display order: privacy (order 3) then housekeeping (order 4).
     expect(result.laneSummary.map((r) => r.lane)).toEqual(["privacy", "housekeeping"]);
     // startHere = most-urgent lane (privacy is act-now).
     expect(result.startHere).toBe("privacy");
-    // dominant = highest-count lane (housekeeping has 3).
-    expect(result.dominant).toBe("housekeeping");
+    // gc-np1d.6: the dominant lane only fed the removed findings summary.
+    expect(result).not.toHaveProperty("dominant");
   });
 
   it("passes the latest scan id to getTypeCountsForScan", async () => {
@@ -573,17 +590,15 @@ describe("app._index loader — consequence lanes", () => {
     expect(mockGetTypeCounts).toHaveBeenCalledWith("scan-1");
   });
 
-  it("returns empty laneSummary and null startHere/dominant when the scan has no findings", async () => {
+  it("returns empty laneSummary and null startHere when the scan has no findings", async () => {
     // Default mock resolves to {} -> no lanes.
     const result = (await loader(makeLoaderArgs())) as {
       laneSummary: unknown[];
       startHere: string | null;
-      dominant: string | null;
     };
 
     expect(result.laneSummary).toEqual([]);
     expect(result.startHere).toBeNull();
-    expect(result.dominant).toBeNull();
   });
 
   it("does not fetch type counts and returns empty lanes when latest scan is not successful", async () => {
@@ -595,29 +610,24 @@ describe("app._index loader — consequence lanes", () => {
     const result = (await loader(makeLoaderArgs())) as {
       laneSummary: unknown[];
       startHere: string | null;
-      dominant: string | null;
     };
 
     expect(mockGetTypeCounts).not.toHaveBeenCalled();
     expect(result.laneSummary).toEqual([]);
     expect(result.startHere).toBeNull();
-    expect(result.dominant).toBeNull();
   });
 
-  it("includes empty lanes and null trend in the null-shop early return", async () => {
+  it("includes empty lanes and no removed summary fields in the null-shop early return", async () => {
     mockGetShopMetadata.mockResolvedValue(null);
 
     const result = (await loader(makeLoaderArgs())) as {
       laneSummary: unknown[];
       startHere: string | null;
-      dominant: string | null;
-      findingTrend: unknown;
     };
 
     expect(result.laneSummary).toEqual([]);
     expect(result.startHere).toBeNull();
-    expect(result.dominant).toBeNull();
-    expect(result.findingTrend).toBeNull();
+    for (const removed of REMOVED_HOME_FIELDS) expect(result).not.toHaveProperty(removed);
   });
 });
 
@@ -625,7 +635,7 @@ describe("app._index loader — consequence lanes", () => {
 // Loader: finding-count trend (Slice 2)
 // ---------------------------------------------------------------------------
 
-describe("app._index loader — finding trend", () => {
+describe("app._index loader — no finding trend or trend chart (gc-np1d.6)", () => {
   const PREVIOUS_SCAN = {
     ...COMPLETED_SCAN,
     id: "scan-0",
@@ -633,66 +643,35 @@ describe("app._index loader — finding trend", () => {
     completedAt: new Date("2026-03-19T10:05:00Z"),
   };
 
-  function withTwoScans(current: SeverityRecord, previous: SeverityRecord) {
+  afterEach(() => {
+    delete process.env.ENABLE_TREND_CHART;
+  });
+
+  it("with a previous successful scan: reads only the latest scan's severity counts", async () => {
     mockGetScansForShop.mockResolvedValue({
       items: [COMPLETED_SCAN, PREVIOUS_SCAN],
       hasNextPage: false,
     });
-    mockGetSeverityCounts.mockImplementation(
-      severityCountsImpl({ "scan-1": current, "scan-0": previous }),
-    );
-  }
 
-  it("returns null findingTrend when there is no previous scan", async () => {
-    // Default getScansForShop returns a single scan.
-    const result = (await loader(makeLoaderArgs())) as { findingTrend: unknown };
+    const result = await loader(makeLoaderArgs());
 
-    expect(result.findingTrend).toBeNull();
+    expect(mockGetSeverityCounts).toHaveBeenCalledWith(["scan-1"]);
+    expect(result).not.toHaveProperty("findingTrend");
   });
 
-  it("returns null findingTrend when the previous scan is not successful", async () => {
-    mockGetScansForShop.mockResolvedValue({
-      items: [COMPLETED_SCAN, { ...PREVIOUS_SCAN, status: "IN_PROGRESS" }],
-      hasNextPage: false,
-    });
+  it.each(["Standard", "Professional"])(
+    "%s with ENABLE_TREND_CHART on: no trend scans read and no trend fields",
+    async (plan) => {
+      process.env.ENABLE_TREND_CHART = "true";
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+      mockGetPlanFeatures.mockReturnValue(plan === "Standard" ? STANDARD_FEATURES : PRO_FEATURES);
 
-    const result = (await loader(makeLoaderArgs())) as { findingTrend: unknown };
+      const result = await loader(makeLoaderArgs());
 
-    expect(result.findingTrend).toBeNull();
-  });
-
-  it("returns improving when the current total is below the previous total", async () => {
-    // current total 3, previous total 10.
-    withTwoScans({ HIGH: 1, MEDIUM: 1, LOW: 1 }, { HIGH: 5, MEDIUM: 3, LOW: 2 });
-
-    const result = (await loader(makeLoaderArgs())) as {
-      findingTrend: { direction: string; previousTotal: number } | null;
-    };
-
-    expect(result.findingTrend).toEqual({ direction: "improving", previousTotal: 10 });
-  });
-
-  it("returns declining when the current total is above the previous total", async () => {
-    // current total 10, previous total 3.
-    withTwoScans({ HIGH: 5, MEDIUM: 3, LOW: 2 }, { HIGH: 1, MEDIUM: 1, LOW: 1 });
-
-    const result = (await loader(makeLoaderArgs())) as {
-      findingTrend: { direction: string; previousTotal: number } | null;
-    };
-
-    expect(result.findingTrend).toEqual({ direction: "declining", previousTotal: 3 });
-  });
-
-  it("returns stable when the current and previous totals are equal", async () => {
-    // both total 5.
-    withTwoScans({ HIGH: 2, MEDIUM: 2, LOW: 1 }, { HIGH: 1, MEDIUM: 3, LOW: 1 });
-
-    const result = (await loader(makeLoaderArgs())) as {
-      findingTrend: { direction: string; previousTotal: number } | null;
-    };
-
-    expect(result.findingTrend).toEqual({ direction: "stable", previousTotal: 5 });
-  });
+      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
+      for (const removed of REMOVED_HOME_FIELDS) expect(result).not.toHaveProperty(removed);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1311,423 +1290,15 @@ describe("app._index action — theme picker", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loader: findings trend chart
+// FIX 1/2 (E2.2): with active ignores, Home's counts come from the
+// ignore-filtered source. gc-np1d.6 removed the findings tile, the finding-count
+// trend and the trend chart from Home, so only the latest scan is read that way.
 // ---------------------------------------------------------------------------
-
-// Fixtures for trend chart tests
-const TREND_SCAN_NEWEST = {
-  id: "trend-scan-3",
-  completedAt: new Date("2026-03-20T10:00:00Z"),
-  themeName: "Dawn",
-};
-const TREND_SCAN_MIDDLE = {
-  id: "trend-scan-2",
-  completedAt: new Date("2026-03-13T10:00:00Z"),
-  themeName: "Dawn",
-};
-const TREND_SCAN_OLDEST = {
-  id: "trend-scan-1",
-  completedAt: new Date("2026-03-06T10:00:00Z"),
-  themeName: "Dawn",
-};
-
-// getCompletedScansForShop returns newest-first; the loader reverses for display.
-const THREE_TREND_SCANS = [TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE, TREND_SCAN_OLDEST];
-
-const TREND_FINDING_SUMMARY_NEWEST = {
-  total: 2,
-  bySeverity: { HIGH: 0, MEDIUM: 1, LOW: 2 },
-  byType: {},
-};
-const TREND_FINDING_SUMMARY_MIDDLE = {
-  total: 5,
-  bySeverity: { HIGH: 1, MEDIUM: 2, LOW: 0 },
-  byType: {},
-};
-const TREND_FINDING_SUMMARY_OLDEST = {
-  total: 8,
-  bySeverity: { HIGH: 2, MEDIUM: 3, LOW: 1 },
-  byType: {},
-};
-
-describe("app._index loader — findings trend chart", () => {
-  afterEach(() => {
-    delete process.env.ENABLE_TREND_CHART;
-  });
-
-  describe("feature flag off (ENABLE_TREND_CHART not set)", () => {
-    it("returns trendChartEnabled: false", async () => {
-      // process.env.ENABLE_TREND_CHART is not set (deleted in afterEach)
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.trendChartEnabled).toBe(false);
-    });
-
-    it("returns healthScoreTrend: null", async () => {
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).toBeNull();
-    });
-
-    it("returns showTrendEmptyState: false", async () => {
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.showTrendEmptyState).toBe(false);
-    });
-
-    it("does not call getCompletedScansForShop (zero extra DB cost)", async () => {
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-
-      await loader(makeLoaderArgs());
-
-      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("feature flag off (ENABLE_TREND_CHART set to non-true value)", () => {
-    it("returns trendChartEnabled: false when set to 'false'", async () => {
-      process.env.ENABLE_TREND_CHART = "false";
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.trendChartEnabled).toBe(false);
-      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("feature flag on, Free plan", () => {
-    beforeEach(() => {
-      process.env.ENABLE_TREND_CHART = "true";
-      // SHOP fixture has plan: "Free" — no override needed
-    });
-
-    it("returns healthScoreTrend: null (Free plan excluded)", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).toBeNull();
-    });
-
-    it("returns showTrendEmptyState: false (Free plan does not get empty state)", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.showTrendEmptyState).toBe(false);
-    });
-
-    it("does not call getCompletedScansForShop (Free plan excluded from trend)", async () => {
-      await loader(makeLoaderArgs());
-
-      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("feature flag on, Standard plan, fewer than 3 completed scans", () => {
-    beforeEach(() => {
-      process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-      mockGetScanUsage.mockResolvedValue({
-        used: 0,
-        limit: 1,
-        period: "week" as const,
-        periodStart: new Date("2026-03-16T00:00:00Z"),
-      });
-    });
-
-    it("returns healthScoreTrend: null when 2 completed scans exist", async () => {
-      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).toBeNull();
-    });
-
-    it("returns showTrendEmptyState: true when fewer than 3 completed scans", async () => {
-      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.showTrendEmptyState).toBe(true);
-    });
-
-    it("returns scansNeeded: 1 when 2 scans completed (needs 1 more)", async () => {
-      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.scansNeeded).toBe(1);
-    });
-
-    it("returns scansNeeded: 3 when 0 scans completed", async () => {
-      mockGetCompletedScansForShop.mockResolvedValue([]);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.scansNeeded).toBe(3);
-    });
-
-    it("returns scansNeeded: 2 when 1 scan completed", async () => {
-      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST]);
-
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.scansNeeded).toBe(2);
-    });
-  });
-
-  describe("feature flag on, Standard plan, 3+ completed scans", () => {
-    beforeEach(() => {
-      process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
-      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
-      mockGetScanUsage.mockResolvedValue({
-        used: 0,
-        limit: 1,
-        period: "week" as const,
-        periodStart: new Date("2026-03-16T00:00:00Z"),
-      });
-      mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
-      // The loader makes ONE getSeverityCountsForScans call over the union of
-      // latestScan + trend scan ids. Map each id to its severity record:
-      // latestScan (scan-1), plus the three trend scans keyed by their ids.
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: TREND_FINDING_SUMMARY_NEWEST.bySeverity,
-          [TREND_SCAN_MIDDLE.id]: TREND_FINDING_SUMMARY_MIDDLE.bySeverity,
-          [TREND_SCAN_OLDEST.id]: TREND_FINDING_SUMMARY_OLDEST.bySeverity,
-        }),
-      );
-    });
-
-    it("returns healthScoreTrend that is not null", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).not.toBeNull();
-    });
-
-    it("returns healthScoreTrend.scores with length equal to number of trend scans", async () => {
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.scores).toHaveLength(3);
-    });
-
-    it("returns showTrendEmptyState: false when 3+ scans exist", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.showTrendEmptyState).toBe(false);
-    });
-
-    it("returns scores sorted oldest-first (chronological for chart display)", async () => {
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: {
-          scores: Array<{ scanId: string; completedAt: string }>;
-          direction: string;
-        } | null;
-      };
-
-      const scores = result.healthScoreTrend?.scores ?? [];
-      // oldest scan was TREND_SCAN_OLDEST (2026-03-06), newest was TREND_SCAN_NEWEST (2026-03-20)
-      expect(scores[0].scanId).toBe(TREND_SCAN_OLDEST.id);
-      expect(scores[scores.length - 1].scanId).toBe(TREND_SCAN_NEWEST.id);
-    });
-
-    it("returns direction: improving when newest total findings is more than 3 below oldest", async () => {
-      // oldest total=10, newest total=3 → delta = 10-3 = 7 > 3 → "improving"
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: { HIGH: 1, MEDIUM: 1, LOW: 1 }, // total 3
-          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
-          [TREND_SCAN_OLDEST.id]: { HIGH: 4, MEDIUM: 4, LOW: 2 }, // total 10
-        }),
-      );
-
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.direction).toBe("improving");
-    });
-
-    it("returns direction: declining when newest total findings is more than 3 above oldest", async () => {
-      // oldest total=3, newest total=10 → delta = 3-10 = -7 < -3 → "declining"
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: { HIGH: 4, MEDIUM: 4, LOW: 2 }, // total 10
-          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
-          [TREND_SCAN_OLDEST.id]: { HIGH: 1, MEDIUM: 1, LOW: 1 }, // total 3
-        }),
-      );
-
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.direction).toBe("declining");
-    });
-
-    it("returns direction: stable when delta is within +/- 3", async () => {
-      // oldest total=6, newest total=5 → delta = 1, within +/-3 → "stable"
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
-          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
-          [TREND_SCAN_OLDEST.id]: { HIGH: 2, MEDIUM: 3, LOW: 1 }, // total 6
-        }),
-      );
-
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.direction).toBe("stable");
-    });
-
-    it("returns direction: stable when delta is exactly +3 (boundary: not > 3)", async () => {
-      // oldest total=8, newest total=5 → delta = 3, not > 3 → "stable"
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
-          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
-          [TREND_SCAN_OLDEST.id]: { HIGH: 3, MEDIUM: 3, LOW: 2 }, // total 8
-        }),
-      );
-
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.direction).toBe("stable");
-    });
-
-    it("returns direction: stable when delta is exactly -3 (boundary: not < -3)", async () => {
-      // oldest total=5, newest total=8 → delta = -3, not < -3 → "stable"
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: { HIGH: 3, MEDIUM: 3, LOW: 2 }, // total 8
-          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
-          [TREND_SCAN_OLDEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
-        }),
-      );
-
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScoreTrend: { scores: unknown[]; direction: string } | null;
-      };
-
-      expect(result.healthScoreTrend?.direction).toBe("stable");
-    });
-  });
-
-  describe("feature flag on, Professional plan, 3+ completed scans", () => {
-    beforeEach(() => {
-      process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
-      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
-      mockGetScanUsage.mockResolvedValue(null);
-      mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": FINDING_SUMMARY.bySeverity,
-          [TREND_SCAN_NEWEST.id]: TREND_FINDING_SUMMARY_NEWEST.bySeverity,
-          [TREND_SCAN_MIDDLE.id]: TREND_FINDING_SUMMARY_MIDDLE.bySeverity,
-          [TREND_SCAN_OLDEST.id]: TREND_FINDING_SUMMARY_OLDEST.bySeverity,
-        }),
-      );
-    });
-
-    it("returns healthScoreTrend that is not null (Pro plan also gets trend)", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).not.toBeNull();
-    });
-
-    it("calls getCompletedScansForShop with the shop id and limit 7", async () => {
-      await loader(makeLoaderArgs());
-
-      expect(mockGetCompletedScansForShop).toHaveBeenCalledWith("shop-1", { limit: 7 });
-    });
-  });
-
-  describe("null shop early return with feature flag on", () => {
-    beforeEach(() => {
-      process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopMetadata.mockResolvedValue(null);
-    });
-
-    it("returns healthScoreTrend: null", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.healthScoreTrend).toBeNull();
-    });
-
-    it("returns trendChartEnabled: false", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.trendChartEnabled).toBe(false);
-    });
-
-    it("returns showTrendEmptyState: false", async () => {
-      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
-
-      expect(result.showTrendEmptyState).toBe(false);
-    });
-
-    it("does not call getCompletedScansForShop", async () => {
-      await loader(makeLoaderArgs());
-
-      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// FIX 1/2 (E2.2): ignore-filtered counts are consistent across the findings tile,
-// the finding-count trend, and the trend chart. When a shop has active ignores,
-// all three must read the SAME ignore-filtered source and can never disagree for
-// the same scan — in particular, the newest trend point's counts must equal the
-// findings-tile counts when the newest trend scan IS the latest scan.
-// ---------------------------------------------------------------------------
-describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)", () => {
-  // Latest scan (scan-1) doubles as the newest trend scan, mirroring production
-  // where the most recent completed scan is both the findings tile's scan and the
-  // right-most point of the trend chart.
+describe("app._index loader — ignore-filtered counts (FIX 1/2)", () => {
   const PREVIOUS_SCAN = {
     ...COMPLETED_SCAN,
     id: "scan-0",
     completedAt: new Date("2026-03-13T10:00:00Z"),
-  };
-  const TREND_NEWEST = {
-    id: "scan-1",
-    completedAt: new Date("2026-03-20T10:00:00Z"),
-    themeName: "Dawn",
-  };
-  const TREND_MIDDLE = {
-    id: "scan-0",
-    completedAt: new Date("2026-03-13T10:00:00Z"),
-    themeName: "Dawn",
-  };
-  const TREND_OLDEST = {
-    id: "trend-old",
-    completedAt: new Date("2026-03-06T10:00:00Z"),
-    themeName: "Dawn",
   };
 
   afterEach(() => {
@@ -1744,12 +1315,10 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
       period: "week" as const,
       periodStart: new Date("2026-03-16T00:00:00Z"),
     });
-    // Latest + previous scan for the finding-count trend comparison.
     mockGetScansForShop.mockResolvedValue({
       items: [COMPLETED_SCAN, PREVIOUS_SCAN],
       hasNextPage: false,
     });
-    mockGetCompletedScansForShop.mockResolvedValue([TREND_NEWEST, TREND_MIDDLE, TREND_OLDEST]);
 
     // Shop HAS an active ignore → loader must use the filtered map, not raw counts.
     mockGetIgnoredFindings.mockResolvedValue({
@@ -1763,11 +1332,9 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
       severityCountsImpl({}, { HIGH: 9, MEDIUM: 9, LOW: 9 }),
     );
 
-    // FILTERED per-scan counts (the source of truth once ignores exist).
     const filtered: Record<string, { HIGH: number; MEDIUM: number; LOW: number }> = {
-      "scan-1": { HIGH: 1, MEDIUM: 0, LOW: 0 }, // total 1
-      "scan-0": { HIGH: 0, MEDIUM: 2, LOW: 0 }, // total 2
-      "trend-old": { HIGH: 0, MEDIUM: 0, LOW: 3 }, // total 3
+      "scan-1": { HIGH: 1, MEDIUM: 0, LOW: 0 },
+      "scan-0": { HIGH: 0, MEDIUM: 2, LOW: 0 },
     };
     mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => {
       const bySeverity = filtered[scanId] ?? { HIGH: 0, MEDIUM: 0, LOW: 0 };
@@ -1782,74 +1349,21 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
     });
   });
 
-  it("computes the findings tile from the ignore-filtered latest-scan counts", async () => {
+  it("computes the summary from the ignore-filtered latest-scan counts", async () => {
     const result = await loader(makeLoaderArgs());
     // filtered scan-1 = {HIGH:1} (raw would be 9/9/9)
     expect(result.findingSummary?.bySeverity).toEqual({ HIGH: 1, MEDIUM: 0, LOW: 0 });
   });
 
-  it("newest trend point counts EQUAL the findings-tile counts for the same latest scan", async () => {
-    const result = await loader(makeLoaderArgs());
-    const scores = result.healthScoreTrend?.scores ?? [];
-    const newest = scores[scores.length - 1];
+  it("filters the latest scan only: no previous-scan or trend-scan read (gc-np1d.6)", async () => {
+    await loader(makeLoaderArgs());
 
-    expect(newest.scanId).toBe("scan-1");
-    // The core invariant: same scan, same ignore-filtered source, same counts.
-    expect({ HIGH: newest.highCount, MEDIUM: newest.mediumCount, LOW: newest.lowCount }).toEqual(
-      result.findingSummary?.bySeverity,
-    );
-    expect(newest.highCount).toBe(1);
+    expect(mockGetFilteredFindingSummary).toHaveBeenCalledTimes(1);
+    expect(mockGetFilteredFindingSummary).toHaveBeenCalledWith("scan-1", expect.anything());
+    expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
   });
 
-  // gc-kxfb: known malicious code shows regardless of ignores, so each trend
-  // point adds back the malicious findings the merchant ignored (always HIGH),
-  // and the newest point's total equals the findings tile's number.
-  it("adds ignored malicious findings back to each trend point, matching the tile", async () => {
-    const ignoredMalicious: Record<string, number> = { "scan-1": 2, "trend-old": 1 };
-    const filtered: Record<string, { HIGH: number; MEDIUM: number; LOW: number }> = {
-      "scan-1": { HIGH: 1, MEDIUM: 0, LOW: 0 },
-      "scan-0": { HIGH: 0, MEDIUM: 2, LOW: 0 },
-      "trend-old": { HIGH: 0, MEDIUM: 0, LOW: 3 },
-    };
-    mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => ({
-      summary: { total: 0, bySeverity: filtered[scanId], byType: {} },
-      keptFindings: [],
-      ignoredMalicious: ignoredMalicious[scanId] ?? 0,
-    }));
-    // What the latest scan FOUND, ignored ones included (feeds the tile).
-    mockGetTypeCounts.mockResolvedValue({ MALICIOUS_SCRIPT: 2 });
-
-    const result = (await loader(makeLoaderArgs())) as unknown as {
-      findingsTile: { total: number } | null;
-      healthScoreTrend: {
-        scores: Array<{ scanId: string; highCount: number; mediumCount: number; lowCount: number }>;
-      } | null;
-    };
-    const scores = result.healthScoreTrend?.scores ?? [];
-
-    expect(scores.map((s) => [s.scanId, s.highCount, s.mediumCount, s.lowCount])).toEqual([
-      ["trend-old", 1, 0, 3],
-      ["scan-0", 0, 2, 0],
-      ["scan-1", 3, 0, 0],
-    ]);
-    const newest = scores[scores.length - 1];
-    expect(newest.highCount + newest.mediumCount + newest.lowCount).toBe(
-      result.findingsTile?.total,
-    );
-    expect(result.findingsTile?.total).toBe(3);
-  });
-
-  it("findingTrend.previousTotal uses the ignore-filtered previous-scan total", async () => {
-    const result = (await loader(makeLoaderArgs())) as {
-      findingTrend: { direction: string; previousTotal: number } | null;
-    };
-    // filtered scan-0 total = 2 (raw would be 9+9+9 = 27)
-    expect(result.findingTrend?.previousTotal).toBe(2);
-    // current (filtered scan-1) total 1 < previous 2 → improving
-    expect(result.findingTrend?.direction).toBe("improving");
-  });
-
-  it("hands the latest scan's kept rows to the Start-here ranking (no second full read, gc-bn0x)", async () => {
+  it("hands the latest scan's kept rows to the value action (no second full read), never to a Start here ranking", async () => {
     const kept = [{ id: "kept-1" }];
     mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => ({
       summary: {
@@ -1862,7 +1376,9 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
 
     await loader(makeLoaderArgs());
 
-    expect(getFullListTopFindings).toHaveBeenCalledWith("scan-1", kept);
+    expect(loadValueAction).toHaveBeenCalledWith(expect.objectContaining({ keptFindings: kept }));
+    expect(getFullListTopFindings).not.toHaveBeenCalled();
+    expect(getFreeTopFindings).not.toHaveBeenCalled();
   });
 
   it("does NOT call getFilteredFindingSummaryAndKept when the shop has no ignores", async () => {

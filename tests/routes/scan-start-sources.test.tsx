@@ -105,16 +105,13 @@ const HOME_BASE = {
   showThemeChangeNudge: false,
   showMultiThemeNudge: false,
   showFeedbackNudge: false,
-  healthScoreTrend: null,
-  showTrendEmptyState: false,
-  scansNeeded: 0,
-  trendChartEnabled: false,
   laneSummary: [],
   securityRisks: [],
   startHere: null,
-  dominant: null,
-  findingTrend: null,
-  topFindings: [],
+  removalBanner: null,
+  summaryNotice: null,
+  summaryOptIn: null,
+  maliciousFound: false,
 };
 
 function renderHome(loaderData: unknown) {
@@ -152,7 +149,7 @@ describe("Home scan-start controls post source=home", () => {
     expect(posts).toEqual([{ themeId: "gid://shopify/OnlineStoreTheme/1", source: "home" }]);
   });
 
-  it("dashboard: main button, rescan nudge, theme-change nudge and trend empty state all post source=home", async () => {
+  it("dashboard: main button, rescan nudge and theme-change nudge all post source=home", async () => {
     renderHome({
       ...HOME_BASE,
       isFirstScan: false,
@@ -170,14 +167,12 @@ describe("Home scan-start controls post source=home", () => {
       hasResults: true,
       showRescanNudge: true,
       showThemeChangeNudge: true,
-      trendChartEnabled: true,
-      showTrendEmptyState: true,
-      scansNeeded: 2,
     });
 
     const scanButtons = clickableButtons().filter((b) => /scan/i.test(b.label));
-    // Rescan nudge, theme-change nudge, header Scan now (gc-np1d.4), trend empty state.
-    expect(scanButtons).toHaveLength(4);
+    // Rescan nudge, theme-change nudge, header Scan now (gc-np1d.4). The trend
+    // empty state's scan button left Home with the trend chart (gc-np1d.6).
+    expect(scanButtons).toHaveLength(3);
     for (const b of scanButtons) {
       const posts = await clickAndCollect(b.onClick);
       // The header button also says where it was clicked (telemetry only).

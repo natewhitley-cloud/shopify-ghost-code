@@ -240,10 +240,11 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("Home loader: app-removal banner (gc-frda)", () => {
-  it("none: no banner, no badge set, one read on the scan's shop + theme", async () => {
+  it("none: no banner, one read on the scan's shop + theme", async () => {
     const data = await load({ rows: [] });
     expect(data.removalBanner).toBeNull();
-    expect(data.newlyInactiveApps).toEqual([]);
+    // gc-np1d.6: the Start here block (the badge's only reader) is gone from Home.
+    expect(data).not.toHaveProperty("newlyInactiveApps");
     expect(getRemovalNoticeRows).toHaveBeenCalledTimes(1);
     expect(getRemovalNoticeRows).toHaveBeenCalledWith(SHOP.id, THEME_ID, "scan-2");
   });
@@ -255,10 +256,9 @@ describe("Home loader: app-removal banner (gc-frda)", () => {
       scanId: "scan-2",
       fullList: true,
     });
-    expect(data.newlyInactiveApps).toEqual(["Yotpo"]);
   });
 
-  it("many apps: every app, largest first, all badged", async () => {
+  it("many apps: every app, largest first", async () => {
     const data = await load({
       rows: [removed("Avada", 1), removed("Privy", 2), removed("Yotpo", 5)],
     });
@@ -268,13 +268,11 @@ describe("Home loader: app-removal banner (gc-frda)", () => {
       "Avada",
     ]);
     expect(data.removalBanner?.notice.total).toBe(8);
-    expect(data.newlyInactiveApps).toEqual(["Avada", "Privy", "Yotpo"]);
   });
 
-  it("cleaned only: a success notice, and no Start here badge (nothing new is inactive)", async () => {
+  it("cleaned only: a success notice", async () => {
     const data = await load({ rows: [cleaned("Privy", 2)] });
     expect(data.removalBanner?.notice.kind).toBe("cleaned");
-    expect(data.newlyInactiveApps).toEqual([]);
   });
 
   it("removed AND cleaned on the same scan: the inactive notice wins", async () => {
@@ -288,13 +286,11 @@ describe("Home loader: app-removal banner (gc-frda)", () => {
       rows: [{ appName: "Yotpo", leftoverCount: 3, state: "REINSTALLED" }],
     });
     expect(data.removalBanner).toBeNull();
-    expect(data.newlyInactiveApps).toEqual([]);
   });
 
-  it("dismissed for THIS scan: no banner, but Start here still badges", async () => {
+  it("dismissed for THIS scan: no banner", async () => {
     const data = await load({ rows: [removed("Yotpo", 3)], dismissed: "scan-2" });
     expect(data.removalBanner).toBeNull();
-    expect(data.newlyInactiveApps).toEqual(["Yotpo"]);
   });
 
   it("dismissed for an OLDER scan: the newer scan's removals show again", async () => {
@@ -306,7 +302,6 @@ describe("Home loader: app-removal banner (gc-frda)", () => {
     const data = await load({ rows: [removed("Yotpo", 3)], scan: IN_PROGRESS });
     expect(getRemovalNoticeRows).not.toHaveBeenCalled();
     expect(data.removalBanner).toBeNull();
-    expect(data.newlyInactiveApps).toEqual([]);
   });
 
   it("Free sees the full banner (decision 4A), without the full list", async () => {
@@ -321,15 +316,18 @@ describe("Home loader: app-removal banner (gc-frda)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Home render: app-removal banner (gc-frda)", () => {
-  it("renders at the top of the ground stack, above the scan summary", async () => {
+  it("renders in Home's notice slot at the bottom, below What it's costing you (gc-np1d.6)", async () => {
     const html = renderDashboard(await load({ rows: [removed("Yotpo", 3)] }));
     expect(html).toContain('heading="Yotpo is no longer active in your store"');
     expect(html).toContain("It left 3 items behind.");
-    expect(html.indexOf("Yotpo is no longer active")).toBeLessThan(
-      html.indexOf("Most Recent Findings"),
+    expect(html.indexOf("What it&#x27;s costing you")).toBeGreaterThan(-1);
+    expect(html.indexOf("Yotpo is no longer active")).toBeGreaterThan(
+      html.indexOf("What it&#x27;s costing you"),
     );
-    // The first banner in the ground.
-    expect(html.indexOf("<s-banner")).toBe(html.indexOf('<s-banner tone="info" heading="Yotpo'));
+    // The last banner on the page: the slot sits at the bottom.
+    expect(html.lastIndexOf("<s-banner")).toBe(
+      html.indexOf('<s-banner tone="info" heading="Yotpo'),
+    );
   });
 
   it("paid: 'Review 3 items' links to the app's filtered scan view", async () => {
@@ -381,30 +379,11 @@ describe("Home render: app-removal banner (gc-frda)", () => {
     expect(html).not.toContain("no longer active");
   });
 
-  it("Start here badges a top finding from a newly inactive app", async () => {
-    mock(getFullListTopFindings).mockResolvedValue([
-      {
-        id: "f-1",
-        findingType: "GHOST_SCRIPT",
-        severity: "HIGH",
-        createdAt: new Date("2026-10-08T10:00:30Z"),
-        filename: "layout/theme.liquid",
-        lineNumber: 12,
-        appName: "Yotpo",
-      },
-      {
-        id: "f-2",
-        findingType: "GHOST_STYLE",
-        severity: "LOW",
-        createdAt: new Date("2026-10-08T10:00:31Z"),
-        filename: "assets/x.css",
-        lineNumber: 1,
-        appName: "Privy",
-      },
-    ]);
+  it("no Start here block on Home, so no top-finding read and no 'New' badge (gc-np1d.6)", async () => {
     const html = renderDashboard(await load({ rows: [removed("Yotpo", 3)] }));
-    expect(html).toContain("New · Yotpo");
-    expect(html).not.toContain("New · Privy");
+    expect(html).not.toContain("New · Yotpo");
+    expect(html).not.toContain("Start here</h2>");
+    expect(getFullListTopFindings).not.toHaveBeenCalled();
     expect(getFreeTopFindings).not.toHaveBeenCalled();
   });
 });

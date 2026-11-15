@@ -12,11 +12,6 @@ import {
 
 import { AppRemovalBanner } from "../components/AppRemovalBanner";
 import { FormattedDate } from "../components/FormattedDate";
-import {
-  HealthScoreTrendChart,
-  HealthScoreTrendEmptyState,
-} from "../components/HealthScoreTrendChart";
-import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { InstallSourceCard } from "../components/InstallSourceCard";
 import { ScanProgress } from "../components/ScanProgress";
 import { SecurityRiskBanner } from "../components/SecurityRiskBanner";
@@ -25,29 +20,20 @@ import {
   StorefrontIncidentBanner,
   useGuardIncidentBanners,
 } from "../components/StorefrontIncidentBanner";
-import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
-import { TopFindings } from "../components/TopFindings";
 import { ValueActionCard } from "../components/ValueActionCard";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
 import type { RemovalNotice } from "../lib/app-removal-notice";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { CANVAS_THEME_HINT } from "../lib/canvas-theme";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
-import {
-  computeLaneSummary,
-  dominantLane,
-  dominantPhraseForLane,
-  soWhatForLane,
-  startHereLane,
-} from "../lib/finding-consequence";
+import { computeLaneSummary, soWhatForLane, startHereLane } from "../lib/finding-consequence";
 import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
-import { buildFindingsTile, type FindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
+import { homePromptsHeld, pickHomeNotice, summaryOptInHoldsSlot } from "../lib/home-notice";
 import { parseInstallSourceAnswer, shouldShowInstallSourceCard } from "../lib/install-source";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
 import { noticeClaimResponse } from "../lib/notice-claim";
-import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
   canStartScan,
   canUseMultipleThemes,
@@ -62,8 +48,6 @@ import { getNextScanPeriodStart, getScanQuotaPeriod } from "../lib/scan-quota";
 import type { ScanQuotaPeriod } from "../lib/scan-quota";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import {
-  findingsTileSubtitle,
-  homeRiskSummaryLine,
   securityRiskAnchorId,
   securityRiskSourceWords,
   type SecurityRisk,
@@ -89,10 +73,6 @@ import {
   summaryNoticeLead,
   summaryOptInBody,
 } from "../lib/summary-email-copy";
-import { maliciousHealthRow } from "../lib/theme-health";
-import type { HealthRow } from "../lib/theme-health";
-import { toTopFindingViews } from "../lib/top-findings";
-import type { TopFindingView } from "../lib/top-findings";
 import { useClaimRenderedNotice } from "../lib/use-claim-rendered-notice";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
@@ -132,7 +112,7 @@ import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
-import { advisoryStartHereCopy, loadHomeSecurityRisks } from "../services/security-risk.server";
+import { loadHomeSecurityRisks } from "../services/security-risk.server";
 import { hiddenStoredFindingTypes } from "../services/soft-launch-flags.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
 import {
@@ -153,8 +133,6 @@ import type { SummaryOptInPrompt } from "../services/summary-optin.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
-import { loadThemeHealth } from "../services/theme-health.server";
-import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { loadValueAction } from "../services/value-action.server";
 import { authenticate } from "../shopify.server";
 import { LANE_COLOR } from "../styles/lane-colors";
@@ -163,7 +141,6 @@ import {
   ACCENT_FILL,
   ACCENT_INK,
   ACCENT_TINT,
-  BG_BADGE_SUCCESS,
   BG_SURFACE,
   BG_WHITE,
   BORDER_DEFAULT,
@@ -171,7 +148,6 @@ import {
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_SUCCESS,
-  COLOR_WARNING,
   CRIT_BD,
   groundStyle,
   hairline,
@@ -180,7 +156,6 @@ import {
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
-  tileStatusTintCss,
   WARN_BD,
   WARN_TEXT,
 } from "../styles/shared";
@@ -208,8 +183,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // and hide the onboarding card. Ensuring the row here closes that race.
   const shop = await getOrCreateShopMetadata(session.shop);
 
-  const trendChartEnabled = process.env.ENABLE_TREND_CHART === "true";
-
   if (!shop) {
     // Defensive fallback only: unreachable on an authenticated load unless the
     // row is deleted between create and re-read (e.g. a shop/redact landing in
@@ -235,28 +208,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       showMultiThemeNudge: false,
       showFeedbackNudge: false,
       showInstallSourceCard: false,
-      healthScoreTrend: null,
-      showTrendEmptyState: false,
-      scansNeeded: 0,
-      trendChartEnabled: false,
       laneSummary: [] as LaneSummaryRow[],
-      advisoryCount: 0,
       securityRisks: [] as SecurityRisk[],
       securityRiskSource: null as SecurityRiskSource | null,
       guard: null as GuardHomeView | null,
       guardEmailNotice: null as { email: string } | null,
-      riskSummaryLine: null as string | null,
       startHere: null as LaneKey | null,
-      dominant: null as LaneKey | null,
-      findingTrend: null,
-      findingsTile: null as FindingsTile | null,
-      topFindings: [] as TopFindingView[],
       removalBanner: null as RemovalBanner | null,
-      newlyInactiveApps: [] as string[],
       summaryNotice: null as SummaryNotice | null,
       summaryOptIn: null as SummaryOptInPrompt | null,
-      themeHealth: [] as HealthRow[],
-      maliciousHealth: null as HealthRow | null,
+      maliciousFound: false,
     };
   }
 
@@ -268,42 +229,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // since the picker is completely hidden there.
   const shouldFetchThemes = shop.plan === PLANS.STANDARD || shop.plan === PLANS.PROFESSIONAL;
 
-  // Fetch trend data for Standard and Professional — Free plan gets null.
-  // Also gated by the ENABLE_TREND_CHART feature flag so the feature can be
-  // toggled off without a deploy (zero extra DB cost when disabled).
-  const shouldFetchTrendScans =
-    trendChartEnabled && (shop.plan === PLANS.STANDARD || shop.plan === PLANS.PROFESSIONAL);
-
   // Phase 0: fetch theme metadata and recent scans in parallel — none depend on each other.
   // Theme reads go through the ~60s per-shop TTL cache (theme-cache.server) so
   // repeated dashboard navigations don't re-hit the Shopify theme API. Keyed by
   // session.shop. The action's theme validation and the poll cron deliberately
   // call the raw fetchers instead so their reads stay fresh.
-  const [mainTheme, allThemes, recentScans, completedScansForTrend] = await Promise.all([
+  const [mainTheme, allThemes, recentScans] = await Promise.all([
     getCachedMainTheme(admin, session.shop),
     shouldFetchThemes
       ? getCachedAllThemes(admin, session.shop)
       : Promise.resolve([] as ThemeSummary[]),
     getScansForShop(shop.id, { limit: 2 }),
-    shouldFetchTrendScans
-      ? getCompletedScansForShop(shop.id, { limit: 7 })
-      : Promise.resolve([] as Array<{ id: string; completedAt: Date; themeName: string }>),
   ]);
 
   const [latestScan = null, previousScan = null] = recentScans.items;
 
-  // Union of scan ids the dashboard needs severity counts for: the latest scan,
-  // the previous scan (only when it's a successful terminal state), and the
-  // trend scans. A single getSeverityCountsForScans call replaces what used to
-  // be up to 9 separate getFindingSummary calls (the N+1 fix). getFindingSummary
-  // is deliberately not used here — the dashboard never reads the byType axis.
-  const severityScanIds = Array.from(
-    new Set<string>([
-      ...(latestScan ? [latestScan.id] : []),
-      ...(previousScan && isSuccessfulScan(previousScan.status) ? [previousScan.id] : []),
-      ...completedScansForTrend.map((s) => s.id),
-    ]),
-  );
+  // The scan Home needs severity counts for: the latest one only (gc-np1d.6:
+  // the finding-count trend and the trend chart that read the previous and
+  // older scans are gone from Home). getFindingSummary is deliberately not
+  // used here: the dashboard never reads the byType axis from it.
+  const severityScanIds = latestScan ? [latestScan.id] : [];
 
   // Phase 1: queries that depend only on Phase 0 results (parallel).
   // typeCounts is fetched here (in parallel) only for a successful latest scan,
@@ -337,38 +282,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     [Severity.LOW]: 0,
   };
 
-  // Severity + per-type counts for the latest scan, used for the findings
-  // count tile and the consequence lanes. Kept in a `bySeverity`-
-  // shaped object so the returned findingSummary stays compatible with the
-  // component (which reads only findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
+  // Severity + per-type counts for the latest scan, used for the consequence
+  // lanes. Kept in a `bySeverity`-shaped object so the returned findingSummary
+  // stays compatible with the component (which reads only
+  // findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
   //
   // E2.2 (gc-57t): the batch severity query and getTypeCountsForScan above are
   // lean groupBy aggregates that CANNOT exclude INSTANCE (fingerprint) ignores.
   // So when this shop has active suppressions we rebuild an ignore-filtered
-  // severity map covering EVERY scan the dashboard aggregates — latest, previous,
-  // AND the trend scans (exactly `severityScanIds`) — and route the findings tile,
-  // the finding-count trend, and the trend chart through that single source so
-  // they can never disagree for the same scan. Filtering ALL scans (including
-  // historical/previous) by the CURRENT ignore set is the correct, consistent
-  // behavior: an ignored fingerprint or app-level rule applies across every scan,
-  // so a merchant who suppresses a finding sees it removed from history too.
-  // The exception is known malicious code, which shows regardless of ignores:
-  // the tile and the trend chart add ignored MALICIOUS_SCRIPT findings back.
+  // severity map for the latest scan (exactly `severityScanIds`) and route the
+  // lanes through it.
   //
   // Cost: shops with NO suppressions skip this entirely and keep the fast batch
-  // groupBy path (zero extra queries). When ignores exist, the per-scan filtered
-  // load runs once per dashboard load over the already-bounded severityScanIds
-  // set (latest + previous + the trend window) — never for scans outside it.
+  // groupBy path (zero extra queries). When ignores exist, the filtered load
+  // runs once per dashboard load, for the latest scan only.
   const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
   let filteredSeverityByScanId: Map<string, Record<Severity, number>> | null = null;
-  // Ignore-filtered MALICIOUS_SCRIPT count per scan (findings tile, gc-j8xq).
-  let filteredMaliciousByScanId: Map<string, number> | null = null;
-  // MALICIOUS_SCRIPT findings the ignores dropped, per scan (trend chart, gc-kxfb).
-  let ignoredMaliciousByScanId: Map<string, number> | null = null;
   let latestTypeCounts = typeCounts;
   // The latest successful scan's kept (non-ignored) findings, which the
-  // filtered summary had to read anyway: the "Start here" ranking reuses them
-  // so a shop with ignores never reads that scan's findings twice.
+  // filtered summary had to read anyway: the security banners and the value
+  // action reuse them, so a shop with ignores never reads that scan's
+  // findings twice.
   let latestKeptFindings: FindingRow[] | null = null;
   // Every scan's filtered summary read below, by id: the banners' fallback
   // scan (gc-xtno) reuses its entry instead of reading it again.
@@ -391,12 +325,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     filteredSeverityByScanId = new Map(
       summaries.map(([id, { summary }]) => [id, summary.bySeverity]),
     );
-    filteredMaliciousByScanId = new Map(
-      summaries.map(([id, { summary }]) => [id, summary.byType?.MALICIOUS_SCRIPT ?? 0]),
-    );
-    ignoredMaliciousByScanId = new Map(
-      summaries.map(([id, { ignoredMalicious }]) => [id, ignoredMalicious]),
-    );
     // The latest successful scan's ignore-filtered per-type counts feed the lanes.
     if (latestScan && isSuccessfulScan(latestScan.status)) {
       const latest = summaries.find(([id]) => id === latestScan.id);
@@ -407,15 +335,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Single ignore-aware severity accessor: reads the filtered map when the shop
-  // has suppressions, else the lean batch groupBy. Every severity read below
-  // (findings tile, finding-count trend, trend chart) goes through this so they
-  // stay consistent for any given scan.
-  const severityForScan = (scanId: string): Record<Severity, number> =>
-    filteredSeverityByScanId?.get(scanId) ?? severityCounts.get(scanId) ?? zeroSeverityRecord;
-
   const latestSeverity: Record<Severity, number> | null = latestScan
-    ? severityForScan(latestScan.id)
+    ? (filteredSeverityByScanId?.get(latestScan.id) ??
+      severityCounts.get(latestScan.id) ??
+      zeroSeverityRecord)
     : null;
 
   // Consequence lanes: roll the latest scan's (ignore-filtered) per-type counts
@@ -424,85 +347,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const laneSummary: LaneSummaryRow[] = latestTypeCounts
     ? computeLaneSummary(latestTypeCounts)
     : [];
-  const dominant: LaneKey | null = dominantLane(laneSummary);
-  // Non-ignored affected-app advisories in the latest scan (gc-14x5). They
-  // are in no lane, so the top card names them in one line of their own.
-  const advisoryCount = latestTypeCounts?.APP_INCIDENT_ADVISORY ?? 0;
-  // Non-ignored code in a menu (gc-7gjj.1): in no lane either, same treatment.
-  const menuCount = latestTypeCounts?.MENU_INJECTION ?? 0;
 
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
 
-  // "Start here" (gc-bn0x): the latest successful scan's top 3 findings, by the
-  // same ranking and plan rules as the scan page (Free ranks only its preview
-  // and malicious rows, never a hidden finding). Only for a SUCCESSFUL latest
-  // scan, so the 3s poll while a scan runs reads nothing here (its one extra
-  // read is the Security risk banners' fallback, gc-xtno). Cost per load, no
-  // ignores: full-list plans one (type, severity) groupBy plus a few
-  // `take <= 3` reads; Free the preview's bounded per-bucket reads (`take <= 5`)
-  // plus one `take 3` malicious read only when the scan has malicious findings.
-  // With ignores: no query on full-list plans (the kept rows above), and Free
-  // picks its preview from them too.
-  const topFindingRows =
-    latestScan && isSuccessfulScan(latestScan.status) && latestTypeCounts
-      ? features.showFindingDetails
-        ? await getFullListTopFindings(latestScan.id, latestKeptFindings)
-        : await getFreeTopFindings(
-            latestScan.id,
-            latestTypeCounts,
-            latestKeptFindings,
-            findingTypesWithheldByPlan(features),
-          )
-      : [];
-  const topFindings = latestScan
-    ? toTopFindingViews(
-        latestScan.id,
-        topFindingRows,
-        Boolean(features.showFindingDetails),
-        // gc-q5z8: an advisory row names its app and the entry's own wording.
-        advisoryStartHereCopy(topFindingRows),
-      )
-    : [];
+  // The lanes' "Start here" chip: the lane ranking (urgency, then count).
+  // gc-np1d.6: Home's "Start here" findings block is gone (one summary,
+  // decision 1A), so the chip no longer follows its first finding.
+  const startHere: LaneKey | null = startHereLane(laneSummary);
 
-  // The lanes' "Start here" chip follows the block's first finding whenever
-  // the block shows (audit fix): both say "Start here", so they must point at
-  // the same thing, and the block's ranking is the stronger signal (severity
-  // first, then urgency, per finding; startHereLane ranks lanes by urgency then
-  // count and ignores severity). With no block, the lane ranking stands alone.
-  const blockLane = topFindings[0]?.lane;
-  const startHere: LaneKey | null =
-    blockLane && laneSummary.some((row) => row.lane === blockLane)
-      ? blockLane
-      : startHereLane(laneSummary);
-
-  // The results view (findings count, Start here, lanes) renders only for a
-  // successful latest scan whose counts loaded.
+  // The results view (the lanes) renders only for a successful latest scan
+  // whose counts loaded.
   const hasResults = Boolean(latestScan && isSuccessfulScan(latestScan.status) && latestSeverity);
 
-  const sumSeverity = (r: Record<Severity, number>) => r.HIGH + r.MEDIUM + r.LOW;
-
-  // Findings tile (gc-j8xq): the ignore-filtered total PLUS the malicious
-  // findings the merchant ignored, and never green while the scan found any
-  // (see buildFindingsTile). `maliciousCount` is what the scan FOUND, from the
-  // unfiltered per-type groupBy already loaded; `latestTypeCounts` holds what
-  // is left after ignores (the same object when the shop has none), so the
-  // difference is exactly the ignored malicious findings. No extra query.
+  // Known malicious code the latest scan FOUND, ignored or not: the unfiltered
+  // per-type groupBy already loaded (`latestTypeCounts` is what is left after
+  // ignores). No extra query.
   const maliciousCount = typeCounts?.MALICIOUS_SCRIPT ?? 0;
-  const latestFilteredTotal = latestSeverity ? sumSeverity(latestSeverity) : 0;
-
-  // A security risk found (gc-q5z8): one line under "Most Recent Findings"
-  // that accounts for the tile, in place of the leftover-items lead. Its parts
-  // add up to the tile: every malicious finding (ignored or not, named on its
-  // own), the non-ignored advisories, and the laned findings without the kept
-  // malicious ones (the lanes count those too).
-  const riskSummaryLine = homeRiskSummaryLine({
-    advisories: advisoryCount,
-    menu: menuCount,
-    malicious: maliciousCount,
-    leftover:
-      laneSummary.reduce((sum, row) => sum + row.count, 0) -
-      (latestTypeCounts?.MALICIOUS_SCRIPT ?? 0),
-  });
 
   // Security risk banners (gc-q5z8), at the top of Home on EVERY plan: one
   // per known malicious domain (every malicious finding, ignored or not, like
@@ -606,96 +466,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  const findingsTile: FindingsTile | null = latestSeverity
-    ? buildFindingsTile({
-        filteredTotal: latestFilteredTotal,
-        maliciousFound: maliciousCount,
-        maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
-        // gc-q5z8: a non-ignored advisory is a security risk too (red tile),
-        // and so is non-ignored code in a menu (gc-7gjj.1).
-        advisoryKept: advisoryCount + menuCount,
-        // gc-xtno: "k security risks" counts the banners, not finding lines.
-        distinctRisks: securityRisks.length,
-      })
-    : null;
-
-  // Finding-count trend: compare the latest scan's total finding count against
-  // the previous successful scan's. Fewer findings = improving. Derived from the
-  // severity counts already fetched — no extra query. null when there is no
-  // successful previous scan to compare against.
-  //
-  // Both totals are counted the way the tile counts (gc-j8xq), so the line
-  // under the tile never contradicts its number, nor the number the previous
-  // scan's tile showed. Whenever the shop has ignores, the previous scan needs
-  // its own unfiltered malicious count (it may hold ignored malicious findings
-  // even when the latest scan has none): one lean per-type groupBy. A shop
-  // with no ignores has nothing to add back, so it runs no extra query.
-  let findingTrend: {
-    direction: "improving" | "declining" | "stable";
-    previousTotal: number;
-  } | null = null;
-  if (findingsTile && previousScan && isSuccessfulScan(previousScan.status)) {
-    const currentTotal = findingsTile.total;
-    const previousFilteredTotal = sumSeverity(severityForScan(previousScan.id));
-    const previousTotal = hasIgnores
-      ? buildFindingsTile({
-          filteredTotal: previousFilteredTotal,
-          maliciousFound: (await getTypeCountsForScan(previousScan.id)).MALICIOUS_SCRIPT ?? 0,
-          maliciousKept: filteredMaliciousByScanId?.get(previousScan.id) ?? 0,
-        }).total
-      : previousFilteredTotal;
-    const direction =
-      currentTotal < previousTotal
-        ? "improving"
-        : currentTotal > previousTotal
-          ? "declining"
-          : "stable";
-    findingTrend = { direction, previousTotal };
-  }
-
-  // Compute the findings trend — paid plans only, requires >= 3 completed scans.
-  // completedScansForTrend is newest-first; we reverse to oldest-first for the chart.
-  // Types TrendScoreEntry and HealthScoreTrend are imported from HealthScoreTrendChart.
-
-  const showTrendEmptyState = shouldFetchTrendScans && completedScansForTrend.length < 3;
-  const scansNeeded = showTrendEmptyState ? Math.max(0, 3 - completedScansForTrend.length) : 0;
-
-  let healthScoreTrend: HealthScoreTrend | null = null;
-  if (shouldFetchTrendScans && completedScansForTrend.length >= 3) {
-    // Build score entries paired with their scan metadata, then reverse to
-    // oldest-first so the chart reads left-to-right chronologically.
-    const scores: TrendScoreEntry[] = completedScansForTrend
-      .map((scan) => {
-        const counts = severityForScan(scan.id);
-        // Counted the way the tile counts (gc-kxfb): ignored malicious
-        // findings are added back, and MALICIOUS_SCRIPT is always HIGH.
-        const highCount = (counts.HIGH ?? 0) + (ignoredMaliciousByScanId?.get(scan.id) ?? 0);
-        const mediumCount = counts.MEDIUM ?? 0;
-        const lowCount = counts.LOW ?? 0;
-        return {
-          scanId: scan.id,
-          completedAt: scan.completedAt.toISOString(),
-          themeName: scan.themeName,
-          highCount,
-          mediumCount,
-          lowCount,
-        };
-      })
-      .reverse();
-
-    const oldestTotal = scores[0].highCount + scores[0].mediumCount + scores[0].lowCount;
-    const newestTotal =
-      scores[scores.length - 1].highCount +
-      scores[scores.length - 1].mediumCount +
-      scores[scores.length - 1].lowCount;
-    // Fewer findings = improving
-    const delta = oldestTotal - newestTotal;
-    const direction: "improving" | "declining" | "stable" =
-      delta > 3 ? "improving" : delta < -3 ? "declining" : "stable";
-
-    healthScoreTrend = { scores, direction };
-  }
-
   // Compute scan usage for plans with caps (Free = monthly, Standard = weekly,
   // Professional = daily). nextScanAt: when the next period starts (shown at the cap).
   const isFirstScan = !completedScanCheck;
@@ -741,22 +511,52 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // canUseMultipleThemes, so this naturally targets Standard shops with 2+ themes.
   const showMultiThemeNudge = !canUseMultipleThemes(shop.plan) && allThemes.length > 1;
 
+  // "Summary emails are on" (gc-ol95): offered to a shop that owes it (moved
+  // Free -> paid, or opted in while sending was dark) until it is stamped.
+  // The loader writes nothing: the client posts "summary-notice-shown" once
+  // the notice is on screen (gc-1q1s.11). Pre-checked on the loaded row, so
+  // every other load (and every 3s poll) issues no query.
+  const summaryNotice = await summaryNoticeForHome(shop, admin);
+
+  // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
+  // line while the guard is live. Two small indexed reads; never throws.
+  const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
+  // "Checkout guard alerts will be emailed to ..." (gc-1q1s.7): the one-time
+  // consent notice, Standard/Professional only. Offered, not stamped: the
+  // client posts "guard-email-notice-shown" after it renders (gc-1q1s.11).
+  // Pre-checked on the loaded row: no query on most loads.
+  const guardEmailNotice = await guardEmailNoticeForHome(shop, admin);
+
   // Interruptive prompts (gc-97k.6, strict global priority): Home can render
   // the summary-email opt-in (gc-xorg) and the feedback nudge (gc-97k.3), at
   // most one, the opt-in first. resolvePrompt computes the shop's GLOBAL
   // eligibility, so while a higher-priority prompt (the review popup or the
   // Free return banner, both scan-page only) is pending, Home renders nothing
   // and claims nothing.
+  //
+  // Home's notice slot (gc-np1d.6) ranks both below the two consent notices
+  // above, and a prompt the slot would not render must claim nothing (no
+  // prompt slot, no `shown` stamp). So while a consent notice is offered, or
+  // was claimed in the last 24h (it may still be on screen, latched by the
+  // client), Home resolves no prompt at all: homePromptsHeld.
   // Whether rendering the opt-in would open a NEW 24h window (read before the
   // claim): its first render in that window, the one telemetry counts.
   const optInOpensWindow = promptClaimNeeded("summary_optin", promptState, now);
-  const homePrompt = await resolvePrompt({
-    shopDomain: session.shop,
-    state: promptState,
-    renderable: HOME_PROMPTS,
-    deferred: HOME_DEFERRED_PROMPTS,
+  const homePrompt = homePromptsHeld({
+    guardEmailNoticeOffered: guardEmailNotice !== null,
+    summaryNoticeOffered: summaryNotice !== null,
+    guardEmailNoticeShownAt: shop.guardEmailNoticeShownAt,
+    summaryNoticeShownAt: shop.summaryNoticeShownAt,
     now,
-  });
+  })
+    ? null
+    : await resolvePrompt({
+        shopDomain: session.shop,
+        state: promptState,
+        renderable: HOME_PROMPTS,
+        deferred: HOME_DEFERRED_PROMPTS,
+        now,
+      });
   const showFeedbackNudge = homePrompt === "feedback";
 
   // `shown` counts only a nudge that actually renders, once per merchant. The
@@ -817,8 +617,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // longer active (or whose leftovers it found cleaned up). Content, not an
   // interruptive prompt, so no prompt cap; Free sees it in full (decision 4A).
   // Hidden once the merchant dismissed it for THIS scan; a newer scan's
-  // removals show again. Start here badges a finding from an app newly
-  // inactive on this scan whether or not the banner was dismissed.
+  // removals show again. It takes Home's one notice slot (pickHomeNotice).
   const removalNotice = latestSuccessful ? buildRemovalNotice(removalRows) : null;
   const removalBanner: RemovalBanner | null =
     latestSuccessful && removalNotice && shop.removalNoticeDismissedScanId !== latestSuccessful.id
@@ -828,77 +627,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           fullList: Boolean(features.showFindingDetails),
         }
       : null;
-  const newlyInactiveApps = removalRows.filter((r) => r.state === "REMOVED").map((r) => r.appName);
 
-  // Theme health checklist (gc-i6du): what the latest successful scan checked
-  // and found, by category, plus the theme's type/version and the unpublished
-  // themes. Only with results on screen, so the 3s poll while a scan runs reads
-  // nothing here. Counts and fixed copy only: nothing here is plan-gated content.
-  // The theme list is already loaded for Standard and Professional (the
-  // picker); Free reads it here, through the same 60s cache, and a failed read
-  // only drops the unpublished-themes row.
-  //
-  // Known malicious code is the exception to "ignore-filtered counts": its
-  // count is what the scan FOUND, ignored findings included (the scan page's
-  // security alert lists them regardless of ignores too), so an ignored
-  // malicious finding can never read "Clean" here. It comes from `typeCounts`,
-  // the unfiltered per-type groupBy already loaded above for a successful
-  // latest scan (`maliciousCount`, above): no extra query. The critical line
-  // is built from that count alone, outside loadThemeHealth, so it shows even
-  // when the checklist fails or has no rows. Same on every plan.
-  const maliciousHealth: HealthRow | null =
-    hasResults && latestSuccessful
-      ? maliciousHealthRow(
-          latestSuccessful.id,
-          maliciousCount,
-          // gc-0htk: code seen on the live homepage is not "in your theme".
-          securityRisks.some((r) => r.kind === "malicious" && r.seenIn === "homepage"),
-        )
-      : null;
-  let themeHealth: HealthRow[] = [];
-  if (hasResults && latestSuccessful && latestTypeCounts) {
-    const themesForHealth: ThemeSummary[] | null = shouldFetchThemes
-      ? allThemes
-      : await getCachedAllThemes(admin, session.shop).catch((err) => {
-          logger.warn("theme health: theme list unavailable", {
-            shop: session.shop,
-            ...safeErrorFields(err),
-          });
-          return null;
-        });
-    // loadThemeHealth does not throw; the catch is a second guard so that a
-    // checklist failure can never take Home down with it.
-    themeHealth = await loadThemeHealth({
-      shop,
-      scan: latestSuccessful,
-      typeCounts: { ...latestTypeCounts, MALICIOUS_SCRIPT: maliciousCount },
-      mainThemeId: mainTheme?.id ?? null,
-      themes: themesForHealth,
-      now,
-    }).catch((err) => {
-      logger.warn("theme health: checklist unavailable", {
-        shop: session.shop,
-        ...safeErrorFields(err),
-      });
-      return [] as HealthRow[];
-    });
-  }
-
-  // "Summary emails are on" (gc-ol95): offered to a shop that owes it (moved
-  // Free -> paid, or opted in while sending was dark) until it is stamped.
-  // The loader writes nothing: the client posts "summary-notice-shown" once
-  // the notice is on screen (gc-1q1s.11). Pre-checked on the loaded row, so
-  // every other load (and every 3s poll) issues no query.
-  const summaryNotice = await summaryNoticeForHome(shop, admin);
-
-  // Checkout guard (gc-1q1s.6): open incidents on EVERY plan, plus the status
-  // line while the guard is live. Two small indexed reads; never throws.
-  const guard = await loadGuardHome({ id: shop.id, plan: shop.plan }, now);
-  // "Checkout guard alerts will be emailed to ..." (gc-1q1s.7): the one-time
-  // consent notice, Standard/Professional only. Offered, not stamped: the
-  // client posts "guard-email-notice-shown" after it renders (gc-1q1s.11).
-  // Pre-checked on the loaded row: no query on most loads.
-  const guardEmailNotice = await guardEmailNoticeForHome(shop, admin);
+  // Known malicious code found (ignored or not): the lanes card stays away
+  // then, as the security banner owns the page (gc-np1d.6: replaces the
+  // theme health checklist's malicious line, which is gone from Home).
+  const maliciousFound = hasResults && maliciousCount > 0;
 
   // gc-np1d.4: Home's value-action card, the same card the scan page shows for
   // this plan and state (rule ~/.claude/rules/merchant-ux.md). Only for a
@@ -934,28 +667,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     showMultiThemeNudge,
     showFeedbackNudge,
     showInstallSourceCard,
-    healthScoreTrend,
-    showTrendEmptyState,
-    scansNeeded,
-    trendChartEnabled,
     laneSummary,
-    advisoryCount,
     securityRisks,
     securityRiskSource,
     guard,
     guardEmailNotice,
-    riskSummaryLine,
     startHere,
-    dominant,
-    findingTrend,
-    findingsTile,
-    topFindings,
     removalBanner,
-    newlyInactiveApps,
     summaryNotice,
     summaryOptIn,
-    themeHealth,
-    maliciousHealth,
+    maliciousFound,
   };
 };
 
@@ -1411,27 +1132,16 @@ export default function Dashboard() {
     showMultiThemeNudge,
     showFeedbackNudge,
     showInstallSourceCard,
-    healthScoreTrend,
-    showTrendEmptyState,
-    scansNeeded,
-    trendChartEnabled,
     laneSummary,
     securityRisks,
     securityRiskSource,
     guard,
     guardEmailNotice,
-    riskSummaryLine,
     startHere,
-    dominant,
-    findingTrend,
-    findingsTile,
-    topFindings,
     removalBanner,
-    newlyInactiveApps,
     summaryNotice,
     summaryOptIn,
-    themeHealth,
-    maliciousHealth,
+    maliciousFound,
     valueAction = null,
     pricingPlansUrl,
   } = useLoaderData<typeof loader>();
@@ -1519,10 +1229,6 @@ export default function Dashboard() {
     if (guardEmailNotice) setLatchedGuardNotice(guardEmailNotice);
   }, [guardEmailNotice]);
   const visibleGuardNotice = guardNoticeAnswer ? null : latchedGuardNotice;
-  useClaimRenderedNotice(latchedGuardNotice, {
-    intent: "guard-email-notice-shown",
-    email: latchedGuardNotice?.email ?? "",
-  });
   const handleGuardEmailOff = () => {
     setGuardNoticeAnswer("off");
     guardNoticeFetcher.submit({ intent: "guard-email-off" }, { method: "POST" });
@@ -1540,7 +1246,6 @@ export default function Dashboard() {
     if (summaryNotice) setLatchedSummaryNotice(summaryNotice);
   }, [summaryNotice]);
   const visibleSummaryNotice = summaryNoticeDismissed ? null : latchedSummaryNotice;
-  useClaimRenderedNotice(latchedSummaryNotice, { intent: "summary-notice-shown" });
   const handleDismissSummaryNotice = () => {
     setSummaryNoticeDismissed(true);
     summaryNoticeFetcher.submit({ intent: "dismiss-summary-notice" }, { method: "POST" });
@@ -1563,6 +1268,32 @@ export default function Dashboard() {
     setSummaryOptInAnswered(answer);
     summaryOptInFetcher.submit({ intent: `summary-optin-${answer}` }, { method: "POST" });
   };
+
+  // Whether the latest scan is still running (findings not yet available).
+  const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
+
+  // Home's one notice slot (gc-np1d.6): at most one of these renders, at the
+  // bottom of the page. Answering or dismissing the winner hands the slot to
+  // the next one.
+  const homeNotice = pickHomeNotice({
+    guard_email: visibleGuardNotice !== null,
+    summary_notice: visibleSummaryNotice !== null,
+    summary_optin: summaryOptInHoldsSlot(visibleSummaryOptIn !== null, summaryOptInAnswered),
+    feedback: showFeedbackBanner,
+    multi_theme: showMultiThemeNudge,
+    app_removed: !!removalBanner && !scanInProgress && removalDismissedFor !== removalBanner.scanId,
+    new_high: newHigh > 0 && latestScanId !== null,
+  });
+
+  // The consent notices stamp once rendered (gc-1q1s.11), so only the slot's
+  // winner claims: a notice waiting behind another records nothing.
+  useClaimRenderedNotice(homeNotice === "guard_email" ? latchedGuardNotice : null, {
+    intent: "guard-email-notice-shown",
+    email: latchedGuardNotice?.email ?? "",
+  });
+  useClaimRenderedNotice(homeNotice === "summary_notice" ? latchedSummaryNotice : null, {
+    intent: "summary-notice-shown",
+  });
 
   // Default the picker to the MAIN theme id. Falls back to empty string when
   // mainTheme is null (no published theme) — the scan button will be disabled.
@@ -1589,9 +1320,6 @@ export default function Dashboard() {
     fetcher.submit({ ...homeScanStartPayload(selectedThemeId), via: "header" }, { method: "POST" });
   };
 
-  // Whether the latest scan is still running (findings not yet available).
-  const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
-
   // Same poll as the scan page: revalidate every 3s while the latest scan runs,
   // so this card turns into the results on its own; stops on a terminal status
   // or at the ~10 minute cap. Each poll re-runs this loader, whose writes are
@@ -1599,30 +1327,12 @@ export default function Dashboard() {
   // so polling records nothing twice.
   const { pollingTimedOut } = useScanPolling(latestScan?.status);
 
-  // Total findings in the latest completed scan — drives the consequence-lane
-  // "so what" copy (the leftover-item sentence).
+  // Total findings in the latest completed scan: with no lane to show, any
+  // finding at all keeps the lanes card from saying "all clear".
   const currentTotal =
     (findingSummary?.bySeverity?.HIGH ?? 0) +
     (findingSummary?.bySeverity?.MEDIUM ?? 0) +
     (findingSummary?.bySeverity?.LOW ?? 0);
-
-  // The findings tile's number and tone, from the loader (gc-j8xq): it counts
-  // known malicious code whether or not it was ignored, so it can be higher
-  // than `currentTotal`. Without loader data it is the plain total.
-  const tile: FindingsTile =
-    findingsTile ??
-    buildFindingsTile({ filteredTotal: currentTotal, maliciousFound: 0, maliciousKept: 0 });
-
-  // Finding count for the dominant consequence lane — surfaced in the hero's
-  // "most of the damage is in …" line so the merchant knows how many findings
-  // that top lane represents.
-  const dominantCount = dominant
-    ? (laneSummary.find((row) => row.lane === dominant)?.count ?? 0)
-    : 0;
-  // Findings counted in a lane. A finding with no lane (an affected-app
-  // advisory, gc-14x5) is in the tile's total but is not a "leftover item"
-  // and has no cost to list, so the lane copy counts lanes only.
-  const laneTotal = laneSummary.reduce((sum, row) => sum + row.count, 0);
 
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
@@ -1767,103 +1477,6 @@ export default function Dashboard() {
           </s-banner>
         )}
 
-        {/* Checkout guard alerts are on (gc-1q1s.7): the one-time consent notice. */}
-        {visibleGuardNotice && (
-          <s-banner tone="info" heading={GUARD_NOTICE_HEADING}>
-            <s-stack direction="block" gap="base">
-              <s-paragraph>{guardNoticeLead(visibleGuardNotice.email)}</s-paragraph>
-              <s-stack direction="inline" gap="base">
-                <s-button variant="secondary" onClick={handleGuardEmailOff}>
-                  {GUARD_NOTICE_TURN_OFF}
-                </s-button>
-                <s-button variant="tertiary" onClick={() => setGuardNoticeAnswer("ok")}>
-                  {GUARD_NOTICE_OK}
-                </s-button>
-              </s-stack>
-            </s-stack>
-          </s-banner>
-        )}
-
-        {/* Summary emails are on (gc-ol95): the one-time consent notice. */}
-        {visibleSummaryNotice && (
-          <s-banner tone="info" heading={SUMMARY_NOTICE_HEADING}>
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                {summaryNoticeLead(visibleSummaryNotice.email, visibleSummaryNotice.cadence)}{" "}
-                <Link to="/app/settings">Settings</Link>.
-              </s-paragraph>
-              <div>
-                <s-button variant="secondary" onClick={handleDismissSummaryNotice}>
-                  {SUMMARY_NOTICE_DISMISS}
-                </s-button>
-              </div>
-            </s-stack>
-          </s-banner>
-        )}
-
-        {/* "New: summary emails" (gc-xorg): the one-time opt-in, an
-          interruptive prompt (resolvePrompt in the loader). */}
-        {visibleSummaryOptIn && (
-          <s-banner tone="info" heading={SUMMARY_OPTIN_HEADING}>
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                {summaryOptInBody(visibleSummaryOptIn.email, visibleSummaryOptIn.cadence)}
-              </s-paragraph>
-              <s-stack direction="inline" gap="base">
-                <s-button variant="primary" onClick={() => handleSummaryOptIn("accept")}>
-                  {SUMMARY_OPTIN_ACCEPT}
-                </s-button>
-                <s-button variant="secondary" onClick={() => handleSummaryOptIn("decline")}>
-                  {SUMMARY_OPTIN_DECLINE}
-                </s-button>
-              </s-stack>
-            </s-stack>
-          </s-banner>
-        )}
-        {summaryOptInConfirmed && (
-          <s-banner tone="success">
-            <s-paragraph>
-              {SUMMARY_OPTIN_SUCCESS_LEAD} <Link to="/app/settings">Settings</Link>.
-            </s-paragraph>
-          </s-banner>
-        )}
-        {summaryOptInFailed && (
-          <s-banner tone="info">
-            <s-paragraph>
-              {SUMMARY_OPTIN_FAILED_LEAD} <Link to="/app/settings">Settings</Link>.
-            </s-paragraph>
-          </s-banner>
-        )}
-
-        {/* App-removal banner (gc-frda): apps the latest scan found no longer
-          active, or cleaned up. Top of the ground stack; none while a scan
-          runs (the loader only builds it for a successful latest scan). */}
-        {removalBanner && !scanInProgress && removalDismissedFor !== removalBanner.scanId && (
-          <AppRemovalBanner
-            notice={removalBanner.notice}
-            scanId={removalBanner.scanId}
-            fullList={removalBanner.fullList}
-            linkParams={searchParams}
-            onDismiss={() => handleDismissRemovalNotice(removalBanner.scanId)}
-          />
-        )}
-
-        {/* New high-severity findings callout — shown once the lazily-loaded diff
-          resolves with HIGH findings that are new since the previous scan. */}
-        {newHigh > 0 && latestScanId && (
-          <s-banner tone="warning">
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                {newHigh} new high-severity finding{newHigh === 1 ? "" : "s"} detected in your
-                latest scan.
-              </s-paragraph>
-              <Link to={`/app/scans/${latestScanId}`}>
-                <s-button variant="primary">Review</s-button>
-              </Link>
-            </s-stack>
-          </s-banner>
-        )}
-
         {/* Rescan nudge — Standard plan only, >30 days since last completed scan */}
         {showRescanNudge && valueAction?.primary?.action !== "scan" && (
           <s-banner tone="info">
@@ -1898,39 +1511,6 @@ export default function Dashboard() {
               >
                 Start New Scan
               </s-button>
-            </s-stack>
-          </s-banner>
-        )}
-
-        {/* Multi-theme upgrade nudge — Standard plan shops with more than one theme */}
-        {showMultiThemeNudge && (
-          <s-banner tone="info">
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                Your store has more than one theme. Upgrade to Professional to scan any theme, not
-                just your published one.
-              </s-paragraph>
-              <s-button variant="primary" onClick={() => navigate("/app/settings")}>
-                Upgrade to Professional
-              </s-button>
-            </s-stack>
-          </s-banner>
-        )}
-
-        {/* Merchant feedback nudge (gc-97k.3), an interruptive prompt
-          (resolvePrompt in the loader; never alongside the summary opt-in). */}
-        {showFeedbackBanner && (
-          <s-banner tone="info" heading={FEEDBACK_NUDGE_COPY.heading}>
-            <s-stack direction="block" gap="base">
-              <s-paragraph>{FEEDBACK_NUDGE_COPY.body}</s-paragraph>
-              <s-stack direction="inline" gap="base">
-                <s-button variant="primary" onClick={() => navigate(FEEDBACK_NUDGE_HREF)}>
-                  {FEEDBACK_NUDGE_COPY.cta}
-                </s-button>
-                <s-button variant="secondary" onClick={handleDismissFeedbackNudge}>
-                  {FEEDBACK_NUDGE_COPY.dismiss}
-                </s-button>
-              </s-stack>
             </s-stack>
           </s-banner>
         )}
@@ -1972,92 +1552,11 @@ export default function Dashboard() {
         ) : (
           <>
             <style>{`
-            .dashboard-top-row {
-              display: grid;
-              grid-template-columns: 1fr 3fr;
-              gap: 16px;
-              align-items: start;
-            }
-            @media (max-width: 600px) {
-              .dashboard-top-row {
-                grid-template-columns: 1fr;
-              }
-            }
-            .health-score-tile {
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              justify-content: center;
-              padding: 12px 8px;
-              border-radius: 12px;
-              border: 1px solid ${BORDER_DEFAULT};
-            }
             .dashboard-section-title {
               font-size: 18px;
               font-weight: 600;
               color: ${TEXT_PRIMARY};
               margin: 0;
-            }
-            ${tileStatusTintCss({
-              success: "health-score-tile--success",
-              warning: "health-score-tile--warning",
-              critical: "health-score-tile--critical",
-            })}
-            .health-score-number {
-              font-size: 48px;
-              font-weight: 700;
-              line-height: 1;
-              letter-spacing: -2px;
-            }
-            .health-score-number--success { color: ${COLOR_SUCCESS}; }
-            .health-score-number--warning { color: ${COLOR_WARNING}; }
-            .health-score-number--critical { color: ${COLOR_CRITICAL}; }
-            .health-score-subtitle {
-              font-size: 14px;
-              color: ${TEXT_SUBDUED};
-              margin-top: 4px;
-            }
-            .health-score-label {
-              display: inline-block;
-              margin-top: 12px;
-              padding: 4px 12px;
-              border-radius: 16px;
-              font-size: 13px;
-              font-weight: 600;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-            }
-            .health-score-label--success {
-              background: ${BG_BADGE_SUCCESS};
-              color: ${COLOR_SUCCESS};
-            }
-            .health-score-label--warning {
-              background: ${WARN_BD};
-              color: ${WARN_TEXT};
-            }
-            .health-score-label--critical {
-              background: ${CRIT_BD};
-              color: ${COLOR_CRITICAL};
-            }
-            .health-score-delta {
-              font-size: 13px;
-              color: ${TEXT_SUBDUED};
-              margin-top: 8px;
-            }
-            .health-read {
-              display: flex;
-              flex-direction: column;
-              gap: 8px;
-              margin-top: 12px;
-            }
-            .health-read__damage {
-              font-size: 15px;
-              font-weight: 600;
-              color: ${TEXT_PRIMARY};
-            }
-            .health-read__lead {
-              font-size: 14px;
-              color: ${TEXT_SUBDUED};
             }
             .lanes {
               display: flex;
@@ -2229,132 +1728,44 @@ export default function Dashboard() {
             }
           `}</style>
 
-            {/* Scan Summary — findings count + most recent findings, one floating card */}
-            <div style={{ ...sectionCard, marginBottom: 0 }}>
-              {/* Not a live region: Home now polls every 3s while a scan runs, so
+            {/* The scan card: the in-progress wait while a scan runs, or the
+              first-scan line when no scan has finished. With results, the
+              lanes below are Home's one summary (gc-np1d.6, decision 1A). */}
+            {(scanInProgress || !(hasResults && latestScan)) && (
+              <div style={{ ...sectionCard, marginBottom: 0 }}>
+                {/* Not a live region: Home now polls every 3s while a scan runs, so
                   a region here would announce every count and timer change and
                   double ScanProgress's single role="status", which is the one
                   announced line while a scan runs. */}
-              <div>
-                <s-stack direction="block" gap="base">
-                  {scanInProgress ? (
-                    <HomeScanInProgress
-                      createdAt={latestScan.createdAt}
-                      findingCount={latestScan.findingCount}
-                      pollingTimedOut={pollingTimedOut}
-                    />
-                  ) : hasResults && latestScan ? (
-                    <>
-                      <div className="dashboard-top-row">
-                        {/* Left: findings count tile */}
-                        <div style={{ display: "flex", flexDirection: "column" }}>
-                          <h2 className="dashboard-section-title">Findings</h2>
-                          {/* Spacer to match the subtitle line height in the right column */}
-                          <div style={{ height: "18px" }} />
-                          <div
-                            className={`health-score-tile health-score-tile--${tile.tone}`}
-                            style={{ marginTop: "8px" }}
-                          >
-                            <div
-                              className={`health-score-number health-score-number--${tile.tone}`}
-                            >
-                              {tile.total}
-                            </div>
-                            <div className="health-score-subtitle">
-                              {findingsTileSubtitle(tile.total, tile.securityRisks)}
-                            </div>
-                            {findingTrend && (
-                              <div
-                                className="health-score-delta"
-                                style={{
-                                  fontWeight: 600,
-                                  color:
-                                    findingTrend.direction === "improving"
-                                      ? COLOR_SUCCESS
-                                      : findingTrend.direction === "declining"
-                                        ? COLOR_WARNING
-                                        : TEXT_SUBDUED,
-                                }}
-                              >
-                                {findingTrend.direction === "improving"
-                                  ? `▼ ${findingTrend.previousTotal - tile.total} fewer than last scan`
-                                  : findingTrend.direction === "declining"
-                                    ? `▲ ${tile.total - findingTrend.previousTotal} more than last scan`
-                                    : "No change from last scan"}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        {/* Right: health read — the merchant "so what" for this scan */}
-                        <div style={{ display: "flex", flexDirection: "column" }}>
-                          <h2 className="dashboard-section-title">Most Recent Findings</h2>
-                          <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
-                            Scanned{" "}
-                            <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong>{" "}
-                            on{" "}
-                            <FormattedDate value={latestScan.completedAt ?? latestScan.createdAt} />
-                          </div>
-                          <div className="health-read">
-                            {dominant && (
-                              <div className="health-read__damage">
-                                Most of the damage is in{" "}
-                                <span style={{ color: ACCENT_INK }}>
-                                  {dominantPhraseForLane(dominant)}
-                                </span>
-                                {dominantCount > 0
-                                  ? ` (${dominantCount} finding${dominantCount === 1 ? "" : "s"})`
-                                  : ""}
-                                .
-                              </div>
-                            )}
-                            {/* A security risk (gc-q5z8): one line that accounts
-                                for the tile (security risks are in no lane), then
-                                "See all". Otherwise the leftover-items lead. */}
-                            {riskSummaryLine ? (
-                              <div className="health-read__lead">
-                                {riskSummaryLine}{" "}
-                                <Link to={`/app/scans/${latestScan.id}`}>See all</Link>
-                              </div>
-                            ) : (
-                              laneSummary.length > 0 && (
-                                <div className="health-read__lead">
-                                  {laneTotal} leftover item{laneTotal === 1 ? "" : "s"} from apps
-                                  you&apos;ve uninstalled {laneTotal === 1 ? "is" : "are"} still in
-                                  your theme. See what each is costing you below.
-                                </div>
-                              )
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <s-text>Run your first scan to see your findings.</s-text>
-                  )}
-                </s-stack>
+                <div>
+                  <s-stack direction="block" gap="base">
+                    {scanInProgress ? (
+                      <HomeScanInProgress
+                        createdAt={latestScan.createdAt}
+                        findingCount={latestScan.findingCount}
+                        pollingTimedOut={pollingTimedOut}
+                      />
+                    ) : (
+                      <s-text>Run your first scan to see your findings.</s-text>
+                    )}
+                  </s-stack>
+                </div>
               </div>
-            </div>
-
-            {/* "Start here" (gc-bn0x): the latest scan's top 3 findings. Renders
-              nothing while a scan runs (no successful latest scan) or when the
-              scan is clean. */}
-            {hasResults && latestScan && (
-              <TopFindings findings={topFindings} newlyInactiveApps={newlyInactiveApps} />
             )}
 
             {/* Consequence lanes — "what it's costing you", worst-first. Lane
               counts leave out ignored findings, so with no lanes this card says
               the theme is clean. It is left out when the scan found known
-              malicious code (ignored or not): Theme health below says so. It
-              is also left out when the only findings have no lane (an
-              affected-app advisory): "You're all clear" would be false, and
-              "Start here" above already shows it. Likewise while a checkout
+              malicious code (ignored or not): the security banner at the top
+              says so. It is also left out when the only findings have no lane
+              (an affected-app advisory): "You're all clear" would be false,
+              and the security banner names it. Likewise while a checkout
               guard incident has its own banner at the top (audit fix). */}
             {hasResults &&
               latestScan &&
               !(
                 laneSummary.length === 0 &&
-                (maliciousHealth || currentTotal > 0 || guardMerge.standalone.length > 0)
+                (maliciousFound || currentTotal > 0 || guardMerge.standalone.length > 0)
               ) && (
                 <div style={{ ...sectionCard, marginBottom: 0 }}>
                   <s-stack direction="block" gap="base">
@@ -2444,31 +1855,141 @@ export default function Dashboard() {
                 </div>
               )}
 
-            {/* Theme health (gc-i6du): what the scan checked and found, by
-              category. A plain list: no score, no percentage. */}
-            {hasResults && latestScan && (
-              <ThemeHealthChecklist rows={themeHealth} malicious={maliciousHealth} />
-            )}
-
-            {/* Findings Trend — feature-flagged, paid plans only */}
-            <HealthScoreTrendChart
-              trendChartEnabled={trendChartEnabled}
-              healthScoreTrend={healthScoreTrend}
-            />
-
-            {/* Trend empty state — paid plan, fewer than 3 completed scans */}
-            <HealthScoreTrendEmptyState
-              trendChartEnabled={trendChartEnabled}
-              showTrendEmptyState={showTrendEmptyState}
-              scansNeeded={scansNeeded}
-              onStartScan={handleStartScan}
-              isSubmitting={isSubmitting}
-              scanDisabled={!shop || scanLimitReached}
-            />
-
             {/* How did you find GhostCode? (gc-3twe): once, after results. */}
             {showInstallSourceCard && <InstallSourceCard />}
           </>
+        )}
+
+        {/* Home's one notice slot (gc-np1d.6, pickHomeNotice): at most one of
+          the notices below, at the bottom of the page. */}
+        {/* Checkout guard alerts are on (gc-1q1s.7): the one-time consent notice. */}
+        {homeNotice === "guard_email" && visibleGuardNotice && (
+          <s-banner tone="info" heading={GUARD_NOTICE_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{guardNoticeLead(visibleGuardNotice.email)}</s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button variant="secondary" onClick={handleGuardEmailOff}>
+                  {GUARD_NOTICE_TURN_OFF}
+                </s-button>
+                <s-button variant="tertiary" onClick={() => setGuardNoticeAnswer("ok")}>
+                  {GUARD_NOTICE_OK}
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* Summary emails are on (gc-ol95): the one-time consent notice. */}
+        {homeNotice === "summary_notice" && visibleSummaryNotice && (
+          <s-banner tone="info" heading={SUMMARY_NOTICE_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {summaryNoticeLead(visibleSummaryNotice.email, visibleSummaryNotice.cadence)}{" "}
+                <Link to="/app/settings">Settings</Link>.
+              </s-paragraph>
+              <div>
+                <s-button variant="secondary" onClick={handleDismissSummaryNotice}>
+                  {SUMMARY_NOTICE_DISMISS}
+                </s-button>
+              </div>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* "New: summary emails" (gc-xorg): the one-time opt-in, an
+          interruptive prompt (resolvePrompt in the loader). */}
+        {homeNotice === "summary_optin" && visibleSummaryOptIn && (
+          <s-banner tone="info" heading={SUMMARY_OPTIN_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {summaryOptInBody(visibleSummaryOptIn.email, visibleSummaryOptIn.cadence)}
+              </s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button variant="primary" onClick={() => handleSummaryOptIn("accept")}>
+                  {SUMMARY_OPTIN_ACCEPT}
+                </s-button>
+                <s-button variant="secondary" onClick={() => handleSummaryOptIn("decline")}>
+                  {SUMMARY_OPTIN_DECLINE}
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+        {homeNotice === "summary_optin" && summaryOptInConfirmed && (
+          <s-banner tone="success">
+            <s-paragraph>
+              {SUMMARY_OPTIN_SUCCESS_LEAD} <Link to="/app/settings">Settings</Link>.
+            </s-paragraph>
+          </s-banner>
+        )}
+        {homeNotice === "summary_optin" && summaryOptInFailed && (
+          <s-banner tone="info">
+            <s-paragraph>
+              {SUMMARY_OPTIN_FAILED_LEAD} <Link to="/app/settings">Settings</Link>.
+            </s-paragraph>
+          </s-banner>
+        )}
+
+        {/* App-removal banner (gc-frda): apps the latest scan found no longer
+          active, or cleaned up. None while a scan runs (the loader only
+          builds it for a successful latest scan). */}
+        {homeNotice === "app_removed" && removalBanner && (
+          <AppRemovalBanner
+            notice={removalBanner.notice}
+            scanId={removalBanner.scanId}
+            fullList={removalBanner.fullList}
+            linkParams={searchParams}
+            onDismiss={() => handleDismissRemovalNotice(removalBanner.scanId)}
+          />
+        )}
+
+        {/* New high-severity findings callout — shown once the lazily-loaded diff
+          resolves with HIGH findings that are new since the previous scan. */}
+        {homeNotice === "new_high" && latestScanId && (
+          <s-banner tone="warning">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {newHigh} new high-severity finding{newHigh === 1 ? "" : "s"} detected in your
+                latest scan.
+              </s-paragraph>
+              <Link to={`/app/scans/${latestScanId}`}>
+                <s-button variant="primary">Review</s-button>
+              </Link>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* Multi-theme upgrade nudge — Standard plan shops with more than one theme */}
+        {homeNotice === "multi_theme" && (
+          <s-banner tone="info">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                Your store has more than one theme. Upgrade to Professional to scan any theme, not
+                just your published one.
+              </s-paragraph>
+              <s-button variant="primary" onClick={() => navigate("/app/settings")}>
+                Upgrade to Professional
+              </s-button>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* Merchant feedback nudge (gc-97k.3), an interruptive prompt
+          (resolvePrompt in the loader; never alongside the summary opt-in). */}
+        {homeNotice === "feedback" && (
+          <s-banner tone="info" heading={FEEDBACK_NUDGE_COPY.heading}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{FEEDBACK_NUDGE_COPY.body}</s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button variant="primary" onClick={() => navigate(FEEDBACK_NUDGE_HREF)}>
+                  {FEEDBACK_NUDGE_COPY.cta}
+                </s-button>
+                <s-button variant="secondary" onClick={handleDismissFeedbackNudge}>
+                  {FEEDBACK_NUDGE_COPY.dismiss}
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
         )}
       </div>
     </s-page>
