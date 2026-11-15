@@ -71,37 +71,31 @@ export const LANES: ReadonlyArray<{
   key: LaneKey;
   label: string;
   soWhat: string;
-  dominantPhrase: string;
 }> = [
   {
     key: "customers-see-it",
     label: "Customers see it",
     soWhat: "Shoppers can see this on your live storefront right now.",
-    dominantPhrase: "what your customers see",
   },
   {
     key: "discoverability",
     label: "Found by Google & AI",
     soWhat: "This shapes how Google and AI assistants read and rank your store.",
-    dominantPhrase: "how you're found by Google & AI",
   },
   {
     key: "speed",
     label: "Speed",
     soWhat: "This is loading extra code that slows your storefront down.",
-    dominantPhrase: "your store's speed",
   },
   {
     key: "privacy",
     label: "Still tracking you",
     soWhat: "A removed app is still collecting or sending shopper data.",
-    dominantPhrase: "tracking you didn't authorize",
   },
   {
     key: "housekeeping",
     label: "Housekeeping",
     soWhat: "Leftover clutter with no live impact. Clean up when convenient.",
-    dominantPhrase: "leftover housekeeping",
   },
 ];
 

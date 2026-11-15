@@ -550,31 +550,84 @@ describe("Home: known malicious code backup banner (gc-np1d.6)", () => {
     expect(renderDashboard(data)).not.toMatch(/<s-banner tone="(critical|warning)"/);
   });
 
-  // Audit r1: the backup covers every never-paywalled type, not only malicious code.
-  it.each([
-    ["only an app advisory", { APP_INCIDENT_ADVISORY: 1 }],
-    ["only code in a menu", { MENU_INJECTION: 1 }],
+  // Audit r1/r2: the backup covers every never-paywalled type, not only
+  // malicious code, and names malicious code only when it is uncovered.
+  type BackupCase = {
+    found: Record<string, number>;
+    /** Kept per-type counts after ignores; null = the shop has no ignores. */
+    kept: Record<string, number> | null;
+    heading: string;
+    body: string;
+  };
+  it.each<[string, BackupCase]>([
+    [
+      "only an app advisory",
+      {
+        found: { APP_INCIDENT_ADVISORY: 1 },
+        kept: null,
+        heading: SECURITY_FALLBACK_HEADING,
+        body: SECURITY_FALLBACK_BODY,
+      },
+    ],
+    [
+      "only code in a menu",
+      {
+        found: { MENU_INJECTION: 1 },
+        kept: null,
+        heading: SECURITY_FALLBACK_HEADING,
+        body: SECURITY_FALLBACK_BODY,
+      },
+    ],
+    [
+      "ignored malicious code beside a kept advisory",
+      {
+        found: { MALICIOUS_SCRIPT: 1, APP_INCIDENT_ADVISORY: 1 },
+        kept: { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 0 },
+        heading: MALICIOUS_FALLBACK_HEADING,
+        body: MALICIOUS_FALLBACK_BODY,
+      },
+    ],
   ])(
-    "%s, and the banners' read failed: the neutral backup on every plan, never paywalled",
-    async (_what, counts) => {
+    "%s, and the banners' read failed: the backup on every plan, never paywalled",
+    async (_what, c) => {
       for (const plan of ["free", "Standard", "Professional"]) {
         setPlan(plan);
-        mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, ...counts });
+        mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, ...c.found });
+        if (c.kept) {
+          (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+            fingerprints: new Set(["fp-ignored"]),
+            appNames: new Set(),
+          });
+          const byType = { ...TYPE_COUNTS, ...c.kept };
+          const total = Object.values(byType).reduce((a, b) => a + b, 0);
+          mockFiltered.mockResolvedValue({
+            summary: { total, bySeverity: { HIGH: total, MEDIUM: 0, LOW: 0 }, byType },
+            // The kept rows the banners would read: none come back.
+            keptFindings: [],
+            ignoredMalicious: c.found.MALICIOUS_SCRIPT ?? 0,
+          });
+        }
         (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
 
         const data = await runLoader();
         const html = renderDashboard(data);
 
         expect(data.securityRisks).toEqual([]);
-        const banner = backupBanner(html, SECURITY_FALLBACK_HEADING);
+        const banner = backupBanner(html, c.heading);
         expect(banner).not.toBeNull();
         expect(banner).toMatch(/^<s-banner tone="critical"/);
-        expect(banner).toContain(SECURITY_FALLBACK_BODY);
+        expect(banner).toContain(c.body);
         expect(banner).toMatch(
           /<a href="\/app\/scans\/scan-1"[^>]*><s-button[^>]*>See what to check</,
         );
-        expect(banner).not.toMatch(/malicious|pricing_plans|Upgrade|free trial/i);
-        expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
+        expect(banner).not.toMatch(/pricing_plans|Upgrade|free trial/i);
+        // Exactly one backup banner.
+        const other =
+          c.heading === MALICIOUS_FALLBACK_HEADING
+            ? SECURITY_FALLBACK_HEADING
+            : MALICIOUS_FALLBACK_HEADING;
+        expect(html).not.toContain(other);
+        if (c.heading === SECURITY_FALLBACK_HEADING) expect(banner).not.toMatch(/malicious/i);
       }
     },
   );
@@ -606,7 +659,7 @@ describe("Home: known malicious code backup banner (gc-np1d.6)", () => {
     expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
   });
 
-  it("malicious code with its banner, and an advisory without one: the neutral backup", async () => {
+  it("malicious code with its banner, and menu code without one: the neutral backup", async () => {
     mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 1, MENU_INJECTION: 1 });
     // The malicious read works; the menu read finds no rows (no banner).
     (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(

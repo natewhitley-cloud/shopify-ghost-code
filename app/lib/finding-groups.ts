@@ -17,12 +17,16 @@
 /** Header of the group of findings with no app. */
 export const OTHER_CODE_GROUP_LABEL = "Other code";
 
+/** Whitespace and invisible format characters (zero-width space, word joiner, ...). */
+const BLANK_CHARS = /[\s\p{Cf}]/gu;
+
 /**
  * The group a finding belongs to: its app, or null ("Other code") for no app
- * or a blank / whitespace-only name, so those share one group and one header.
+ * or a blank name (only whitespace and invisible format characters such as
+ * U+200B), so those share one group and one header.
  */
 export function findingGroupKey(appName: string | null): string | null {
-  return appName !== null && appName.trim() !== "" ? appName : null;
+  return appName !== null && appName.replace(BLANK_CHARS, "") !== "" ? appName : null;
 }
 
 /** One group's place in the order and its size under the active filters. */

@@ -56,9 +56,17 @@ describe("group header copy", () => {
   });
 
   // Audit r1 LOW: a blank name is no app name.
-  it.each(["", " ", "\t \n"])("a blank app name (%j) is Other code", (name) => {
-    expect(findingGroupHeading(name)).toBe(OTHER_CODE_GROUP_LABEL);
-    expect(findingGroupKey(name)).toBeNull();
+  it.each(["", " ", "\t \n", "\u200b", "\u2060", "\u200d", " \u200b\u2060\u200d "])(
+    "a blank app name (%j) is Other code",
+    (name) => {
+      expect(findingGroupHeading(name)).toBe(OTHER_CODE_GROUP_LABEL);
+      expect(findingGroupKey(name)).toBeNull();
+    },
+  );
+
+  it("a real name with an invisible character in it is still that app", () => {
+    expect(findingGroupKey("Pri\u200bvy")).toBe("Pri\u200bvy");
+    expect(findingGroupHeading("\u2060Loox")).toBe("\u2060Loox");
   });
 
   it("a name with spaces around it is still that app", () => {

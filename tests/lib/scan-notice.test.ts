@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { pickScanNotice, SCAN_NOTICE_PRIORITY, visibleScanNotice } from "../../app/lib/scan-notice";
+import {
+  pickScanNotice,
+  SCAN_NOTICE_PRIORITY,
+  scanTeaserHeld,
+  visibleScanNotice,
+} from "../../app/lib/scan-notice";
 
 describe("pickScanNotice (decision A)", () => {
   it("priority: return banner, then teaser, then stale results", () => {
@@ -41,4 +46,24 @@ describe("visibleScanNotice (audit r1 M3)", () => {
       expect(visibleScanNotice(key, true)).toBeNull();
     },
   );
+});
+
+describe("scanTeaserHeld (audit r2 M1)", () => {
+  const now = new Date("2026-03-25T12:00:00Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("never dismissed: not held", () => {
+    expect(scanTeaserHeld(null, now)).toBe(false);
+  });
+
+  it("dismissed within the last 24h: held", () => {
+    expect(scanTeaserHeld(ago(0), now)).toBe(true);
+    expect(scanTeaserHeld(ago(DAY - 1), now)).toBe(true);
+  });
+
+  it("exactly 24h or longer ago: no longer held", () => {
+    expect(scanTeaserHeld(ago(DAY), now)).toBe(false);
+    expect(scanTeaserHeld(ago(3 * DAY), now)).toBe(false);
+  });
 });

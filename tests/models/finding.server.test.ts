@@ -902,6 +902,8 @@ describe("getFindingsPageForScan", () => {
       f("b1", "", Severity.HIGH, "b.liquid"),
       f("w1", "   ", Severity.MEDIUM, "c.liquid"),
     ];
+    // Audit r2 LOW-1: invisible format characters only count as blank too.
+    const withInvisible = [...rows, f("z1", "\u200b\u2060", Severity.LOW, "d.liquid")];
     serve(rows);
 
     const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
@@ -917,6 +919,20 @@ describe("getFindingsPageForScan", () => {
     const second = await getFindingsPageForScan(SCAN_ID, { limit: 2, cursor: first.nextCursor! });
     expect(second.items.map((r) => r.id)).toEqual(["w1", "n1"]);
     expect(second.hasNextPage).toBe(false);
+
+    serve(withInvisible);
+    const all = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+    expect(all.groups).toEqual([
+      { appName: "Privy", count: 1 },
+      { appName: null, count: 4 },
+    ]);
+    expect(all.items.map((r) => r.id)).toEqual(["p1", "b1", "w1", "n1", "z1"]);
+    const cutFirst = await getFindingsPageForScan(SCAN_ID, { limit: 3 });
+    const cutSecond = await getFindingsPageForScan(SCAN_ID, {
+      limit: 3,
+      cursor: cutFirst.nextCursor!,
+    });
+    expect(cutSecond.items.map((r) => r.id)).toEqual(["n1", "z1"]);
   });
 
   it("group totals follow the active filters", async () => {

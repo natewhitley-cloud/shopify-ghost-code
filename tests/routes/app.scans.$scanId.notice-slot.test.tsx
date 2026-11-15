@@ -175,6 +175,7 @@ import {
   countFindingsByApp,
   getAppAttributionForScan,
   getFindingFilterOptionsForScan,
+  getFindingByIdForShop,
   getFindingGroupsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
@@ -784,6 +785,121 @@ describe("one notice slot", () => {
       expect(recordUpgradePreviewStageOnce).not.toHaveBeenCalled();
       expect(claimShopStamp).not.toHaveBeenCalled();
       router.dispose();
+    });
+
+    /** Post `form` through a fetcher and wait for its settled state (with revalidation). */
+    async function submit(
+      router: ReturnType<typeof createMemoryRouter>,
+      key: string,
+      form: FormData,
+    ) {
+      let settled: { data?: unknown } | null = null;
+      const unsubscribe = router.subscribe((state) => {
+        const fetcher = state.fetchers.get(key);
+        if (fetcher?.state === "idle" && fetcher.data !== undefined) settled = fetcher;
+      });
+      await router.fetch(key, "scan", "/app/scans/scan-1", { formMethod: "post", formData: form });
+      await vi.waitFor(() => expect(settled).not.toBeNull());
+      unsubscribe();
+      expect(router.state.errors).toBeNull();
+      return settled!.data;
+    }
+
+    // Audit r2 M1: a later reload in the same view (here an ignore) re-runs
+    // the loader; within 24h of the dismissal the teaser is held.
+    it("Not now, then an ignore: the reload picks no teaser, records no shown stamp, and the slot is empty", async () => {
+      freeWithHidden();
+      const loaderRuns = vi.fn();
+      const router = createMemoryRouter(
+        [
+          {
+            id: "scan",
+            path: "/app/scans/:scanId",
+            loader: (args: LoaderFunctionArgs) => {
+              loaderRuns();
+              return loader(args);
+            },
+            action: (args: ActionFunctionArgs) => action(args),
+            shouldRevalidate,
+          },
+        ],
+        { initialEntries: ["/app/scans/scan-1"] },
+      );
+      await vi.waitFor(() => expect(router.state.initialized).toBe(true));
+      expect((router.state.loaderData.scan as { noticeSlot: string }).noticeSlot).toBe(
+        "upgrade_return",
+      );
+
+      expect(await submit(router, "not-now", dismissForm())).toEqual({
+        success: true,
+        dismissed: "upgrade-return",
+      });
+      // The dismissal is stored: the episode that started on this load is
+      // closed as of now.
+      freeWithHidden({
+        upgradeReturnLastShownAt: NOW,
+        upgradeReturnLastDismissedAt: NOW,
+        upgradeReturnDismissCount: 1,
+      });
+      vi.mocked(recordUpgradePreviewStageOnce).mockClear();
+      vi.mocked(getFindingByIdForShop).mockResolvedValue({
+        id: "adv",
+        findingType: "APP_INCIDENT_ADVISORY",
+        filename: "layout/theme.liquid",
+        codeSnippet: "<script src='https://x.test/a.js'></script>",
+        lineNumber: 1,
+      } as never);
+      const ignore = new FormData();
+      ignore.set("intent", "ignore-instance");
+      ignore.set("findingId", "adv");
+
+      expect(await submit(router, "ignore", ignore)).toEqual({
+        success: true,
+        ignored: "instance",
+      });
+
+      // The ignore revalidated the loader; the teaser was held.
+      expect(loaderRuns).toHaveBeenCalledTimes(2);
+      const data = router.state.loaderData.scan as Record<string, unknown>;
+      expect(data.noticeSlot).toBeNull();
+      expect(data.upgradePreview).toBeNull();
+      expect(recordUpgradePreviewStageOnce).not.toHaveBeenCalled();
+      const Stub = createRoutesStub([
+        {
+          id: "scan",
+          path: "/app/scans/:scanId",
+          Component: ScanDetail as never,
+          loader: () => data,
+        },
+      ]);
+      const html = renderToStaticMarkup(
+        createElement(Stub, {
+          initialEntries: ["/app/scans/scan-1"],
+          hydrationData: { loaderData: { scan: data } },
+        }),
+      );
+      expect(slotOf(html)).toBe("");
+      router.dispose();
+    });
+
+    it("the teaser is held for 24h after the dismissal, and can win again once 24h have passed", async () => {
+      const dismissed = (msAgo: number) =>
+        freeWithHidden({
+          upgradeReturnLastDismissedAt: new Date(NOW.getTime() - msAgo),
+          upgradeReturnDismissCount: 3,
+        });
+
+      dismissed(24 * 60 * 60 * 1000 - 1);
+      const { html: heldHtml, data: held } = await renderPage();
+      expect(held.noticeSlot).toBeNull();
+      expect(slotOf(heldHtml)).toBe("");
+      expect(recordUpgradePreviewStageOnce).not.toHaveBeenCalled();
+
+      dismissed(DAY);
+      const { html, data } = await renderPage();
+      expect(data.noticeSlot).toBe("upgrade_preview");
+      expect(slotOf(html)).toContain("more findings on Standard");
+      expect(recordUpgradePreviewStageOnce).toHaveBeenCalledWith("shown", SHOP.domain);
     });
   });
 });

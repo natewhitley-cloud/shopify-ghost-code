@@ -1728,7 +1728,10 @@ describe("app.scans.$scanId loader", () => {
 
         expect(result.upgradeReturn).toBeNull();
         expect(result.reviewRequestNonce).toBeNull();
-        expect(result.upgradePreview).not.toBeNull(); // the teaser is content, never capped
+        // Audit r2 M1: for 24h after "Not now" the teaser is held too, so the
+        // slot stays empty (it was content, never capped, before).
+        expect(result.upgradePreview).toBeNull();
+        expect((result as { noticeSlot?: unknown }).noticeSlot).toBeNull();
       });
 
       it("returns the following week (dismissed once, 7 days later)", async () => {
@@ -5408,7 +5411,7 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(data.upgradePreview?.hiddenCount).toBe(2);
       // The scan-wide preview read never ran.
       expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
-      // The scan-wide summary is untouched (tiles).
+      // The scan-wide summary is untouched.
       expect(data.findingSummary.total).toBe(10);
     });
 
@@ -5450,6 +5453,15 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(html).not.toContain("Malicious code found in your theme");
       expect(html).not.toContain("known to be used in attacks");
       expect(html).toContain('id="finding-y-mal"');
+    });
+
+    // Audit r2 LOW-4: the app-scoped group header counts what the Free view
+    // counts, like the other two branches: never the never-paywalled types.
+    it("the app-scoped group count leaves out malicious code (never paywalled)", async () => {
+      arrange({ malicious: true });
+      const data = (await load()) as Data & { previewGroups: unknown };
+      expect(data.freeScope?.total).toBe(5);
+      expect(data.previewGroups).toEqual([{ appName: "Yotpo", count: 4 }]);
     });
 
     it("no removal record for X: Free behaves exactly as today (scan-wide)", async () => {

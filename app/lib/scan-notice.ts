@@ -17,6 +17,7 @@
  * a capped prompt and claims in resolvePrompt; it ranks first, so a claimed
  * return banner always wins the slot.
  */
+import { PROMPT_CAP_WINDOW_MS } from "./prompt-cap";
 
 /** Every notice the slot can hold, highest priority first. */
 export const SCAN_NOTICE_PRIORITY = ["upgrade_return", "upgrade_preview", "stale_results"] as const;
@@ -41,4 +42,20 @@ export function visibleScanNotice(
   upgradeReturnDismissed: boolean,
 ): ScanNoticeKey | null {
   return upgradeReturnDismissed ? null : picked;
+}
+
+/**
+ * Whether the teaser is held after "Not now" on the return banner (audit r2
+ * M1): for PROMPT_CAP_WINDOW_MS (24h) after the stored dismissal, a load that
+ * would pick the teaser leaves the slot empty instead, so it records no
+ * "shown" stamp. A later reload in the same view (e.g. after an ignore) can
+ * no longer stamp a teaser the client keeps hidden. A hard 24h hold, like
+ * homePromptsHeld, without guessing whether a tab still shows the page.
+ * Exactly 24h no longer holds.
+ */
+export function scanTeaserHeld(upgradeReturnLastDismissedAt: Date | null, now: Date): boolean {
+  return (
+    upgradeReturnLastDismissedAt instanceof Date &&
+    now.getTime() - upgradeReturnLastDismissedAt.getTime() < PROMPT_CAP_WINDOW_MS
+  );
 }

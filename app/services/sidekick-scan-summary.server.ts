@@ -19,10 +19,11 @@
  *     ignores, exactly as the scan page's security alert lists it (and its
  *     count is what the scan FOUND, as Home's critical line counts it).
  *     Security findings are never paywalled.
- *   - Theme health is Home's checklist (loadThemeHealth + maliciousHealthRow
- *     + groupHealthRows + themeHealthVerdict): the same verdict sentence, the
- *     clean checks and the checks that did not fully run. Counts and fixed
- *     copy only, the same on every plan. No score.
+ *   - Theme health is the theme health checklist Home used to show (gone
+ *     from Home in gc-np1d.6; built here from loadThemeHealth +
+ *     maliciousHealthRow + groupHealthRows + themeHealthVerdict): the same
+ *     verdict sentence, the clean checks and the checks that did not fully
+ *     run. Counts and fixed copy only, the same on every plan. No score.
  *   - Checkout guard incidents (gc-1q1s.6, audit fix): open KNOWN_MALICIOUS
  *     and SCRIPT_LOADER incidents, while the guard is live, as Home's fixed
  *     banner sentences (never "hacked" or "hijacked"; new script hosts are

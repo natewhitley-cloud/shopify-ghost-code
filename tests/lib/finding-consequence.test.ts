@@ -88,12 +88,6 @@ describe("LANES", () => {
       expect(lane.soWhat.length).toBeGreaterThan(0);
     }
   });
-
-  it("gives every lane a non-empty dominantPhrase", () => {
-    for (const lane of LANES) {
-      expect(lane.dominantPhrase.length).toBeGreaterThan(0);
-    }
-  });
 });
 
 describe("CHECKOUT_SUNSET consequence (gc-oam)", () => {

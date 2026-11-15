@@ -81,7 +81,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
-import { pickScanNotice, visibleScanNotice } from "../lib/scan-notice";
+import { pickScanNotice, scanTeaserHeld, visibleScanNotice } from "../lib/scan-notice";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
   advisoryCheckSteps,
@@ -1610,8 +1610,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         ? [
             {
               appName: freeScope.appName,
-              count: freeScope.findings.filter((f) => !withheldTypes.includes(f.findingType))
-                .length,
+              count: freeScope.findings.filter(
+                (f) =>
+                  !isNeverPaywalledFindingType(f.findingType) &&
+                  !withheldTypes.includes(f.findingType),
+              ).length,
             },
           ]
         : keptFindings !== null
@@ -1762,11 +1765,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // stale-results notice. Only the winner records its "shown" stamp, each at
   // most once per merchant (the stored stamp skips the claim query on every
   // later load; the atomic claim dedupes concurrent first loads). Never throw.
-  const noticeSlot = pickScanNotice({
+  const picked = pickScanNotice({
     upgrade_return: showUpgradeReturn,
     upgrade_preview: hiddenBreakdown !== null,
     stale_results: staleResults !== null,
   });
+  // Audit r2 M1: for 24h after "Not now" on the return banner, a load that
+  // would pick the teaser leaves the slot empty (no teaser, no stamp; the
+  // stale notice lost to the teaser anyway, so its status-bar line shows).
+  const noticeSlot =
+    picked === "upgrade_preview" && scanTeaserHeld(shop.upgradeReturnLastDismissedAt, now)
+      ? null
+      : picked;
   // Return-visit banner (gc-97k.9): starts a weekly episode when none is open
   // and emits `shown` once per merchant.
   if (noticeSlot === "upgrade_return") await markUpgradeReturnShown(session.shop, shop, now);

@@ -133,7 +133,11 @@ History, Ignored, Settings and Help are utilities with no value action.
   button). With hidden findings on Free the teaser or return banner always holds the
   slot, so the stale notice shows there only when nothing is hidden. When it loses the
   slot, the status bar says "Your theme changed on {date}, so some findings may already
-  be fixed." as plain text (no button, no link, no "shown" stamp).
+  be fixed." as plain text (no button, no link, no "shown" stamp). "Not now" on the
+  return banner empties the slot for the rest of that view (the dismissal does not reload
+  the page), and for 24h after the stored dismissal a load that would pick the teaser
+  leaves the slot empty: no teaser and no "shown" stamp (audit r2 M1), so a reload in the
+  same view (e.g. after an ignore) cannot fill it. After 24h the teaser can win again.
 - **No summary tiles** (screenshot check vs the approved mockup, audit r1): the "Total
   Findings / Severity Breakdown / Performance Impact" tiles between the action card and
   the findings are gone, with the Total findings note under them; they repeated the
