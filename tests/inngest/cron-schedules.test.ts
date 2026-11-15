@@ -38,7 +38,7 @@ import { STOREFRONT_GUARD_CRON } from "../../inngest/functions/storefront-guard"
 import { WEEKLY_SCAN_CRON } from "../../inngest/functions/weekly-scan";
 
 const EXPECTED: Array<[string, string, string]> = [
-  ["monitor-deep-health", MONITOR_DEEP_HEALTH_CRON, "37 * * * *"],
+  ["monitor-deep-health", MONITOR_DEEP_HEALTH_CRON, "37 */2 * * *"],
   ["monitor-scan-failures", MONITOR_SCAN_FAILURES_CRON, "15 */6 * * *"],
   ["snapshot-metrics", SNAPSHOT_METRICS_CRON, "20 6 * * *"],
   ["weekly-scan", WEEKLY_SCAN_CRON, "40 6 * * 0"],
@@ -66,10 +66,10 @@ describe("cron schedules", () => {
 });
 
 describe("CRON_HEARTBEAT_EXPECTATIONS", () => {
-  it("drops watch-stale-scans and makes monitor-deep-health hourly", () => {
+  it("drops watch-stale-scans and expects monitor-deep-health every 2h", () => {
     const byKey = new Map(CRON_HEARTBEAT_EXPECTATIONS.map((e) => [e.key, e.intervalMs]));
     expect(byKey.has("watch-stale-scans")).toBe(false);
-    expect(byKey.get("monitor-deep-health")).toBe(60 * 60 * 1000);
+    expect(byKey.get("monitor-deep-health")).toBe(2 * 60 * 60 * 1000);
   });
 
   it("expects the plan-cadence coordinators at their new intervals (gc-iefo)", () => {

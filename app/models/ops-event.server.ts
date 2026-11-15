@@ -517,7 +517,7 @@ const DAY_MS = 24 * HOUR_MS;
 // A cron is flagged only after it is this many multiples of its interval late.
 // A factor of 2 tolerates Inngest scheduling jitter and post-failure retry
 // backoff while still catching a scheduler that has genuinely stopped (the
-// fastest cron, monitor-deep-health at 1h, is flagged within ~2h — the canary
+// fastest cron, the hourly checkout guard, is flagged within ~2h — the canary
 // for a total Inngest outage such as signing-key drift, until the external
 // dead-man switch (gc-1we) runs).
 const DEFAULT_GRACE_FACTOR = 2;
@@ -530,7 +530,7 @@ const DEFAULT_GRACE_FACTOR = 2;
  * by withCronHeartbeat.
  */
 export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
-  { key: "monitor-deep-health", intervalMs: HOUR_MS },
+  { key: "monitor-deep-health", intervalMs: 2 * HOUR_MS },
   { key: "monitor-scan-failures", intervalMs: 6 * HOUR_MS },
   { key: "snapshot-metrics", intervalMs: DAY_MS },
   { key: "poll-theme-changes", intervalMs: DAY_MS },
