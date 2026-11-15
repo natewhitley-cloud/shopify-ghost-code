@@ -40,9 +40,13 @@ vi.mock("../../inngest/client", () => ({
 vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock("../../app/services/nudge-stage.server", () => ({
+  recordNudgeStageOnce: vi.fn(async () => true),
+}));
 
 import { createCleanCopyAdmin } from "../../app/services/clean-copy-admin.server";
 import { requestCleanCopy } from "../../app/services/clean-copy.server";
+import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { cleanCopy, COPY_POLL_WAITS } from "../../inngest/functions/clean-copy";
 import { createMockInngestEvent, createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 import {
@@ -81,6 +85,7 @@ beforeEach(() => {
   holder.fake = fake;
   holder.manifest = manifestFor();
   holder.send.mockReset().mockResolvedValue(undefined);
+  vi.mocked(recordNudgeStageOnce).mockReset().mockResolvedValue(true);
   seed(fake);
   shop = new FakeShopify(MAIN_ID, THEME_FILES);
   holder.shop = shop;
@@ -398,3 +403,63 @@ describe("privacy: theme content never crosses an Inngest boundary", () => {
     expect(leaks({ message: err.message, stack: err.stack })).toEqual([]);
   });
 });
+
+// gc-np1d.5: the Clean copy value action's "converted" = a run that removed code.
+describe("value-action conversion (gc-np1d.5)", () => {
+  const DOMAIN = "shop-1.myshopify.com";
+  const conversions = () =>
+    vi.mocked(recordNudgeStageOnce).mock.calls.filter(([, stage]) => stage === "converted");
+
+  it("completed run: converted once, for the shop's own domain, inside finalize (no extra step)", async () => {
+    const runId = await createRun();
+    const { result, log } = await run(runId);
+    expect(result).toMatchObject({ outcome: "completed" });
+    expect(conversions()).toEqual([["clean_copy_action", "converted", DOMAIN]]);
+    expect(log.map((l) => l.name).at(-1)).toBe("finalize");
+  });
+
+  it("partial run (some code removed): converted", async () => {
+    const runId = await createRun(["f-script-1", "f-other"]);
+    fake.state.fixItems.find((i) => i.findingId === "f-other")!.spanSha256 = "bad";
+    const { result } = await run(runId);
+    expect(result).toMatchObject({ outcome: "partial" });
+    expect(conversions()).toEqual([["clean_copy_action", "converted", DOMAIN]]);
+  });
+
+  it("nothing removed, or the run stopped before finalize: not converted", async () => {
+    const none = await createRun(["f-other"]);
+    fake.state.fixItems[0].spanSha256 = "bad";
+    expect((await run(none)).result).toMatchObject({ outcome: "failed" });
+
+    vi.stubEnv("CLEAN_COPY_ENABLED", "false");
+    vi.stubEnv("CLEAN_COPY_SHOPS", "");
+    const off = await createRunUnchecked();
+    if (off) await run(off);
+    expect(conversions()).toEqual([]);
+  });
+
+  it("redelivery after finalize records nothing again", async () => {
+    const runId = await createRun();
+    await run(runId);
+    vi.mocked(recordNudgeStageOnce).mockClear();
+    expect((await run(runId)).result).toMatchObject({ outcome: "not_active" });
+    expect(conversions()).toEqual([]);
+  });
+
+  it("a telemetry failure never changes the run's outcome", async () => {
+    vi.mocked(recordNudgeStageOnce).mockRejectedValue(new Error("db down"));
+    const runId = await createRun();
+    const { result } = await run(runId);
+    expect(result).toEqual({ fixRunId: runId, outcome: "completed" });
+    expect(runOf(runId).status).toBe("completed");
+  });
+});
+
+/** createRun, but returns null instead of throwing when the request is refused. */
+async function createRunUnchecked(): Promise<string | null> {
+  try {
+    return await createRun();
+  } catch {
+    return null;
+  }
+}

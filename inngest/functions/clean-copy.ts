@@ -166,7 +166,31 @@ export const cleanCopy = inngest.createFunction(
 
     const final = await step.run("finalize", async () => {
       const { finalizeFixRun } = await import("../../app/models/fix-run.server");
-      return finalizeFixRun(fixRunId);
+      const result = await finalizeFixRun(fixRunId);
+      // gc-np1d.5: the Clean copy value action converted = a run removed code.
+      // Inside this step (no extra Inngest step). finalizeFixRun returns null
+      // once the run is terminal, so a retry or redelivery never counts twice;
+      // the claim is once per merchant anyway. Telemetry never fails the run.
+      if (result && result.removed > 0) {
+        try {
+          const db = (await import("../../app/db.server")).default;
+          const shop = await db.shop.findUnique({
+            where: { id: shopId },
+            select: { domain: true },
+          });
+          if (shop) {
+            const { recordNudgeStageOnce } = await import("../../app/services/nudge-stage.server");
+            await recordNudgeStageOnce("clean_copy_action", "converted", shop.domain);
+          }
+        } catch (err) {
+          logger.warn("clean-copy conversion not recorded", {
+            function: "clean-copy",
+            fixRunId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return result;
     });
     return { fixRunId, outcome: final?.status ?? "not_active" };
   },
