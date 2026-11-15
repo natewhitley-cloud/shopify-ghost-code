@@ -548,6 +548,57 @@ describe("Free preview grouped by app", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Free page (Nathan, 2026-11-15, decision 2): no "Start here" (it repeated the
+// preview rows) and no finding-type chips; the count heads the preview card.
+// ---------------------------------------------------------------------------
+
+describe("Free page: no Start here, no type chips", () => {
+  const rows = () => [
+    finding("loox-high", "Loox", "HIGH"),
+    finding("privy-high", "Privy", "HIGH", { findingType: "GHOST_HREFLANG" }),
+    finding("other", null, "HIGH", { findingType: "ORPHAN_ASSET" }),
+    finding("x1", "Loox", "LOW", { findingType: "GHOST_PIXEL" }),
+    finding("x2", "Privy", "LOW", { findingType: "GHOST_PIXEL" }),
+    finding("x3", "Privy", "LOW", { findingType: "GHOST_PIXEL" }),
+  ];
+
+  it("renders no Start here block and loads no Start here rows", async () => {
+    freeShop();
+    freeFindings(rows());
+
+    const { html, data } = await renderPage();
+
+    expect(data.topFindings).toEqual([]);
+    expect(html).not.toContain("Start here");
+    expect(html).not.toContain("Fix these 3 first");
+  });
+
+  it("renders no finding-type count chips", async () => {
+    freeShop();
+    freeFindings(rows());
+
+    const { html } = await renderPage();
+
+    expect(html).not.toMatch(/<s-badge[^>]*>[^<]*: \d+<\/s-badge>/);
+  });
+
+  it("heads the preview with the count, then 'Preview: your top N', in one card", async () => {
+    freeShop();
+    freeFindings(rows());
+
+    const { html } = await renderPage();
+
+    const heading = html.indexOf("<s-heading>6 findings detected</s-heading>");
+    const sub = html.indexOf("Preview: your top 3");
+    expect(heading).toBeGreaterThan(-1);
+    expect(sub).toBeGreaterThan(heading);
+    // One card: no second card opens between the count and the preview line.
+    expect(html.slice(heading, sub)).not.toContain("border-radius:12px");
+    expect(html).not.toContain("Preview: Top");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // One notice slot (decision A)
 // ---------------------------------------------------------------------------
 
