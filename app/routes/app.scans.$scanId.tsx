@@ -1905,6 +1905,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // gc-mgi: the theme changed after this scan completed; sent only while
     // it holds the notice slot.
     staleResults: noticeSlot === "stale_results" ? staleResults : null,
+    // gc-np1d.6: the theme changed after this scan but another notice holds
+    // the slot. A fact, not an ask: a plain status-bar line, no stamp.
+    staleNote:
+      staleResults !== null && noticeSlot !== "stale_results"
+        ? { themePublishedAt: staleResults.themePublishedAt }
+        : null,
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
@@ -2189,6 +2195,7 @@ export default function ScanDetail() {
     upgradePreview,
     noticeSlot = null,
     staleResults,
+    staleNote = null,
     pricingPlansUrl,
     trialEligible,
     coverageUpgrade,
@@ -2761,6 +2768,17 @@ export default function ScanDetail() {
               <span className="scan-status-bar__separator">|</span>
               <span>
                 Completed <FormattedDate value={scan.completedAt} includeTime />
+              </span>
+            </>
+          )}
+          {/* gc-np1d.6: the stale-results fact when its notice lost the slot
+              (the same wording as the notice; no button, no link). */}
+          {staleNote && (
+            <>
+              <span className="scan-status-bar__separator">|</span>
+              <span className="scan-stale-note">
+                Your theme changed on <FormattedDate value={staleNote.themePublishedAt} />, so some
+                findings may already be fixed.
               </span>
             </>
           )}

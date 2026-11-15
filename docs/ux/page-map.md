@@ -109,9 +109,10 @@ History, Ignored, Settings and Help are utilities with no value action.
   name; findings with no app last, under "Other code"; severity then filename inside a
   group. Pages follow the same order, so a group cut by a page boundary continues on
   the next page under the same header. On a finding Clean copy can remove
-  (Professional): **Remove with Clean copy** primary; manual steps in a "Do it yourself"
-  disclosure. Standard: **Open in code editor** stays primary (that is its fix). Free:
-  locked rows as today; the up to 5 shown keep their steps.
+  (Professional): an "Included in your clean copy" label, with the manual steps in a
+  "Do it yourself" disclosure; no per-card button (the header and the action card hold
+  Make a clean copy). Standard: **Open in code editor** stays primary (that is its fix).
+  Free: locked rows as today; the up to 5 shown keep their steps.
 - **Notice slot (decision A, 2026-11-15):** at most one, directly below the action card:
   upgrade-return banner, else the UpgradePreview teaser (Free; Standard has no teaser
   on this page), else the stale results notice. Quiet: tertiary buttons only. Only the
@@ -119,7 +120,9 @@ History, Ignored, Settings and Help are utilities with no value action.
   the findings and the slot may hold one more; nothing else on the page asks for an
   upgrade (the truncated-walk notice keeps its "Professional checks ..." line with no
   button). With hidden findings on Free the teaser or return banner always holds the
-  slot, so the stale notice shows there only when nothing is hidden.
+  slot, so the stale notice shows there only when nothing is hidden. When it loses the
+  slot, the status bar says "Your theme changed on {date}, so some findings may already
+  be fixed." as plain text (no button, no link, no "shown" stamp).
 - **Supporting:** filters, exports, App Impact Map, unrecognized scripts.
 
 ### Clean copy: select

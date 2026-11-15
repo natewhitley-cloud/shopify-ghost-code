@@ -593,6 +593,54 @@ describe("one notice slot", () => {
     expect(html.indexOf("more findings on Standard")).toBeLessThan(html.indexOf("Preview: Top"));
   });
 
+  it("stale loses to the teaser: a plain status-bar line says the results may be out of date, with no stamp", async () => {
+    freeWithHidden({ ...staleAndBlocked(), upgradeReturnDismissCount: 3 });
+
+    const { html, data } = await renderPage();
+
+    expect(data.noticeSlot).toBe("upgrade_preview");
+    expect(data.staleNote).toEqual({ themePublishedAt: new Date("2026-03-21T00:00:00Z") });
+    const bar = html.slice(
+      html.indexOf('<div class="scan-status-bar">'),
+      html.indexOf("</div>", html.indexOf('<div class="scan-status-bar">')),
+    );
+    const note = bar.slice(bar.indexOf('<span class="scan-stale-note">'));
+    expect(note).toContain("Your theme changed on");
+    expect(note).toContain("so some findings may already be fixed.");
+    // A fact, not an ask: no button, no link.
+    expect(note).not.toMatch(/<s-button|<a /);
+    expect(claimedColumns()).not.toContain("staleResultsShownAt");
+  });
+
+  it("stale loses to the return banner: the same line, no stamp", async () => {
+    freeWithHidden(staleAndBlocked());
+
+    const { html, data } = await renderPage();
+
+    expect(data.noticeSlot).toBe("upgrade_return");
+    expect(html).toContain('<span class="scan-stale-note">');
+    expect(claimedColumns()).not.toContain("staleResultsShownAt");
+  });
+
+  it("stale wins the slot: no duplicate status-bar line", async () => {
+    freeShop(staleAndBlocked());
+    freeFindings([finding("only", "Privy", "HIGH")]);
+
+    const { html, data } = await renderPage();
+
+    expect(data.noticeSlot).toBe("stale_results");
+    expect(data.staleNote).toBeNull();
+    expect(html).not.toContain("scan-stale-note");
+    expect(html.match(/Your theme changed on/g)).toHaveLength(1);
+  });
+
+  it("not stale: no line", async () => {
+    freeWithHidden();
+    const { html, data } = await renderPage();
+    expect(data.staleNote).toBeNull();
+    expect(html).not.toContain("scan-stale-note");
+  });
+
   it("stale alone (nothing hidden): the stale notice holds the slot and stamps", async () => {
     freeShop(staleAndBlocked());
     freeFindings([finding("only", "Privy", "HIGH")]);
