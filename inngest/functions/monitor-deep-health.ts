@@ -3,7 +3,7 @@
  *
  * Continuous INTERNAL deep-health probe. /health/deep is otherwise only
  * exercised at deploy by the smoke gate; this cron runs the SAME checks
- * (performDeepHealthChecks, shared with the route) hourly and, on a
+ * (performDeepHealthChecks, shared with the route) every 2 hours and, on a
  * degraded/error result, records a function_failure OpsEvent + fires an
  * ops-alert via notifyFunctionFailure. That surfaces a silent post-deploy
  * regression (a cron that stops, sessions that pile up expired, scans stuck

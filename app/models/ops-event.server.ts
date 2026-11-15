@@ -517,7 +517,8 @@ const DAY_MS = 24 * HOUR_MS;
 // A cron is flagged only after it is this many multiples of its interval late.
 // A factor of 2 tolerates Inngest scheduling jitter and post-failure retry
 // backoff while still catching a scheduler that has genuinely stopped (the
-// fastest cron, the hourly checkout guard, is flagged within ~2h — the canary
+// fastest cron, the hourly checkout guard, is flagged within ~2-4h (the check
+// runs inside the 2-hourly monitor-deep-health) — the canary
 // for a total Inngest outage such as signing-key drift, until the external
 // dead-man switch (gc-1we) runs).
 const DEFAULT_GRACE_FACTOR = 2;
