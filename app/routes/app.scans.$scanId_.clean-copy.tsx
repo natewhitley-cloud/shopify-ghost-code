@@ -691,7 +691,7 @@ export default function CleanCopySelect() {
               <s-checkbox
                 // A new set of apps is a new question: remount so the box never
                 // looks ticked for apps it didn't name (audit r2 M2).
-                key={appsToConfirm.join("|")}
+                key={JSON.stringify(appsToConfirm)}
                 label={consentLabel(appsToConfirm)}
                 details={CONSENT_DETAILS}
                 checked={consented ? true : undefined}

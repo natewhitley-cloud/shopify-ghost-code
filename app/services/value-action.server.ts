@@ -128,6 +128,19 @@ export async function leftoversByAppForScan(scanId: string): Promise<Leftovers> 
   }
 }
 
+/** Known malicious code in the scan, ignored or not. A failed read counts as found (never All clear). */
+async function hasMaliciousCode(scanId: string): Promise<boolean> {
+  try {
+    return (await countFindingsByApp(scanId)).some((r) => r.findingType === "MALICIOUS_SCRIPT");
+  } catch (error) {
+    logger.warn("value-action malicious check failed", {
+      scanId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
+}
+
 /** The card's Clean copy input, plus which findings it covers (for the list's label). */
 export type CleanCopyOffer = NonNullable<ValueActionInput["cleanCopy"]> & {
   findingIds: string[];
@@ -270,16 +283,16 @@ export async function loadValueAction(input: {
       : await leftoversByAppForScan(scan.id);
   // Kept findings leave out ignored ones, but known malicious code shows on the
   // page whether or not it was ignored (audit r2 H2). Before All clear, check
-  // the scan's unfiltered counts (one groupBy, only on this path).
+  // the scan's unfiltered counts for it (one groupBy, only on this path).
+  // Advisories and menu code honour ignores, so an ignored one doesn't count (r3 L1).
   if (input.keptFindings !== null && leftovers.total === 0 && !leftovers.securityFound) {
-    const all = await leftoversByAppForScan(scan.id);
-    leftovers = { ...leftovers, securityFound: all.securityFound };
+    leftovers = { ...leftovers, securityFound: await hasMaliciousCode(scan.id) };
   }
   const isPro = shop.plan === PLANS.PROFESSIONAL;
   const cleanCopyOn = isCleanCopyEnabled(shop.domain);
   const offer: CleanCopyOffer | null = !isPro
     ? null
-    : leftovers.total > 0 && cleanCopyOn
+    : leftovers.removable > 0 && cleanCopyOn
       ? await cleanCopyOfferFor({
           shop,
           scan,

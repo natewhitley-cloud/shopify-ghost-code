@@ -85,6 +85,9 @@ const appsYouUninstalled = (n: number) =>
       ? "An app you uninstalled"
       : `${n} apps you uninstalled`;
 const unlock = (n: number) => (n === 1 ? "unlocks" : "unlock");
+/** What an upgrade removes: all of it, or only the removable part (audit r3 M2). */
+const themOrSome = ({ total, removable }: { total: number; removable: number }) =>
+  removable >= total ? (total === 1 ? "it" : "them") : `${removable} of them`;
 const WHY = "It slows your pages and confuses Google and AI assistants.";
 const WHY_PLURAL = "They slow your pages and confuse Google and AI assistants.";
 const SAFE =
@@ -146,7 +149,10 @@ function diyCard(
     apps,
     primary: DIY,
     secondary: withUpsell
-      ? { label: "Upgrade to Professional to remove them for you", action: "upgrade" }
+      ? {
+          label: `Upgrade to Professional to remove ${themOrSome(input.leftovers)} for you`,
+          action: "upgrade",
+        }
       : null,
     telemetryKey,
     upsellKey: withUpsell ? "clean_copy_upsell" : null,
@@ -161,7 +167,7 @@ function professionalCard(input: ValueActionInput): ValueActionCard {
     const { apps } = input.leftovers;
     return card({
       kind: "scan_first",
-      heading: `Scan again to remove ${pieces(input.leftovers.total)} of leftover code`,
+      heading: `Scan again to remove ${pieces(input.leftovers.removable)} of leftover code`,
       body: "Your theme changed after your last scan, so we need a fresh scan before we can remove anything. It takes about a minute.",
       apps,
       primary: SCAN_NOW,
@@ -219,7 +225,7 @@ export function valueActionCard(input: ValueActionInput): ValueActionCard | null
           apps.length === 0
             ? `We found ${pieces(total)} of leftover code`
             : `We found ${pieces(total)} of leftover code from ${apps.length} ${apps.length === 1 ? "app" : "apps"}`,
-        body: `${total === 1 ? WHY : WHY_PLURAL} On Professional, GhostCode removes them for you in a copy of your theme that you preview and publish yourself.`,
+        body: `${total === 1 ? WHY : WHY_PLURAL} On Professional, GhostCode removes ${themOrSome(input.leftovers)} for you in a copy of your theme that you preview and publish yourself.`,
         apps,
         primary: { label: "Upgrade to Professional", action: "upgrade" },
         secondary: { label: "Compare plans", action: "plans" },

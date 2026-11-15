@@ -487,3 +487,47 @@ describe("loadValueAction: security findings (audit r2)", () => {
     expect(card?.kind).toBe("clear");
   });
 });
+
+describe("loadValueAction: audit r3", () => {
+  const load = (plan: string, kept: ReturnType<typeof finding>[]) =>
+    loadValueAction({
+      shop: { ...shop, plan },
+      scan: { ...scan, themeName: "Dawn", createdAt: new Date() },
+      keptFindings: kept as never,
+      ignores: NO_IGNORES,
+      admin,
+      shopDomain: shop.domain,
+    });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockFlag.mockReturnValue(true);
+    mockFresh.mockResolvedValue({ ok: true, main: { id: "t1" } });
+    mockManifest.mockResolvedValue({ entries: [["layout/theme.liquid", "md5"]] });
+    mockTrial.mockResolvedValue({ ok: true, trial: null });
+  });
+
+  it("L1: an ignored advisory (not kept, not malicious) still allows All clear", async () => {
+    vi.mocked(countFindingsByApp).mockResolvedValue([
+      { appName: "Hulk", findingType: "APP_INCIDENT_ADVISORY", count: 1 },
+    ]);
+    const { card } = await load("Free", []);
+    expect(card?.kind).toBe("clear");
+  });
+
+  it("M1: Professional with nothing removable never checks Clean copy freshness", async () => {
+    const { card } = await load("Professional", [finding({ findingType: "GHOST_SECTION" })]);
+    expect(mockFresh).not.toHaveBeenCalled();
+    expect(card?.kind).toBe("diy");
+  });
+
+  it("L3: above the 500-selection cap, no finding is labelled Included", async () => {
+    const many = Array.from({ length: 501 }, (_, i) =>
+      finding({ id: `f${i}`, lineNumber: i + 1, spanStart: i * 20, spanEnd: i * 20 + 10 }),
+    );
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockResolvedValue(many);
+    const res = await load("Professional", many);
+    expect(res.card?.primary?.action).toBe("clean_copy");
+    expect(res.cleanCopyFindingIds).toEqual([]);
+  });
+});

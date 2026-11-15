@@ -62,6 +62,14 @@ History, Ignored, Settings and Help are utilities with no value action.
     **Upgrade**; "Compare plans" link.
   - Nothing found: "All clear" + the reason to scan again (theme changed, last scan
     X days ago). The rescan and theme-changed nudges live here, not as banners.
+  - "Leftovers" = findings with a consequence lane (what "What it's costing you"
+    counts). Security findings (malicious code, app advisories, code in a menu) are
+    never leftovers and never sold as an upgrade (audit 2026-11-14).
+  - No card: security findings but no leftovers (the security banner owns the page;
+    "All clear" never shows beside it, even for ignored malicious code), and Free
+    when nothing found is removable or Clean copy is off. With no card, the rescan
+    and theme-changed banners show as before.
+  - Some leftovers removable, some not: upgrade copy says "removes N of them".
 - **Status line:** last scan date, what's new since the previous scan, value so far
   (e.g. "Removed 12 leftovers").
 - **Notice slot:** at most one of: summary-email opt-in, feedback ask, multi-theme

@@ -356,3 +356,31 @@ describe("valueActionCard: audit r2 fixes", () => {
     expect(std.upsellKey).toBeNull();
   });
 });
+
+// Audit r3 (2026-11-14).
+describe("valueActionCard: audit r3 fixes", () => {
+  const some = { total: 12, apps: APPS, removable: 3, securityFound: false };
+
+  it("M2: Free and Standard say how many an upgrade removes when only some can be", () => {
+    const free = valueActionCard({ ...base, plan: "free", leftovers: some, cleanCopy: null })!;
+    expect(free.body).toContain("GhostCode removes 3 of them for you");
+    const std = valueActionCard({ ...base, plan: "standard", leftovers: some, cleanCopy: null })!;
+    expect(std.secondary?.label).toBe("Upgrade to Professional to remove 3 of them for you");
+    const all = valueActionCard({
+      ...base,
+      plan: "standard",
+      leftovers: { ...some, removable: 12 },
+      cleanCopy: null,
+    })!;
+    expect(all.secondary?.label).toBe("Upgrade to Professional to remove them for you");
+  });
+
+  it("M1: Scan again counts only what a fresh scan could let Clean copy remove", () => {
+    const card = valueActionCard({
+      ...base,
+      leftovers: some,
+      cleanCopy: { state: "stale", count: 0 },
+    })!;
+    expect(card.heading).toBe("Scan again to remove 3 pieces of leftover code");
+  });
+});
