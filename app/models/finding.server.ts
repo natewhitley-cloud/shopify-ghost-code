@@ -2,6 +2,8 @@ import { FindingType, Severity } from "@prisma/client";
 
 import db from "../db.server";
 import { isNeverPaywalledFindingType } from "../lib/finding-classification";
+import { rankFindingGroups } from "../lib/finding-groups";
+import type { FindingGroupMeta } from "../lib/finding-groups";
 
 /**
  * Shape of a finding before it has a DB id.
@@ -372,15 +374,17 @@ export async function getFindingByIdForShop(findingId: string, shopId: string) {
   });
 }
 
+/** The filters the paid findings list (and its group counts) share. */
+export type FindingsListFilters = {
+  severity?: string;
+  findingType?: string;
+  findingTypes?: FindingType[];
+  appName?: string;
+  excludeFindingTypes?: readonly FindingType[];
+};
+
 /**
- * Return a cursor-paginated page of findings for a scan.
- *
- * Ordered by severity (HIGH first, per schema enum declaration order), then
- * filename, then id. The id tiebreaker ensures a stable and unique cursor
- * position even when multiple findings share the same severity + filename.
- *
- * Follows the same limit+1 over-fetch pattern used by getScansForShop so the
- * caller never needs to know the internals of cursor pagination.
+ * The `where` of the paid findings list for its filters.
  *
  * Type filtering supports two mutually-exclusive params with a precedence rule:
  *   - `findingType`  — a single type; when set it wins.
@@ -393,54 +397,150 @@ export async function getFindingByIdForShop(findingId: string, shopId: string) {
  * (shown in their own section instead). They are dropped from a `findingTypes`
  * set and, with no type filter at all, excluded with `notIn`. A single
  * `findingType` is the caller's to validate: it is applied as given.
+ */
+function findingsListWhere(scanId: string, filters: FindingsListFilters) {
+  const { severity, findingType, findingTypes, appName } = filters;
+  const excluded = filters.excludeFindingTypes ?? [];
+  return {
+    scanId,
+    ...(severity ? { severity: severity as Severity } : {}),
+    // Type precedence: a single findingType wins; else a non-empty findingTypes
+    // set is applied as an IN filter; else no type filter at all.
+    ...(findingType
+      ? { findingType: findingType as FindingType }
+      : findingTypes && findingTypes.length > 0
+        ? { findingType: { in: findingTypes.filter((t) => !excluded.includes(t)) } }
+        : excluded.length > 0
+          ? { findingType: { notIn: [...excluded] } }
+          : {}),
+    ...(appName ? { appName } : {}),
+  };
+}
+
+/** Largest offset a findings cursor may carry (anything else reads as page 1). */
+const MAX_FINDINGS_OFFSET = 1_000_000;
+
+/**
+ * The paid list's cursor is the offset of the page's first finding in the
+ * grouped order (a completed scan's findings never change, so an offset is
+ * stable). A missing or malformed cursor, including an old id cursor from a
+ * bookmarked link, starts at the first page.
+ */
+function parseFindingsOffset(cursor: string | undefined): number {
+  if (!cursor || !/^\d{1,7}$/.test(cursor)) return 0;
+  const offset = Number(cursor);
+  return offset <= MAX_FINDINGS_OFFSET ? offset : 0;
+}
+
+/**
+ * The paid list's groups (gc-np1d.6, decision 3A) under these filters, in
+ * page order, with each group's total: ONE (appName, severity) groupBy. See
+ * app/lib/finding-groups for the order.
+ */
+export async function getFindingGroupsForScan(
+  scanId: string,
+  filters: FindingsListFilters,
+): Promise<FindingGroupMeta[]> {
+  const rows = await db.finding.groupBy({
+    by: ["appName", "severity"],
+    where: findingsListWhere(scanId, filters),
+    _count: { _all: true },
+  });
+  return rankFindingGroups(
+    rows.map((r) => ({ appName: r.appName, severity: r.severity, count: r._count._all })),
+  );
+}
+
+/**
+ * Return one page of a scan's findings, grouped by app (gc-np1d.6).
  *
- * @returns { items, hasNextPage, nextCursor } where nextCursor is the last
- *   item's id, or null when there is no further page.
+ * Order: the groups of getFindingGroupsForScan (worst severity, then count,
+ * then name; no-app "Other code" last), and inside a group severity (HIGH
+ * first, per schema enum declaration order), then filename, then id. The
+ * cursor is an offset into that order (see parseFindingsOffset), so a group
+ * cut by a page boundary continues at the top of the next page.
+ *
+ * Reads: the groupBy, then at most three findMany: one per group cut by the
+ * page's start or end (skip/take inside that group), and one for every group
+ * that fits whole (bounded by `limit`). Rows of the whole groups come back in
+ * the database's own order and are only partitioned by app here, never
+ * re-sorted, so filename order is the database's collation everywhere.
+ *
+ * @returns { items, hasNextPage, nextCursor, groups } where nextCursor is the
+ *   next page's offset (null on the last page) and `groups` lists EVERY group
+ *   under the filters with its total, for the page's group headers.
  */
 export async function getFindingsPageForScan(
   scanId: string,
-  options: {
-    limit: number;
-    cursor?: string;
-    severity?: string;
-    findingType?: string;
-    findingTypes?: FindingType[];
-    appName?: string;
-    excludeFindingTypes?: readonly FindingType[];
-  },
+  options: FindingsListFilters & { limit: number; cursor?: string },
 ): Promise<{
   items: Awaited<ReturnType<typeof db.finding.findMany>>;
   hasNextPage: boolean;
   nextCursor: string | null;
+  groups: FindingGroupMeta[];
 }> {
-  const { limit, cursor, severity, findingType, findingTypes, appName } = options;
-  const excluded = options.excludeFindingTypes ?? [];
+  const { limit, cursor, ...filters } = options;
+  const where = findingsListWhere(scanId, filters);
+  const groups = await getFindingGroupsForScan(scanId, filters);
+  const total = groups.reduce((sum, g) => sum + g.count, 0);
+  const offset = parseFindingsOffset(cursor);
+  const end = Math.min(offset + limit, total);
 
-  const rows = await db.finding.findMany({
-    where: {
-      scanId,
-      ...(severity ? { severity: severity as Severity } : {}),
-      // Type precedence: a single findingType wins; else a non-empty findingTypes
-      // set is applied as an IN filter; else no type filter at all.
-      ...(findingType
-        ? { findingType: findingType as FindingType }
-        : findingTypes && findingTypes.length > 0
-          ? { findingType: { in: findingTypes.filter((t) => !excluded.includes(t)) } }
-          : excluded.length > 0
-            ? { findingType: { notIn: [...excluded] } }
-            : {}),
-      ...(appName ? { appName } : {}),
-    },
-    // Severity enum declared HIGH, MEDIUM, LOW — ascending = HIGH first.
-    orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
-    take: limit + 1,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-  });
+  // The page's slice of each group it touches.
+  const slices: Array<{ appName: string | null; skip: number; take: number; whole: boolean }> = [];
+  let start = 0;
+  for (const group of groups) {
+    const from = Math.max(start, offset);
+    const to = Math.min(start + group.count, end);
+    if (from < to) {
+      slices.push({
+        appName: group.appName,
+        skip: from - start,
+        take: to - from,
+        whole: from === start && to === start + group.count,
+      });
+    }
+    start += group.count;
+  }
 
-  const hasNextPage = rows.length > limit;
-  const items = hasNextPage ? rows.slice(0, limit) : rows;
-  const nextCursor = hasNextPage ? items[items.length - 1].id : null;
-  return { items, hasNextPage, nextCursor };
+  const orderBy = [
+    { severity: "asc" as const },
+    { filename: "asc" as const },
+    { id: "asc" as const },
+  ];
+  const wholeApps = slices.filter((s) => s.whole).map((s) => s.appName);
+  const namedWholeApps = wholeApps.filter((a): a is string => a !== null);
+  const [wholeRows, ...cutRows] = await Promise.all([
+    wholeApps.length > 0
+      ? db.finding.findMany({
+          where: {
+            ...where,
+            OR: [
+              ...(namedWholeApps.length > 0 ? [{ appName: { in: namedWholeApps } }] : []),
+              ...(wholeApps.includes(null) ? [{ appName: null }] : []),
+            ],
+          },
+          orderBy,
+        })
+      : Promise.resolve([]),
+    ...slices
+      .filter((s) => !s.whole)
+      .map((s) =>
+        db.finding.findMany({
+          where: { ...where, appName: s.appName },
+          orderBy,
+          skip: s.skip,
+          take: s.take,
+        }),
+      ),
+  ]);
+
+  let cut = 0;
+  const items = slices.flatMap((s) =>
+    s.whole ? wholeRows.filter((row) => row.appName === s.appName) : cutRows[cut++],
+  );
+  const hasNextPage = end < total;
+  return { items, hasNextPage, nextCursor: hasNextPage ? String(end) : null, groups };
 }
 
 /**

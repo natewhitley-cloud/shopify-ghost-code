@@ -102,10 +102,24 @@ History, Ignored, Settings and Help are utilities with no value action.
 - **Header primary action:** **Make a clean copy** (Professional, eligible); otherwise
   **Scan again**. Never "Back to History" (breadcrumb/back link instead).
 - **Action card:** same card as Home for the plan and state.
-- **Findings:** grouped by app (decision 3A). On a finding Clean copy can remove
+- **Findings:** grouped by app (decision 3A), in the paid list and the Free preview: one
+  card per app, headed by the app name and "N findings" (the app's total under the
+  active filters, across every page; Free adds "· K shown"). No install status: the scan
+  data does not say an app was uninstalled. Apps by worst severity, then count, then
+  name; findings with no app last, under "Other code"; severity then filename inside a
+  group. Pages follow the same order, so a group cut by a page boundary continues on
+  the next page under the same header. On a finding Clean copy can remove
   (Professional): **Remove with Clean copy** primary; manual steps in a "Do it yourself"
   disclosure. Standard: **Open in code editor** stays primary (that is its fix). Free:
   locked rows as today; the up to 5 shown keep their steps.
+- **Notice slot (decision A, 2026-11-15):** at most one, directly below the action card:
+  upgrade-return banner, else the UpgradePreview teaser (Free; Standard has no teaser
+  on this page), else the stale results notice. Quiet: tertiary buttons only. Only the
+  notice shown records its "shown" stamp. The action card is the one upgrade ask above
+  the findings and the slot may hold one more; nothing else on the page asks for an
+  upgrade (the truncated-walk notice keeps its "Professional checks ..." line with no
+  button). With hidden findings on Free the teaser or return banner always holds the
+  slot, so the stale notice shows there only when nothing is hidden.
 - **Supporting:** filters, exports, App Impact Map, unrecognized scripts.
 
 ### Clean copy: select
@@ -149,3 +163,4 @@ IDs and counts only, on the existing event sink.
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-11-14 | 1A: one summary on Home, "What it's costing you". 2A: every plan sees the Clean copy card (upgrade on Free/Standard). 3A: findings grouped by app. 4B (Nathan): Standard leads with do it yourself; "Upgrade to Professional to remove them for you" is the second action. Finding cards show "Included in your clean copy" (no per-card button); scan header keeps Make a clean copy. |
+| 2026-11-15 | A (Nathan, audit r1 M6): the Free scan page showed up to 3 upgrade asks. The UpgradePreview teaser and the upgrade-return banner fold into the scan page's one notice slot (slice 2); slice 1 ships as is.                                                                                                                                                                             |

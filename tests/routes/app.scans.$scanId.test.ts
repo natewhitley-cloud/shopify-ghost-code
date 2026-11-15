@@ -93,6 +93,8 @@ vi.mock("../../app/models/finding.server", async (importOriginal) => ({
   getTypeSeverityCountsForScan: vi.fn(),
   getTopFindingsInGroup: vi.fn(),
   getFindingsPageForScan: vi.fn(),
+  // gc-np1d.6: the Free preview's group totals (one groupBy); none by default.
+  getFindingGroupsForScan: vi.fn(async () => []),
   getAppAttributionForScan: vi.fn(),
   getFindingFilterOptionsForScan: vi.fn(),
   getFindingByIdForShop: vi.fn(),
@@ -519,9 +521,10 @@ describe("app.scans.$scanId loader", () => {
       products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/9" },
     };
     const PRO_LINE = "Professional checks up to 5,000 products and 10,000 redirects.";
-    type Result = { coverageUpgrade: { line: string; cta: string | null } | null };
+    type Result = { coverageUpgrade: { line: string } | null };
 
-    it("Free (never paid), no other ask on the page: the Professional line, from getPlanFeatures, with the trial label", async () => {
+    // gc-np1d.6 (decision A): a fact, never an upgrade button, on every plan.
+    it("Free (never paid), no other ask on the page: the Professional line, from getPlanFeatures, with no button", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       mockHasBillingHistory.mockResolvedValue(false);
@@ -534,7 +537,6 @@ describe("app.scans.$scanId loader", () => {
       const pro = getPlanFeatures("Professional");
       expect(result.coverageUpgrade).toEqual({
         line: `Professional checks up to ${pro.productAuditCap.toLocaleString("en-US")} products and ${pro.redirectAuditCap.toLocaleString("en-US")} redirects.`,
-        cta: "Start 7-day free trial",
       });
       expect(result.coverageUpgrade!.line).toBe(PRO_LINE);
     });
@@ -549,7 +551,7 @@ describe("app.scans.$scanId loader", () => {
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as Result;
 
-      expect(result.coverageUpgrade).toEqual({ line: PRO_LINE, cta: "Upgrade to Professional" });
+      expect(result.coverageUpgrade).toEqual({ line: PRO_LINE });
     });
 
     it("Professional: no upgrade line", async () => {
@@ -582,7 +584,6 @@ describe("app.scans.$scanId loader", () => {
 
       expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toEqual({
         line: PRO_LINE,
-        cta: "Upgrade to Professional",
       });
     });
 
@@ -838,13 +839,14 @@ describe("app.scans.$scanId loader", () => {
       // total 10 -> 5 rows. Round 1 = every lane's best (4 lanes), in the
       // shared Start-here order (gc-bn0x): severity, then urgency, so the LOW
       // act-now pixel leads the LOW compounding hreflang; round 2 = Speed's
-      // next best.
+      // next best. gc-np1d.6: every row is the same app's, so the page shows
+      // them as one group, severity first (ties keep the pick's order).
       expect(result.previewFindings.map((f) => f.id)).toEqual([
         "speed-high-1",
+        "speed-high-2",
         "house-med",
         "track-low",
         "disc-low",
-        "speed-high-2",
       ]);
     });
 
@@ -1558,42 +1560,45 @@ describe("app.scans.$scanId loader", () => {
         products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/9" },
       };
       type CoverageResult = Result & {
-        teaserCta: boolean;
+        noticeSlot: string | null;
         staleResults: unknown;
-        coverageUpgrade: { line: string; cta: string | null } | null;
+        coverageUpgrade: Record<string, unknown> | null;
       };
+      // gc-np1d.6: the slot holds one ask; the coverage line is never one.
       const asks = (r: CoverageResult) =>
         [
           r.upgradeReturn !== null,
-          r.upgradePreview !== null && r.teaserCta,
+          r.upgradePreview !== null,
           r.staleResults !== null,
-          r.coverageUpgrade?.cta != null,
+          r.coverageUpgrade !== null && "cta" in r.coverageUpgrade,
         ].filter(Boolean).length;
 
       beforeEach(() => {
         mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
       });
 
-      it("return banner renders: the coverage line stays, its button is hidden (exactly one CTA)", async () => {
+      it("return banner renders: the coverage line stays, with no button (exactly one CTA)", async () => {
         const result = (await load()) as CoverageResult;
 
+        expect(result.noticeSlot).toBe("upgrade_return");
         expect(result.upgradeReturn).not.toBeNull();
         expect(result.coverageUpgrade).toEqual({
           line: "Professional checks up to 5,000 products and 10,000 redirects.",
-          cta: null,
         });
         expect(asks(result)).toBe(1);
       });
 
-      it("teaser renders with its CTA: the coverage line stays, its button is hidden (exactly one CTA)", async () => {
+      it("teaser renders with its CTA: the coverage line stays, with no button (exactly one CTA)", async () => {
         freeShop({ upgradeReturnDismissCount: 3 });
 
         const result = (await load()) as CoverageResult;
 
+        expect(result.noticeSlot).toBe("upgrade_preview");
         expect(result.upgradeReturn).toBeNull();
         expect(result.upgradePreview).not.toBeNull();
-        expect(result.teaserCta).toBe(true);
-        expect(result.coverageUpgrade?.cta).toBeNull();
+        expect(result.coverageUpgrade).toEqual({
+          line: "Professional checks up to 5,000 products and 10,000 redirects.",
+        });
         expect(asks(result)).toBe(1);
       });
     });
@@ -1849,7 +1854,7 @@ describe("app.scans.$scanId loader", () => {
       } | null;
       upgradeReturn: unknown;
       upgradePreview: { hiddenCount: number } | null;
-      teaserCta: boolean;
+      noticeSlot: string | null;
       reviewRequestNonce: string | null;
     };
 
@@ -1884,6 +1889,19 @@ describe("app.scans.$scanId loader", () => {
         byType: { GHOST_SCRIPT: 6, GHOST_HREFLANG: 4 },
       });
       serveTopFindings(rows);
+    }
+
+    /**
+     * gc-np1d.6: one finding, previewed in full, so a Free view hides nothing:
+     * no return banner or teaser, and the stale notice holds the slot.
+     */
+    function nothingHidden() {
+      mockGetFindingSummary.mockResolvedValue({
+        total: 1,
+        bySeverity: { HIGH: 1, MEDIUM: 0, LOW: 0 },
+        byType: { GHOST_SCRIPT: 1 },
+      });
+      serveTopFindings([{ ...FINDING_ONE, id: "f-only", findingType: "GHOST_SCRIPT" }]);
     }
 
     beforeEach(() => {
@@ -1949,8 +1967,10 @@ describe("app.scans.$scanId loader", () => {
       });
 
       it("shows the dates, the next free scan date and the trial CTA", async () => {
+        nothingHidden();
         const result = await load();
 
+        expect(result.noticeSlot).toBe("stale_results");
         expect(result.staleResults).toEqual({
           scanCompletedAt: COMPLETED,
           themePublishedAt: PUBLISHED,
@@ -1961,6 +1981,7 @@ describe("app.scans.$scanId loader", () => {
 
       it("previously-paid Free shop: fallback (no trial) framing", async () => {
         shopOn("free", { everPaidAt: new Date("2026-05-01T00:00:00Z") });
+        nothingHidden();
 
         const result = await load();
 
@@ -1971,39 +1992,35 @@ describe("app.scans.$scanId loader", () => {
         });
       });
 
-      it("one upgrade ask: suppresses the return banner AND the teaser CTA (teaser text stays)", async () => {
+      // gc-np1d.6 (decision A): the return banner outranks the stale notice.
+      it("return banner vs stale: the return banner holds the slot; the stale notice is not sent and records no `shown`", async () => {
         const result = await load();
 
-        expect(result.upgradeReturn).toBeNull();
-        expect(result.upgradePreview?.hiddenCount).toBe(5);
-        expect(result.teaserCta).toBe(false);
-        // The CTA-less teaser is not an ask: its `shown` is not recorded.
+        expect(result.noticeSlot).toBe("upgrade_return");
+        expect(result.upgradeReturn).not.toBeNull();
+        expect(result.upgradePreview).toBeNull();
+        expect(result.staleResults).toBeNull();
+        expect(mockStartEpisode).toHaveBeenCalledWith(SHOP.domain, NOW);
+        expect(claimedColumns()).toEqual(["upgradeReturnShownAt"]);
         expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
       });
 
-      it("suppressing the return banner does NOT claim or burn its prompt slot", async () => {
-        await load();
+      it("teaser vs stale (return banner retired): the teaser holds the slot with its `shown`; the stale notice records none", async () => {
+        shopOn("free", { upgradeReturnDismissCount: 3 });
 
-        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+        const result = await load();
+
+        expect(result.noticeSlot).toBe("upgrade_preview");
+        expect(result.upgradePreview?.hiddenCount).toBe(5);
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.staleResults).toBeNull();
+        expect(mockRecordUpgradePreviewStage).toHaveBeenCalledWith("shown", SHOP.domain);
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
         expect(mockStartEpisode).not.toHaveBeenCalled();
-        expect(claimedColumns()).not.toContain("upgradeReturnShownAt");
-
-        // The slot is still free: the next non-stale results view claims it
-        // for the return banner as if the stale view never happened.
-        shopOn("free", { lastThemePublishAt: null });
-        const next = await load();
-
-        expect(next.upgradeReturn).not.toBeNull();
-        expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
-        expect(mockClaimPromptSlot).toHaveBeenCalledWith(
-          SHOP.domain,
-          "upgrade_return",
-          expect.anything(),
-          NOW,
-        );
       });
 
       it("records stale_results `shown` once per merchant (claim on first view)", async () => {
+        nothingHidden();
         await load();
 
         expect(claimedColumns()).toEqual(["staleResultsShownAt"]);
@@ -2011,23 +2028,29 @@ describe("app.scans.$scanId loader", () => {
 
       it("does not re-claim `shown` once stamped (pre-check skips the write)", async () => {
         shopOn("free", { staleResultsShownAt: ago(DAY) });
+        nothingHidden();
 
-        await load();
+        const result = await load();
+
+        expect(result.noticeSlot).toBe("stale_results");
 
         expect(claimedColumns()).not.toContain("staleResultsShownAt");
       });
 
-      it("the review popup still outranks everything when it is the shop's pending prompt", async () => {
+      it("the review popup still outranks the return banner; the teaser then holds the slot", async () => {
         shopOn("free", { reviewPopupRequestedAt: null });
 
         const result = await load();
 
         expect(result.reviewRequestNonce).toBe("none");
-        expect(result.staleResults?.action.kind).toBe("free_blocked");
         expect(result.upgradeReturn).toBeNull();
+        expect(result.noticeSlot).toBe("upgrade_preview");
+        expect(result.staleResults).toBeNull();
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
       });
 
-      it("truncated walk: the coverage line renders WITHOUT its button (the banner is the ask)", async () => {
+      it("truncated walk: the coverage line renders WITHOUT a button (the stale notice is the ask)", async () => {
+        nothingHidden();
         mockGetScanById.mockResolvedValue({
           ...SCAN,
           completedAt: COMPLETED,
@@ -2037,13 +2060,12 @@ describe("app.scans.$scanId loader", () => {
         });
 
         const result = (await load()) as Result & {
-          coverageUpgrade: { line: string; cta: string | null } | null;
+          coverageUpgrade: Record<string, unknown> | null;
         };
 
         expect(result.staleResults?.action.kind).toBe("free_blocked");
         expect(result.coverageUpgrade).toEqual({
           line: "Professional checks up to 5,000 products and 10,000 redirects.",
-          cta: null,
         });
       });
     });
@@ -2055,15 +2077,19 @@ describe("app.scans.$scanId loader", () => {
       });
 
       it("offers Rescan now, with no upgrade CTA and no stale_results `shown`", async () => {
+        nothingHidden();
         const result = await load();
 
+        expect(result.noticeSlot).toBe("stale_results");
         expect(result.staleResults?.action).toEqual({ kind: "rescan" });
         expect(claimedColumns()).not.toContain("staleResultsShownAt");
       });
 
-      it("leaves the other asks alone (the banner carries no upgrade ask)", async () => {
+      it("hidden findings: the return banner holds the slot and claims as usual", async () => {
         const result = await load();
 
+        expect(result.noticeSlot).toBe("upgrade_return");
+        expect(result.staleResults).toBeNull();
         expect(result.upgradeReturn).not.toBeNull();
         expect(mockClaimPromptSlot).toHaveBeenCalledWith(
           SHOP.domain,
@@ -2120,11 +2146,12 @@ describe("app.scans.$scanId loader", () => {
         allowed: false,
         reason: "A scan is already in progress.",
       });
+      nothingHidden();
 
       const result = await load();
 
       expect(result.staleResults?.action).toEqual({ kind: "scan_running" });
-      expect(result.teaserCta).toBe(true);
+      expect(result.noticeSlot).toBe("stale_results");
       expect(claimedColumns()).not.toContain("staleResultsShownAt");
     });
 
@@ -2136,7 +2163,8 @@ describe("app.scans.$scanId loader", () => {
       const result = await load();
 
       expect(result.staleResults).toBeNull();
-      expect(result.teaserCta).toBe(true);
+      // The slot falls to the next notice: the return banner.
+      expect(result.noticeSlot).toBe("upgrade_return");
       expect(errorSpy).toHaveBeenCalledWith(
         "stale-results-load-failed",
         expect.objectContaining({ shop: SHOP.domain, error: "db down" }),
@@ -2153,6 +2181,7 @@ describe("app.scans.$scanId loader", () => {
       });
 
       it("shows the date line and links to the latest results; no rescan, no ask, no quota read", async () => {
+        nothingHidden();
         const result = await load();
 
         expect(result.staleResults).toEqual({
@@ -2162,7 +2191,7 @@ describe("app.scans.$scanId loader", () => {
         });
         expect(mockCanStartScan).not.toHaveBeenCalled();
         expect(mockGetCompletedScans).toHaveBeenCalledWith(SHOP.id, { limit: 1 });
-        expect(result.teaserCta).toBe(true);
+        expect(result.noticeSlot).toBe("stale_results");
         expect(claimedColumns()).not.toContain("staleResultsShownAt");
       });
     });
@@ -4309,24 +4338,63 @@ describe("StaleResultsBanner (gc-mgi)", () => {
   });
 });
 
-describe("UpgradePreviewBanner without its CTA (gc-mgi one-ask rule)", () => {
-  it("keeps the teaser text but renders no upgrade link or button", () => {
-    const html = renderToStaticMarkup(
-      createElement(
-        MemoryRouter,
-        null,
-        createElement(UpgradePreviewBanner, {
-          preview: { hiddenCount: 3, groups: [{ label: "Speed", count: 3 }] },
-          pricingPlansUrl: "https://example.test/pricing",
-          trialEligible: true,
-          showCta: false,
-        }),
-      ),
-    );
+// gc-np1d.6 (decision A): every notice the slot can hold is quiet. It holds
+// the page's one ask beside the action card, never a primary button.
+describe("notice slot banners are quiet (no primary button)", () => {
+  const PREVIEW = { hiddenCount: 3, groups: [{ label: "Speed", count: 3 }] };
+  const wrap = (el: React.ReactElement) =>
+    renderToStaticMarkup(createElement(MemoryRouter, null, el));
 
+  it("the teaser: its CTA is a tertiary button inside the plan-page link", () => {
+    const html = wrap(
+      createElement(UpgradePreviewBanner, {
+        preview: PREVIEW,
+        pricingPlansUrl: "https://example.test/pricing",
+        trialEligible: true,
+      }),
+    );
     expect(html).toContain("3 more findings on Standard: Speed (3).");
-    expect(html).not.toContain("https://example.test/pricing");
-    expect(html).not.toContain("<s-button");
+    expect(html).toMatch(
+      /<a href="https:\/\/example\.test\/pricing"[^>]*><s-button variant="tertiary">Start 7-day free trial<\/s-button><\/a>/,
+    );
+    expect(html).not.toContain('variant="primary"');
+  });
+
+  it("the return banner: CTA and Not now are both tertiary", () => {
+    const html = wrap(
+      createElement(UpgradeReturnBanner, {
+        preview: PREVIEW,
+        pricingPlansUrl: "https://example.test/pricing",
+        trialEligible: false,
+        onDismiss: () => {},
+      }),
+    );
+    expect(html.match(/<s-button variant="tertiary"/g)).toHaveLength(2);
+    expect(html).not.toMatch(/variant="(primary|secondary)"/);
+  });
+
+  it.each([
+    [{ kind: "rescan" }, "Rescan now"],
+    [
+      { kind: "free_blocked", nextScanAt: new Date("2026-10-01T00:00:00Z"), trialEligible: true },
+      "Start 7-day free trial",
+    ],
+  ] as const)("the stale notice (%j): its button is tertiary", (action, label) => {
+    const html = wrap(
+      createElement(StaleResultsBanner, {
+        staleResults: {
+          scanCompletedAt: new Date("2026-09-22T15:00:00Z"),
+          themePublishedAt: new Date("2026-09-22T20:09:00Z"),
+          action: action as never,
+        },
+        pricingPlansUrl: "https://example.test/pricing",
+        onRescan: () => {},
+        rescanning: false,
+        rescanError: null,
+      }),
+    );
+    expect(html).toMatch(new RegExp(`<s-button variant="tertiary"[^>]*>${label}</s-button>`));
+    expect(html).not.toContain('variant="primary"');
   });
 });
 
@@ -4380,8 +4448,10 @@ describe("UpgradeReturnBanner (gc-97k.9)", () => {
       );
       const banner = render(trialEligible);
       const body = (html: string) => html.match(/<s-text>([^<]*)<\/s-text>/)?.[1];
-      const cta = (html: string) => html.match(/<s-button variant="primary">([^<]*)</)?.[1];
+      // The CTA is the link's button (gc-np1d.6: tertiary, the slot is quiet).
+      const cta = (html: string) => html.match(/<a [^>]*><s-button[^>]*>([^<]*)</)?.[1];
       expect(body(banner)).toBe(body(teaser));
+      expect(cta(teaser)).toBeTruthy();
       expect(cta(banner)).toBe(cta(teaser));
     }
   });
@@ -4722,14 +4792,13 @@ describe("ScanCoverageNotices", () => {
         products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/1" },
       };
 
-      it("Free / Standard: the note, then the line and the shared top-level upgrade link", () => {
+      // gc-np1d.6 (decision A): a fact under the note, never an upgrade ask.
+      it("Free / Standard: the note, then the line, with no upgrade link or button", () => {
         const html = renderNotices({
           walkCoverage: freeNote,
           coverageUpgrade: {
             line: "Professional checks up to 5,000 products and 10,000 redirects.",
-            cta: "Upgrade to Professional",
           },
-          pricingPlansUrl: PLANS_URL,
         });
         expect(html.split('tone="info"')).toHaveLength(2);
         expect(html).toContain("This scan checked the first 500 products in your store.");
@@ -4737,32 +4806,14 @@ describe("ScanCoverageNotices", () => {
         expect(html.indexOf("checked the first 500")).toBeLessThan(
           html.indexOf("Professional checks up to"),
         );
-        expect(html).toMatch(
-          new RegExp(
-            `<a href="${PLANS_URL.replace(/[.]/g, "\\.")}" target="_top" rel="noreferrer">`,
-          ),
-        );
-        expect(html).toMatch(/<s-button variant="primary">Upgrade to Professional<\/s-button>/);
+        expect(html).not.toContain(PLANS_URL);
+        expect(html).not.toContain("<a ");
+        expect(html).not.toContain("<s-button");
         expect(html).not.toMatch(/[—–]/);
       });
 
-      it("another ask on the page (cta null): the line renders, no link or button", () => {
-        const html = renderNotices({
-          walkCoverage: freeNote,
-          coverageUpgrade: {
-            line: "Professional checks up to 5,000 products and 10,000 redirects.",
-            cta: null,
-          },
-          pricingPlansUrl: PLANS_URL,
-        });
-        expect(html).toContain("This scan checked the first 500 products in your store.");
-        expect(html).toContain("Professional checks up to 5,000 products and 10,000 redirects.");
-        expect(html).not.toContain("<a ");
-        expect(html).not.toContain("<s-button");
-      });
-
       it("Professional (no coverageUpgrade): the note only, no upgrade line or link", () => {
-        const html = renderNotices({ walkCoverage: freeNote, pricingPlansUrl: PLANS_URL });
+        const html = renderNotices({ walkCoverage: freeNote });
         expect(html).toContain("This scan checked the first 500 products in your store.");
         expect(html).not.toContain("Professional checks");
         expect(html).not.toContain("<a ");
@@ -4773,8 +4824,7 @@ describe("ScanCoverageNotices", () => {
         expect(
           renderNotices({
             walkCoverage: null,
-            coverageUpgrade: { line: "x", cta: "y" },
-            pricingPlansUrl: PLANS_URL,
+            coverageUpgrade: { line: "x" },
           }),
         ).toBe("");
       });

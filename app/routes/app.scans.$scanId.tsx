@@ -32,8 +32,10 @@ import {
   hasVisualImpact,
   isAdminResourceFinding,
   isHomepageMaliciousFinding,
+  isNeverPaywalledFindingType,
   isOwnSectionFindingType,
   isThemeFileFinding,
+  NEVER_PAYWALLED_FINDING_TYPES,
   OWN_SECTION_FINDING_TYPES,
 } from "../lib/finding-classification";
 import {
@@ -44,6 +46,14 @@ import {
   typesForLane,
 } from "../lib/finding-consequence";
 import type { LaneKey } from "../lib/finding-consequence";
+import {
+  findingGroupHeading,
+  findingGroupSubline,
+  groupFindingRuns,
+  rankFindingGroups,
+  sortIntoGroups,
+} from "../lib/finding-groups";
+import type { FindingGroupMeta } from "../lib/finding-groups";
 import {
   buildRemovalInstructions,
   findingMatchedLine,
@@ -67,6 +77,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
+import { pickScanNotice } from "../lib/scan-notice";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
   advisoryCheckSteps,
@@ -110,6 +121,7 @@ import {
   getAppAttributionForScan,
   getFindingByIdForShop,
   getFindingFilterOptionsForScan,
+  getFindingGroupsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
 } from "../models/finding.server";
@@ -220,8 +232,9 @@ function safetyTone(safety: RemovalSafety): "critical" | "success" | "caution" |
  * The upgrade asks' CTA (gc-97k.4, gc-97k.9): a plain top-level link to the
  * Managed Pricing plan page, exactly like the Settings upgrade buttons (an
  * iframe cannot navigate to the admin itself, so `target="_top"`), plus the
- * best-effort click ping tagged with the ask's `src`. No `src`: an ask that is
- * not in the nudge funnel (the walk-coverage upgrade line), so no ping.
+ * best-effort click ping tagged with the ask's `src`. Rendered only inside the
+ * notice slot, which is quiet (gc-np1d.6): a tertiary button, so the page's
+ * primary actions stay the header and the value-action card.
  */
 function UpgradeCtaLink({
   pricingPlansUrl,
@@ -229,7 +242,7 @@ function UpgradeCtaLink({
   label,
 }: {
   pricingPlansUrl: string;
-  src?: UpgradeAskKey;
+  src: UpgradeAskKey;
   label: string;
 }) {
   return (
@@ -237,54 +250,41 @@ function UpgradeCtaLink({
       href={pricingPlansUrl}
       target="_top"
       rel="noreferrer"
-      onClick={src ? () => recordUpgradeClick(src) : undefined}
+      onClick={() => recordUpgradeClick(src)}
     >
-      <s-button variant="primary">{label}</s-button>
+      <s-button variant="tertiary">{label}</s-button>
     </a>
   );
 }
 
-/** Free-tier upgrade teaser (gc-97k.4), inline in the results body. */
+/** Free-tier upgrade teaser (gc-97k.4), in the notice slot (gc-np1d.6). */
 export function UpgradePreviewBanner({
   preview,
   pricingPlansUrl,
   trialEligible,
-  showCta = true,
 }: {
   preview: UpgradePreview;
   pricingPlansUrl: string;
   /** gc-97k.8: trial framing only for a shop that can still get the trial. */
   trialEligible: boolean;
-  /**
-   * gc-mgi: false while the stale-results banner carries the page's upgrade
-   * ask, so the page has ONE upgrade CTA; the teaser text stays.
-   */
-  showCta?: boolean;
 }) {
   const copy = upgradePreviewCopy(preview, trialEligible);
   return (
     <s-banner tone="info">
       <s-stack direction="block" gap="base">
         <s-text>{copy.body}</s-text>
-        {showCta && (
-          <UpgradeCtaLink
-            pricingPlansUrl={pricingPlansUrl}
-            src="upgrade_preview"
-            label={copy.cta}
-          />
-        )}
+        <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} src="upgrade_preview" label={copy.cta} />
       </s-stack>
     </s-banner>
   );
 }
 
 /**
- * Stale-results banner (gc-mgi), at the top of the results: the theme changed
- * after this scan completed. Always states both dates; the line below depends
- * on the loader's action (see app/services/stale-results.server). It is
- * CONTENT, not a capped prompt. Its upgrade CTA (Free, quota used) is the
- * page's only upgrade ask: the loader suppresses the return banner and the
- * teaser's CTA while it shows.
+ * Stale-results notice (gc-mgi), in the notice slot (gc-np1d.6): the theme
+ * changed after this scan completed. Always states both dates; the line below
+ * depends on the loader's action (see app/services/stale-results.server). It
+ * is CONTENT, not a capped prompt, and ranks last in the slot, so its upgrade
+ * CTA (Free, quota used) renders only when no other notice holds the slot.
  */
 export function StaleResultsBanner({
   staleResults,
@@ -312,7 +312,7 @@ export function StaleResultsBanner({
             {rescanError && <s-text tone="critical">{rescanError}</s-text>}
             <s-stack direction="inline" gap="base">
               <s-button
-                variant="primary"
+                variant="tertiary"
                 onClick={onRescan}
                 {...(rescanning ? { loading: true } : {})}
               >
@@ -362,8 +362,8 @@ export function StaleResultsBanner({
 }
 
 /**
- * Return-visit upgrade banner, Free only (gc-97k.9), at the top of the
- * results. Same copy source as the teaser (which is hidden while this shows),
+ * Return-visit upgrade banner, Free only (gc-97k.9), first in the notice slot
+ * (gc-np1d.6). Same copy source as the teaser (which is hidden while this shows),
  * under its own heading, with a "Not now" that the page wires to the
  * `dismiss-upgrade-return` action intent.
  */
@@ -385,7 +385,7 @@ export function UpgradeReturnBanner({
         <s-text>{copy.body}</s-text>
         <s-stack direction="inline" gap="base">
           <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} src="upgrade_return" label={copy.cta} />
-          <s-button variant="secondary" onClick={onDismiss}>
+          <s-button variant="tertiary" onClick={onDismiss}>
             {UPGRADE_RETURN_DISMISS_LABEL}
           </s-button>
         </s-stack>
@@ -483,10 +483,10 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
  *   - Walk-coverage notice (gc-747u): the product or redirect walk reached the
  *     plan's cap with records left, so the scan checked only the first N; see
  *     walkCoverageNotices for the copy. On Free and Standard the loader adds
- *     `coverageUpgrade` (what Professional checks + the upgrade button label),
- *     rendered under the note with the shared upgrade link (the line without
- *     the link when another upgrade ask renders: gc-mgi); Professional gets
- *     the note only.
+ *     `coverageUpgrade` (what Professional checks), rendered under the note
+ *     as a fact with no upgrade button (gc-np1d.6, decision A: the action
+ *     card and the notice slot are the page's upgrade asks); Professional
+ *     gets the note only.
  *
  * Broken links (DANGLING_REFERENCE) are a Standard feature by plan, not by
  * permission: on a plan without them (`brokenLinksIncluded` false) the
@@ -503,7 +503,6 @@ export function ScanCoverageNotices({
   unreachableCategories = [],
   walkCoverage = null,
   coverageUpgrade = null,
-  pricingPlansUrl = null,
 }: {
   isCompleted: boolean;
   brokenLinksIncluded: boolean;
@@ -511,13 +510,8 @@ export function ScanCoverageNotices({
   cappedCategories: string[];
   unreachableCategories?: string[];
   walkCoverage?: ScanWalkCoverage | null;
-  /**
-   * Free / Standard: the upgrade line and button label under the walk note.
-   * `cta` is null when another upgrade ask renders on the page (gc-mgi): the
-   * line shows without its button.
-   */
-  coverageUpgrade?: { line: string; cta: string | null } | null;
-  pricingPlansUrl?: string | null;
+  /** Free / Standard: what Professional checks, under the walk note. */
+  coverageUpgrade?: { line: string } | null;
 }) {
   if (!isCompleted) return null;
   const walkNotices = walkCoverageNotices(walkCoverage);
@@ -558,9 +552,6 @@ export function ScanCoverageNotices({
               <s-stack direction="block" gap="base">
                 <s-text>{walkNotices.join(" ")}</s-text>
                 <s-text>{coverageUpgrade.line}</s-text>
-                {coverageUpgrade.cta && pricingPlansUrl && (
-                  <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} label={coverageUpgrade.cta} />
-                )}
               </s-stack>
             ) : (
               walkNotices.join(" ")
@@ -1291,6 +1282,66 @@ function FindingsTable({ children }: { children: React.ReactNode }) {
   );
 }
 
+const findingGroupStyle: React.CSSProperties = {
+  border: `1px solid ${BORDER_DEFAULT}`,
+  borderRadius: "12px",
+  overflow: "hidden",
+  background: BG_WHITE,
+};
+const findingGroupHeaderStyle: React.CSSProperties = {
+  padding: "12px 16px",
+  background: BG_SURFACE,
+  borderBottom: `1px solid ${BORDER_DEFAULT}`,
+};
+
+/**
+ * Findings grouped by app (gc-np1d.6, decision 3A): one card per run of one
+ * app's findings, headed by the app name ("Other code" for no app) and the
+ * group's total under the active filters. `findings` arrive in group order
+ * (the paid page query, or sortIntoGroups for the Free preview); a group cut
+ * by a page boundary gets the same header on each page. `showShown` (Free
+ * preview) adds how many of the group the page shows.
+ */
+export function FindingGroups<T extends { id?: string; appName: string | null }>({
+  findings,
+  groups,
+  renderRow,
+  showShown = false,
+}: {
+  findings: readonly T[];
+  groups: readonly FindingGroupMeta[];
+  renderRow: (finding: T) => React.ReactNode;
+  showShown?: boolean;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {groupFindingRuns(findings, groups).map((run, i) => {
+        const headingId = `finding-group-${i}`;
+        return (
+          <section
+            key={`${run.appName ?? ""}-${i}`}
+            className="finding-group"
+            aria-labelledby={headingId}
+            style={findingGroupStyle}
+          >
+            <div style={findingGroupHeaderStyle}>
+              <h3 id={headingId} style={{ margin: 0, fontSize: "16px", color: TEXT_PRIMARY }}>
+                {findingGroupHeading(run.appName)}
+              </h3>
+              <div style={textSubduedSm}>
+                {findingGroupSubline(run.count, showShown ? run.findings.length : undefined)}
+              </div>
+            </div>
+            <div style={{ padding: "12px" }}>
+              <FindingsTable>{run.findings.map(renderRow)}</FindingsTable>
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
@@ -1457,7 +1508,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           // gc-14x5: shown in their own section above the list, never in it.
           excludeFindingTypes: OWN_SECTION_FINDING_TYPES,
         })
-      : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
+      : Promise.resolve({
+          items: [],
+          hasNextPage: false,
+          nextCursor: null,
+          groups: [] as FindingGroupMeta[],
+        }),
     // App Impact Map data: lean attribution query (all scans, no pagination).
     // Only needed when the user can view details AND the scan succeeded.
     canViewFindings
@@ -1544,7 +1600,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         ? await getFreePreviewFindings(scanId, freeScope.byType, freeScope.findings, withheldTypes)
         : await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings, withheldTypes)
       : [];
-  const previewFindings = rawPreviewFindings.map((f) => ({
+  // gc-np1d.6 (decision 3A): the preview rows grouped by app like the paid
+  // list. Each group's total is the app's findings the Free view counts
+  // (never the always-shown types; ignores excluded like the summary): X's
+  // count on an app-scoped view, the kept rows for a shop with ignores, else
+  // one groupBy. No read when nothing is previewed.
+  const previewGroups: FindingGroupMeta[] =
+    rawPreviewFindings.length === 0
+      ? []
+      : freeScope
+        ? [{ appName: freeScope.appName, count: freeScope.count }]
+        : keptFindings !== null
+          ? rankFindingGroups(
+              keptFindings
+                .filter((f) => !isNeverPaywalledFindingType(f.findingType))
+                .map((f) => ({ appName: f.appName, severity: f.severity, count: 1 })),
+            )
+          : await getFindingGroupsForScan(scanId, {
+              excludeFindingTypes: NEVER_PAYWALLED_FINDING_TYPES,
+            });
+  const previewFindings = sortIntoGroups(rawPreviewFindings, previewGroups).map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
@@ -1629,12 +1704,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         )
       : null;
 
-  // Stale-results banner (gc-mgi): the theme changed after this scan. Read
+  // Stale-results notice (gc-mgi): the theme changed after this scan. Read
   // only on a successful scan whose results are stale (two cheap reads then;
-  // none on a fresh scan or the in-progress poll). Never throws. While it
-  // carries a Free upgrade ask, that is the page's ONE ask: the return banner
-  // is made non-renderable BEFORE resolvePrompt (so no slot is claimed for
-  // it) and the teaser renders without its CTA.
+  // none on a fresh scan or the in-progress poll). Never throws. It renders
+  // only when it wins the notice slot (below).
   const staleResults = scanSuccessful
     ? await loadStaleResults({
         shopDomain: session.shop,
@@ -1643,10 +1716,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         trialEligible: trialEligibleForShop,
       })
     : null;
-  const staleUpgradeAsk = staleResults?.action.kind === "free_blocked";
-  if (staleUpgradeAsk && shop.staleResultsShownAt === null) {
-    await recordNudgeStageOnce(NUDGE_KEYS.STALE_RESULTS, "shown", session.shop);
-  }
 
   // Interruptive prompts on this page (gc-97k.6, strict global priority): at
   // most one per view, one distinct prompt per shop per 24h, and only the
@@ -1659,12 +1728,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   //     scan runs) renders no review popup. The 10-minute deferral still
   //     applies to any later load of this page.
   //   upgrade_return (gc-97k.9): the Free return-visit banner, only when this
-  //     page has hidden findings to talk about and no stale-results ask.
+  //     page has hidden findings to talk about. It ranks first in the notice
+  //     slot, so a claimed return banner always renders.
   const page = {
     scanSuccessful,
     plan: shop.plan,
     hasHiddenFindings: hiddenBreakdown !== null,
-    contentUpgradeAsk: staleUpgradeAsk,
     scanCompletedAt: scan.completedAt,
     now,
   };
@@ -1678,42 +1747,46 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           deferred: scanResultsDeferredPrompts(page),
           now,
         });
-
-  // Return-visit banner (gc-97k.9): starts a weekly episode when none is open
-  // and emits `shown` once per merchant. Never throws.
   const showUpgradeReturn = pagePrompt === "upgrade_return";
-  if (showUpgradeReturn) await markUpgradeReturnShown(session.shop, shop, now);
 
-  // Inline teaser (gc-97k.4): hidden while the return banner renders, and
-  // without its CTA while the stale-results banner asks (gc-mgi), so the page
-  // carries one upgrade ask. Its `shown` means the teaser rendered WITH its
-  // CTA, so it fires only then, once per merchant: the stored stamp skips the
-  // claim query on every later load; the atomic claim dedupes concurrent first
-  // loads.
-  const upgradePreview = showUpgradeReturn ? null : hiddenBreakdown;
-  const teaserCta = !staleUpgradeAsk;
-  if (upgradePreview && teaserCta && shop.upgradePreviewShownAt === null) {
+  // gc-np1d.6 (decision A): one notice slot below the action card. The return
+  // banner, else the inline teaser (Free: hidden findings), else the
+  // stale-results notice. Only the winner records its "shown" stamp, each at
+  // most once per merchant (the stored stamp skips the claim query on every
+  // later load; the atomic claim dedupes concurrent first loads). Never throw.
+  const noticeSlot = pickScanNotice({
+    upgrade_return: showUpgradeReturn,
+    upgrade_preview: hiddenBreakdown !== null,
+    stale_results: staleResults !== null,
+  });
+  // Return-visit banner (gc-97k.9): starts a weekly episode when none is open
+  // and emits `shown` once per merchant.
+  if (noticeSlot === "upgrade_return") await markUpgradeReturnShown(session.shop, shop, now);
+  if (noticeSlot === "upgrade_preview" && shop.upgradePreviewShownAt === null) {
     await recordUpgradePreviewStageOnce("shown", session.shop);
   }
+  // The stale nudge's `shown` means its upgrade ask rendered (Free, quota used).
+  if (
+    noticeSlot === "stale_results" &&
+    staleResults?.action.kind === "free_blocked" &&
+    shop.staleResultsShownAt === null
+  ) {
+    await recordNudgeStageOnce(NUDGE_KEYS.STALE_RESULTS, "shown", session.shop);
+  }
+  // The teaser's content while it holds the slot.
+  const upgradePreview = noticeSlot === "upgrade_preview" ? hiddenBreakdown : null;
   // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
   const trialEligible = hiddenBreakdown !== null && trialEligibleForShop;
 
-  // gc-mgi one-ask rule (decision 5A): true when the return banner, the teaser
-  // with its CTA, or the stale-results banner already asks this view.
-  const pageHasUpgradeAsk =
-    showUpgradeReturn || (upgradePreview !== null && teaserCta) || staleUpgradeAsk;
-
   // Decision 3A: the Professional line under a truncated walk, only when
-  // Professional's caps would walk further than this scan did (LOW-2). Its
-  // button is dropped (cta null) while another ask renders on the page.
+  // Professional's caps would walk further than this scan did (LOW-2). Facts
+  // only (gc-np1d.6, decision A): no upgrade button; the action card and the
+  // notice slot are the page's upgrade asks.
   const walkCoverage = parseWalkCoverage(scan.walkCoverage);
   const professionalFeatures = getPlanFeatures(PLANS.PROFESSIONAL);
   const coverageUpgrade =
     shop.plan !== PLANS.PROFESSIONAL && walkCoverageBelowCaps(walkCoverage, professionalFeatures)
-      ? {
-          line: walkCoverageUpgradeLine(professionalFeatures),
-          cta: pageHasUpgradeAsk ? null : upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligibleForShop),
-        }
+      ? { line: walkCoverageUpgradeLine(professionalFeatures) }
       : null;
 
   // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
@@ -1795,14 +1868,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       walkCoverage,
     },
     // Decision 3A: under a truncated-walk note, Free and Standard see what
-    // Professional checks (caps from getPlanFeatures) and the upgrade button.
+    // Professional checks (caps from getPlanFeatures).
     coverageUpgrade,
     findings: enrichedFindingsPage,
+    // gc-np1d.6: every group of the paid list under the active filters, in
+    // page order, with its total (the page's group headers).
+    findingGroups: findingsPage.groups,
     findingsPagination: {
       hasNextPage: findingsPage.hasNextPage,
       nextCursor: findingsPage.nextCursor,
     },
     previewFindings,
+    previewGroups,
     // gc-bn0x: the "Start here" rows (empty on a filtered view or no findings).
     topFindings,
     // gc-frda: apps found no longer active on this scan (Start here badge).
@@ -1819,14 +1896,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     freeScope: freeScope
       ? { appName: freeScope.appName, total: freeScope.count, byType: freeScope.byType }
       : null,
+    // gc-np1d.6: the one notice the slot renders (null: none).
+    noticeSlot,
     // Exactly one of these is non-null when the page has hidden findings: the
     // return-visit banner (gc-97k.9) or the inline teaser (gc-97k.4).
     upgradeReturn: showUpgradeReturn ? hiddenBreakdown : null,
     upgradePreview,
-    // gc-mgi: false while the stale-results banner carries the upgrade ask.
-    teaserCta,
-    // gc-mgi: non-null when the theme changed after this scan completed.
-    staleResults,
+    // gc-mgi: the theme changed after this scan completed; sent only while
+    // it holds the notice slot.
+    staleResults: noticeSlot === "stale_results" ? staleResults : null,
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
@@ -2100,14 +2178,16 @@ export default function ScanDetail() {
     scan,
     findings,
     findingsPagination,
+    findingGroups = [],
     previewFindings,
+    previewGroups = [],
     topFindings,
     newlyInactiveApps,
     removalContext,
     freeScope,
     upgradeReturn,
     upgradePreview,
-    teaserCta,
+    noticeSlot = null,
     staleResults,
     pricingPlansUrl,
     trialEligible,
@@ -2619,43 +2699,54 @@ export default function ScanDetail() {
         ))}
 
         {/* gc-np1d.3: the value-action card, below only security and guard
-            alerts. The stale-results banner already asks for a new scan, so a
-            card whose action is the same scan steps aside for it. */}
-        {valueAction && !(staleResults && valueAction.primary?.action === "scan") && (
-          <ValueActionCard
-            card={valueAction}
-            targets={{
-              cleanCopyHref: "clean-copy",
-              diyHref: `#${SCAN_FINDINGS_ANCHOR}`,
-              pricingPlansUrl,
-              onScan: handleRescan,
-              scanning: rescanFetcher.state !== "idle",
-            }}
-          />
-        )}
+            alerts. While the stale-results notice holds the slot, it already
+            asks for a new scan, so a card whose action is the same scan steps
+            aside for it. */}
+        {valueAction &&
+          !(noticeSlot === "stale_results" && valueAction.primary?.action === "scan") && (
+            <ValueActionCard
+              card={valueAction}
+              targets={{
+                cleanCopyHref: "clean-copy",
+                diyHref: `#${SCAN_FINDINGS_ANCHOR}`,
+                pricingPlansUrl,
+                onScan: handleRescan,
+                scanning: rescanFetcher.state !== "idle",
+              }}
+            />
+          )}
 
-        {/* Stale-results banner (gc-mgi): the theme changed after this scan.
-            Below only the security alert (safety outranks everything). */}
-        {staleResults && (
-          <StaleResultsBanner
-            staleResults={staleResults}
-            pricingPlansUrl={pricingPlansUrl}
-            onRescan={handleRescan}
-            rescanning={rescanFetcher.state !== "idle"}
-            rescanError={rescanError}
-          />
-        )}
-
-        {/* Return-visit upgrade banner (gc-97k.9), Free only: at the top of the
-            results, below only the security alert (safety outranks an upsell).
-            While it shows, the inline teaser below is not rendered. */}
-        {upgradeReturn && !upgradeReturnDismissed && (
-          <UpgradeReturnBanner
-            preview={upgradeReturn}
-            pricingPlansUrl={pricingPlansUrl}
-            trialEligible={trialEligible}
-            onDismiss={handleDismissUpgradeReturn}
-          />
+        {/* gc-np1d.6 (decision A): the one notice slot, directly below the
+            action card: the return-visit banner, else the upgrade teaser, else
+            the stale-results notice (app/lib/scan-notice). Quiet: no primary
+            buttons. "Not now" on the return banner empties it for this view. */}
+        {noticeSlot !== null && !(noticeSlot === "upgrade_return" && upgradeReturnDismissed) && (
+          <div className="scan-notice-slot">
+            {noticeSlot === "upgrade_return" && upgradeReturn && !upgradeReturnDismissed && (
+              <UpgradeReturnBanner
+                preview={upgradeReturn}
+                pricingPlansUrl={pricingPlansUrl}
+                trialEligible={trialEligible}
+                onDismiss={handleDismissUpgradeReturn}
+              />
+            )}
+            {noticeSlot === "upgrade_preview" && upgradePreview && (
+              <UpgradePreviewBanner
+                preview={upgradePreview}
+                pricingPlansUrl={pricingPlansUrl}
+                trialEligible={trialEligible}
+              />
+            )}
+            {noticeSlot === "stale_results" && staleResults && (
+              <StaleResultsBanner
+                staleResults={staleResults}
+                pricingPlansUrl={pricingPlansUrl}
+                onRescan={handleRescan}
+                rescanning={rescanFetcher.state !== "idle"}
+                rescanError={rescanError}
+              />
+            )}
+          </div>
         )}
 
         {/* Row 1: Status bar — compact metadata line */}
@@ -2848,7 +2939,6 @@ export default function ScanDetail() {
           unreachableCategories={scan.unreachableCategories}
           walkCoverage={scan.walkCoverage}
           coverageUpgrade={coverageUpgrade}
-          pricingPlansUrl={pricingPlansUrl}
         />
 
         {/* "Start here" (gc-bn0x): the top 3 findings and what each costs, above
@@ -3089,8 +3179,10 @@ export default function ScanDetail() {
                     )
                   ) : (
                     <>
-                      <FindingsTable>
-                        {findings.map((finding) => (
+                      <FindingGroups
+                        findings={findings}
+                        groups={findingGroups}
+                        renderRow={(finding) => (
                           <FindingRow
                             key={finding.id}
                             finding={finding}
@@ -3103,8 +3195,8 @@ export default function ScanDetail() {
                               `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
                             )}
                           />
-                        ))}
-                      </FindingsTable>
+                        )}
+                      />
                       {findingsPagination.hasNextPage && (
                         <s-box padding-block-start="base">
                           <s-stack direction="inline" gap="base">
@@ -3158,38 +3250,28 @@ export default function ScanDetail() {
                 </s-stack>
               </div>
 
-              {/* Preview rows (gc-97k.10), shown as a short findings list. None when
-                every finding is a plan-withheld type (a downgraded shop's Broken
-                links), and then the card holds only the teaser. */}
-              {(previewFindings.length > 0 || upgradePreview) && (
+              {/* Preview rows (gc-97k.10), grouped by app like the paid list
+                (gc-np1d.6). None when every finding is a plan-withheld type (a
+                downgraded shop's Broken links). The upgrade teaser is in the
+                notice slot. */}
+              {previewFindings.length > 0 && (
                 <div style={{ ...sectionCard, marginBottom: 0 }}>
                   <s-stack direction="block" gap="base">
-                    {previewFindings.length > 0 && (
-                      <>
-                        <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
-                        <FindingsTable>
-                          {previewFindings.map((finding) => (
-                            <FindingRow
-                              key={finding.id}
-                              finding={finding}
-                              shopDomain={shopDomain}
-                              themeId={scan.themeId}
-                              anchor
-                            />
-                          ))}
-                        </FindingsTable>
-                      </>
-                    )}
-
-                    {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
-                    {upgradePreview && (
-                      <UpgradePreviewBanner
-                        preview={upgradePreview}
-                        pricingPlansUrl={pricingPlansUrl}
-                        trialEligible={trialEligible}
-                        showCta={teaserCta}
-                      />
-                    )}
+                    <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
+                    <FindingGroups
+                      findings={previewFindings}
+                      groups={previewGroups}
+                      showShown
+                      renderRow={(finding) => (
+                        <FindingRow
+                          key={finding.id}
+                          finding={finding}
+                          shopDomain={shopDomain}
+                          themeId={scan.themeId}
+                          anchor
+                        />
+                      )}
+                    />
                   </s-stack>
                 </div>
               )}

@@ -98,6 +98,8 @@ vi.mock("../../app/models/finding.server", async (importOriginal) => ({
   getTypeSeverityCountsForScan: vi.fn(),
   getTopFindingsInGroup: vi.fn(),
   getFindingsPageForScan: vi.fn(),
+  // gc-np1d.6: the Free preview's group totals (one groupBy); none by default.
+  getFindingGroupsForScan: vi.fn(async () => []),
   getAppAttributionForScan: vi.fn(),
   getFindingFilterOptionsForScan: vi.fn(),
   getFindingByIdForShop: vi.fn(),
@@ -634,6 +636,7 @@ describe("scan page Clean copy entry point (rendered)", () => {
       items: [a, c],
       hasNextPage: false,
       nextCursor: null,
+      groups: [{ appName: "Ghost App", count: 2 }],
     });
     const html = await renderPage();
     // One label, for the removable finding only.

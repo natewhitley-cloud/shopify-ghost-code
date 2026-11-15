@@ -236,7 +236,8 @@ const SCAN_PAGE_DATA = {
   topFindings: [],
   upgradeReturn: null,
   upgradePreview: null,
-  teaserCta: true,
+  // gc-np1d.6: the stale-results notice holds the one notice slot.
+  noticeSlot: "stale_results",
   staleResults: {
     scanCompletedAt: NOW,
     themePublishedAt: new Date("2026-10-09T13:00:00Z"),

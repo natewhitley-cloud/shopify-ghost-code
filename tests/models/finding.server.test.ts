@@ -687,127 +687,274 @@ describe("getTopFindingsOfTypes", () => {
 describe("getFindingsPageForScan", () => {
   const PAGE_SIZE = 50;
 
+  // An in-memory finding table behind the groupBy / findMany mocks, honouring
+  // the where shapes the list builds (equality, in / notIn, appName null, OR),
+  // orderBy severity (enum order) / filename / id, and skip / take.
+  type Row = {
+    id: string;
+    appName: string | null;
+    severity: Severity;
+    filename: string;
+    findingType: FindingType;
+  };
+  const SEV = { HIGH: 0, MEDIUM: 1, LOW: 2 } as Record<string, number>;
+  function matches(row: Row, where: Record<string, unknown>): boolean {
+    return Object.entries(where).every(([key, cond]) => {
+      if (key === "scanId") return true;
+      if (key === "OR") return (cond as Record<string, unknown>[]).some((c) => matches(row, c));
+      const value = row[key as keyof Row];
+      if (cond !== null && typeof cond === "object") {
+        const c = cond as { in?: unknown[]; notIn?: unknown[] };
+        if (c.in) return c.in.includes(value);
+        if (c.notIn) return !c.notIn.includes(value);
+      }
+      return value === cond;
+    });
+  }
+  function serve(rows: Row[]) {
+    mockDb.finding.groupBy.mockImplementation(
+      async ({ where }: { where: Record<string, unknown> }) => {
+        const counts = new Map<string, { appName: string | null; severity: Severity; n: number }>();
+        for (const r of rows.filter((x) => matches(x, where))) {
+          const key = `${r.appName}|${r.severity}`;
+          const e = counts.get(key) ?? { appName: r.appName, severity: r.severity, n: 0 };
+          e.n += 1;
+          counts.set(key, e);
+        }
+        return [...counts.values()].map((e) => ({
+          appName: e.appName,
+          severity: e.severity,
+          _count: { _all: e.n },
+        }));
+      },
+    );
+    mockDb.finding.findMany.mockImplementation(
+      async ({
+        where,
+        skip = 0,
+        take,
+      }: {
+        where: Record<string, unknown>;
+        skip?: number;
+        take?: number;
+      }) => {
+        const sorted = rows
+          .filter((x) => matches(x, where))
+          .sort(
+            (a, b) =>
+              SEV[a.severity] - SEV[b.severity] ||
+              (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0) ||
+              (a.id < b.id ? -1 : 1),
+          );
+        return sorted.slice(skip, take === undefined ? undefined : skip + take);
+      },
+    );
+  }
+  const f = (
+    id: string,
+    appName: string | null,
+    severity: Severity,
+    filename = `${id}.liquid`,
+  ): Row => ({
+    id,
+    appName,
+    severity,
+    filename,
+    findingType: FindingType.GHOST_SCRIPT,
+  });
+
+  // Privy: worst HIGH, 3. Loox: worst HIGH, 2. Judge.me: worst MEDIUM, 4.
+  // No app: a HIGH, but "Other code" is always last.
+  const SCAN = [
+    f("j1", "Judge.me", Severity.MEDIUM),
+    f("j2", "Judge.me", Severity.LOW),
+    f("j3", "Judge.me", Severity.LOW),
+    f("j4", "Judge.me", Severity.MEDIUM),
+    f("l1", "Loox", Severity.LOW),
+    f("l2", "Loox", Severity.HIGH),
+    f("o1", null, Severity.HIGH),
+    f("p1", "Privy", Severity.LOW, "a.liquid"),
+    f("p2", "Privy", Severity.HIGH, "z.liquid"),
+    f("p3", "Privy", Severity.LOW, "b.liquid"),
+  ];
+
   beforeEach(() => {
     vi.clearAllMocks();
+    serve(SCAN);
   });
 
-  it("returns the first page of findings when no cursor is provided", async () => {
-    const rows = [{ id: "f-1", ...baseFinding, scanId: SCAN_ID }];
-    mockDb.finding.findMany.mockResolvedValue(rows);
+  it("orders groups by worst severity, then count, with no-app findings last; severity then filename inside a group", async () => {
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
 
+    expect(page.items.map((r) => r.id)).toEqual([
+      "p2",
+      "p1",
+      "p3", // Privy: HIGH, 3
+      "l2",
+      "l1", // Loox: HIGH, 2
+      "j1",
+      "j4",
+      "j2",
+      "j3", // Judge.me: MEDIUM, 4
+      "o1", // Other code: last although HIGH
+    ]);
+    expect(page.groups).toEqual([
+      { appName: "Privy", count: 3 },
+      { appName: "Loox", count: 2 },
+      { appName: "Judge.me", count: 4 },
+      { appName: null, count: 1 },
+    ]);
+    expect(page.hasNextPage).toBe(false);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it("ties on severity and count break by app name, so the order is total", async () => {
+    serve([f("b1", "Beta", Severity.HIGH), f("a1", "Alpha", Severity.HIGH)]);
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+    expect(page.groups.map((g) => g.appName)).toEqual(["Alpha", "Beta"]);
+  });
+
+  it("a page boundary splits a group: it continues on the next page, in order, with the same total", async () => {
+    const first = await getFindingsPageForScan(SCAN_ID, { limit: 4 });
+    expect(first.items.map((r) => r.id)).toEqual(["p2", "p1", "p3", "l2"]);
+    expect(first.hasNextPage).toBe(true);
+    expect(first.nextCursor).toBe("4");
+
+    const second = await getFindingsPageForScan(SCAN_ID, { limit: 4, cursor: first.nextCursor! });
+    expect(second.items.map((r) => r.id)).toEqual(["l1", "j1", "j4", "j2"]);
+    expect(second.nextCursor).toBe("8");
+    // Every page carries every group's total for the headers.
+    expect(second.groups).toEqual(first.groups);
+
+    const third = await getFindingsPageForScan(SCAN_ID, { limit: 4, cursor: second.nextCursor! });
+    expect(third.items.map((r) => r.id)).toEqual(["j3", "o1"]);
+    expect(third.hasNextPage).toBe(false);
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it("reads at most one findMany per cut group plus one for the whole groups", async () => {
+    // Page 2 of 4: Loox cut (l1), Judge.me cut (j1, j4, j2): no whole group.
+    await getFindingsPageForScan(SCAN_ID, { limit: 4, cursor: "4" });
+    const calls = mockDb.finding.findMany.mock.calls.map((c) => c[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ where: { scanId: SCAN_ID, appName: "Loox" }, skip: 1, take: 1 }),
+    );
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, appName: "Judge.me" },
+        skip: 0,
+        take: 3,
+      }),
+    );
+
+    vi.clearAllMocks();
+    serve(SCAN);
+    // One page holding everything: one read for all whole groups, "Other code" by appName null.
     await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
-
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { scanId: SCAN_ID },
-        orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
-        take: PAGE_SIZE + 1,
-      }),
-    );
-    // No cursor means no cursor/skip fields in the query.
-    const call = mockDb.finding.findMany.mock.calls[0][0];
-    expect(call).not.toHaveProperty("cursor");
-    expect(call).not.toHaveProperty("skip");
+    expect(mockDb.finding.findMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.finding.findMany.mock.calls[0][0]).toEqual({
+      where: {
+        scanId: SCAN_ID,
+        OR: [{ appName: { in: ["Privy", "Loox", "Judge.me"] } }, { appName: null }],
+      },
+      orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
+    });
   });
 
-  it("passes cursor and skip:1 when a cursor is provided", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+  it("group totals follow the active filters", async () => {
+    const page = await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      severity: Severity.LOW,
+    });
 
-    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, cursor: "f-50" });
-
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cursor: { id: "f-50" },
-        skip: 1,
-      }),
-    );
+    // LOW only: Judge.me 2, Privy 2, Loox 1 (worst is LOW for all: count, then name).
+    expect(page.groups).toEqual([
+      { appName: "Judge.me", count: 2 },
+      { appName: "Privy", count: 2 },
+      { appName: "Loox", count: 1 },
+    ]);
+    expect(page.items.map((r) => r.id)).toEqual(["j2", "j3", "p1", "p3", "l1"]);
   });
 
-  it("returns hasNextPage:false and nextCursor:null when results fit within limit", async () => {
-    // Return exactly limit rows — no over-fetch item, so no next page.
-    const rows = Array.from({ length: PAGE_SIZE }, (_, i) => ({
-      id: `f-${i}`,
-      ...baseFinding,
-      scanId: SCAN_ID,
-    }));
-    mockDb.finding.findMany.mockResolvedValue(rows);
-
-    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
-
-    expect(result.hasNextPage).toBe(false);
-    expect(result.nextCursor).toBeNull();
-    expect(result.items).toHaveLength(PAGE_SIZE);
+  it("an app filter leaves one group", async () => {
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, appName: "Loox" });
+    expect(page.groups).toEqual([{ appName: "Loox", count: 2 }]);
+    expect(page.items.map((r) => r.id)).toEqual(["l2", "l1"]);
   });
 
-  it("returns hasNextPage:true and nextCursor equal to last item id when over-fetch item exists", async () => {
-    // Return limit+1 rows — the extra item signals another page.
-    const rows = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => ({
-      id: `f-${i}`,
-      ...baseFinding,
-      scanId: SCAN_ID,
-    }));
-    mockDb.finding.findMany.mockResolvedValue(rows);
+  it.each([["f-50"], ["-4"], ["4.5"], ["99999999"], [""]])(
+    "a malformed or old id cursor (%j) starts at the first page",
+    async (cursor) => {
+      const page = await getFindingsPageForScan(SCAN_ID, { limit: 4, cursor });
+      expect(page.items.map((r) => r.id)).toEqual(["p2", "p1", "p3", "l2"]);
+    },
+  );
 
-    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
-
-    expect(result.hasNextPage).toBe(true);
-    // nextCursor is the id of the last item in the returned page (index limit-1),
-    // not the over-fetch item (index limit).
-    expect(result.nextCursor).toBe(`f-${PAGE_SIZE - 1}`);
-    expect(result.items).toHaveLength(PAGE_SIZE);
+  it("a cursor past the end returns an empty last page without reading rows", async () => {
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: 4, cursor: "40" });
+    expect(page.items).toEqual([]);
+    expect(page.hasNextPage).toBe(false);
+    expect(page.nextCursor).toBeNull();
+    expect(mockDb.finding.findMany).not.toHaveBeenCalled();
   });
 
-  it("returns empty items, hasNextPage:false, and null nextCursor when scan has no findings", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
-
-    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
-
-    expect(result.items).toHaveLength(0);
-    expect(result.hasNextPage).toBe(false);
-    expect(result.nextCursor).toBeNull();
+  it("returns empty items, no next page and no groups when the scan has no findings", async () => {
+    serve([]);
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+    expect(page).toEqual({ items: [], hasNextPage: false, nextCursor: null, groups: [] });
   });
 
-  it("returns a single-item page when the scan has exactly one finding", async () => {
-    const rows = [{ id: "f-only", ...baseFinding, scanId: SCAN_ID }];
-    mockDb.finding.findMany.mockResolvedValue(rows);
-
-    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
-
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0].id).toBe("f-only");
-    expect(result.hasNextPage).toBe(false);
-    expect(result.nextCursor).toBeNull();
+  it("exactly one full page: no next page", async () => {
+    const page = await getFindingsPageForScan(SCAN_ID, { limit: SCAN.length });
+    expect(page.items).toHaveLength(SCAN.length);
+    expect(page.hasNextPage).toBe(false);
   });
 
   it("propagates a database error", async () => {
-    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Page query failed"));
-
+    mockDb.finding.groupBy.mockRejectedValueOnce(new Error("Page query failed"));
     await expect(getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE })).rejects.toThrow(
       "Page query failed",
     );
   });
 
+  it("the page reads AND the filters with their app", async () => {
+    await getFindingsPageForScan(SCAN_ID, { limit: 2, severity: Severity.HIGH });
+    // HIGH: Loox (l2), Privy (p2) tie on worst and count: by name, Loox first.
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          scanId: SCAN_ID,
+          severity: Severity.HIGH,
+          OR: [{ appName: { in: ["Loox", "Privy"] } }],
+        },
+      }),
+    );
+  });
+
   // ------- Server-side filters (severity / findingType / appName) -------
+  // The filters' `where` is the groups' groupBy (so group totals respect
+  // them); every page read below ANDs the same where with its app.
 
   it("filters by severity only (threads severity into the where clause)", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, severity: Severity.HIGH });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: { scanId: SCAN_ID, severity: Severity.HIGH } }),
     );
   });
 
   it("filters by findingType only", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
       findingType: FindingType.GHOST_SCRIPT,
     });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { scanId: SCAN_ID, findingType: FindingType.GHOST_SCRIPT },
       }),
@@ -815,17 +962,17 @@ describe("getFindingsPageForScan", () => {
   });
 
   it("filters by appName only", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, appName: "OldApp" });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: { scanId: SCAN_ID, appName: "OldApp" } }),
     );
   });
 
   it("combines severity + findingType + appName into a single where clause", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
@@ -834,7 +981,7 @@ describe("getFindingsPageForScan", () => {
       appName: "OtherApp",
     });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           scanId: SCAN_ID,
@@ -847,7 +994,7 @@ describe("getFindingsPageForScan", () => {
   });
 
   it("omits filter keys entirely when filter values are empty/undefined", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
@@ -856,20 +1003,20 @@ describe("getFindingsPageForScan", () => {
       appName: "",
     });
 
-    const call = mockDb.finding.findMany.mock.calls[0][0];
+    const call = mockDb.finding.groupBy.mock.calls[0][0];
     // No filter keys leak into the where clause — only scanId is present.
     expect(call.where).toEqual({ scanId: SCAN_ID });
   });
 
   it("filters by findingTypes set as findingType: { in: [...] } (lane deep link)", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
       findingTypes: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE, FindingType.GHOST_AJAX],
     });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           scanId: SCAN_ID,
@@ -886,18 +1033,18 @@ describe("getFindingsPageForScan", () => {
     const EXCLUDED = [FindingType.APP_INCIDENT_ADVISORY];
 
     it("no type filter: excluded with notIn", async () => {
-      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.finding.groupBy.mockResolvedValue([]);
 
       await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, excludeFindingTypes: EXCLUDED });
 
-      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+      expect(mockDb.finding.groupBy.mock.calls[0][0].where).toEqual({
         scanId: SCAN_ID,
         findingType: { notIn: ["APP_INCIDENT_ADVISORY"] },
       });
     });
 
     it("a lane's type set: excluded types are dropped from the set", async () => {
-      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.finding.groupBy.mockResolvedValue([]);
 
       await getFindingsPageForScan(SCAN_ID, {
         limit: PAGE_SIZE,
@@ -905,14 +1052,14 @@ describe("getFindingsPageForScan", () => {
         excludeFindingTypes: EXCLUDED,
       });
 
-      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+      expect(mockDb.finding.groupBy.mock.calls[0][0].where).toEqual({
         scanId: SCAN_ID,
         findingType: { in: ["GHOST_PIXEL"] },
       });
     });
 
     it("a single type filter is applied as given (the caller validates it)", async () => {
-      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.finding.groupBy.mockResolvedValue([]);
 
       await getFindingsPageForScan(SCAN_ID, {
         limit: PAGE_SIZE,
@@ -920,14 +1067,14 @@ describe("getFindingsPageForScan", () => {
         excludeFindingTypes: EXCLUDED,
       });
 
-      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+      expect(mockDb.finding.groupBy.mock.calls[0][0].where).toEqual({
         scanId: SCAN_ID,
         findingType: FindingType.GHOST_SCRIPT,
       });
     });
 
     it("severity and app filters still apply beside it", async () => {
-      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.finding.groupBy.mockResolvedValue([]);
 
       await getFindingsPageForScan(SCAN_ID, {
         limit: PAGE_SIZE,
@@ -936,7 +1083,7 @@ describe("getFindingsPageForScan", () => {
         excludeFindingTypes: EXCLUDED,
       });
 
-      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+      expect(mockDb.finding.groupBy.mock.calls[0][0].where).toEqual({
         scanId: SCAN_ID,
         severity: "HIGH",
         appName: "Klaviyo",
@@ -945,28 +1092,28 @@ describe("getFindingsPageForScan", () => {
     });
 
     it.each([[undefined], [[]]])("absent or empty (%j): the query is unchanged", async (value) => {
-      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.finding.groupBy.mockResolvedValue([]);
 
       await getFindingsPageForScan(SCAN_ID, {
         limit: PAGE_SIZE,
         excludeFindingTypes: value as FindingType[] | undefined,
       });
 
-      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({ scanId: SCAN_ID });
+      expect(mockDb.finding.groupBy.mock.calls[0][0].where).toEqual({ scanId: SCAN_ID });
     });
   });
 
   it("omits the type filter when findingTypes is an empty array", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, findingTypes: [] });
 
-    const call = mockDb.finding.findMany.mock.calls[0][0];
+    const call = mockDb.finding.groupBy.mock.calls[0][0];
     expect(call.where).toEqual({ scanId: SCAN_ID });
   });
 
   it("gives a single findingType precedence over findingTypes when both are passed", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
@@ -974,7 +1121,7 @@ describe("getFindingsPageForScan", () => {
       findingTypes: [FindingType.GHOST_STYLE, FindingType.GHOST_AJAX],
     });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { scanId: SCAN_ID, findingType: FindingType.GHOST_SCRIPT },
       }),
@@ -982,7 +1129,7 @@ describe("getFindingsPageForScan", () => {
   });
 
   it("combines a findingTypes set with severity + appName filters", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.finding.groupBy.mockResolvedValue([]);
 
     await getFindingsPageForScan(SCAN_ID, {
       limit: PAGE_SIZE,
@@ -991,7 +1138,7 @@ describe("getFindingsPageForScan", () => {
       appName: "OldApp",
     });
 
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           scanId: SCAN_ID,
@@ -999,24 +1146,6 @@ describe("getFindingsPageForScan", () => {
           findingType: { in: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE] },
           appName: "OldApp",
         },
-      }),
-    );
-  });
-
-  it("preserves cursor/skip pagination alongside active filters", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
-
-    await getFindingsPageForScan(SCAN_ID, {
-      limit: PAGE_SIZE,
-      cursor: "f-50",
-      severity: Severity.LOW,
-    });
-
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { scanId: SCAN_ID, severity: Severity.LOW },
-        cursor: { id: "f-50" },
-        skip: 1,
       }),
     );
   });
