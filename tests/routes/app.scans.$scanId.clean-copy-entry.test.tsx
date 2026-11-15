@@ -322,7 +322,7 @@ beforeEach(() => {
   mockGetFindingsForScan.mockResolvedValue([]);
   // gc-np1d.2: the card's leftover count is one groupBy over the same findings
   // (read through the mock's implementation, so it never counts as a findings read).
-  vi.mocked(countFindingsByApp).mockImplementation(async (_scanId, types) => {
+  vi.mocked(countFindingsByApp).mockImplementation(async () => {
     const impl = mockGetFindingsForScan.getMockImplementation() as
       | ((...args: unknown[]) => unknown)
       | undefined;
@@ -330,13 +330,18 @@ beforeEach(() => {
       findingType: string;
       appName?: string | null;
     }>;
-    const counts = new Map<string | null, number>();
+    const counts = new Map<
+      string,
+      { appName: string | null; findingType: string; count: number }
+    >();
     for (const r of rows) {
-      if (types && !types.includes(r.findingType)) continue;
-      const key = r.appName ?? null;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      const appName = r.appName ?? null;
+      const key = `${appName}|${r.findingType}`;
+      const row = counts.get(key) ?? { appName, findingType: r.findingType, count: 0 };
+      row.count += 1;
+      counts.set(key, row);
     }
-    return [...counts].map(([appName, count]) => ({ appName, count }));
+    return [...counts.values()];
   });
   (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
     fingerprints: new Set(),

@@ -31,7 +31,14 @@ export type ValueActionInput = {
    * "All clear" only when this is zero (audit r1 HIGH: counting the removable
    * kinds only showed All clear over a list of findings).
    */
-  leftovers: { total: number; apps: ValueActionApp[] };
+  leftovers: {
+    total: number;
+    apps: ValueActionApp[];
+    /** How many of them are kinds Clean copy removes (the upgrade's promise). */
+    removable: number;
+    /** A security finding is on the page (even an ignored malicious one): never All clear. */
+    securityFound: boolean;
+  };
   /**
    * Professional only: what Clean copy can do with this scan. `ready` with the
    * count the select page would offer and those findings by app; `stale` when a
@@ -194,14 +201,17 @@ function professionalCard(input: ValueActionInput): ValueActionCard {
 
 export function valueActionCard(input: ValueActionInput): ValueActionCard | null {
   if (!input.hasCompletedScan) return null;
-  if (input.leftovers.total === 0) return clearCard(input);
+  // The security banner owns a page with security findings and no leftovers.
+  if (input.leftovers.total === 0) return input.leftovers.securityFound ? null : clearCard(input);
+  // Upgrading only helps if Clean copy could remove some of it (audit r2 H1).
+  const canUpsell = input.cleanCopyOn && input.leftovers.removable > 0;
   switch (input.plan) {
     case "professional":
       return professionalCard(input);
     case "standard":
-      return diyCard(input, input.cleanCopyOn);
+      return diyCard(input, canUpsell);
     case "free": {
-      if (!input.cleanCopyOn) return null;
+      if (!canUpsell) return null;
       const { total, apps } = input.leftovers;
       return card({
         kind: "upsell",

@@ -54,7 +54,7 @@ const finding = (over: Record<string, unknown>) => ({
 });
 
 describe("leftoversByApp", () => {
-  it("counts every finding type, by app, most first, unknown app in the total only (audit r1 HIGH)", () => {
+  it("counts leftover types (any with a lane, never security), by app, most first, unknown app in the total only (audit r1 HIGH, r2 H1)", () => {
     const res = leftoversByApp(
       [
         finding({ id: "1", appName: "Privy" }),
@@ -71,6 +71,8 @@ describe("leftoversByApp", () => {
         { name: "Loox", count: 2 },
         { name: "Privy", count: 2 },
       ],
+      removable: 4,
+      securityFound: false,
     });
   });
 
@@ -79,11 +81,16 @@ describe("leftoversByApp", () => {
       fingerprints: new Set(),
       appNames: new Set(["Privy"]),
     });
-    expect(res).toEqual({ total: 0, apps: [] });
+    expect(res).toEqual({ total: 0, apps: [], removable: 0, securityFound: false });
   });
 
   it("is empty for no findings", () => {
-    expect(leftoversByApp([], NO_IGNORES)).toEqual({ total: 0, apps: [] });
+    expect(leftoversByApp([], NO_IGNORES)).toEqual({
+      total: 0,
+      apps: [],
+      removable: 0,
+      securityFound: false,
+    });
   });
 });
 
@@ -281,11 +288,13 @@ describe("cleanCopyTrialFor", () => {
 });
 
 describe("leftoversByAppForScan", () => {
-  it("sums the groupBy rows, unknown app in the total only", async () => {
+  it("sums the groupBy rows, unknown app in the total only; security types are not leftovers", async () => {
     vi.mocked(countFindingsByApp).mockResolvedValue([
-      { appName: "Privy", count: 3 },
-      { appName: null, count: 2 },
-      { appName: "Loox", count: 4 },
+      { appName: "Privy", findingType: "GHOST_SCRIPT", count: 3 },
+      { appName: null, findingType: "GHOST_STYLE", count: 2 },
+      { appName: "Loox", findingType: "GHOST_SECTION", count: 4 },
+      { appName: "Hulk", findingType: "APP_INCIDENT_ADVISORY", count: 1 },
+      { appName: null, findingType: "MALICIOUS_SCRIPT", count: 1 },
     ]);
     expect(await leftoversByAppForScan("scan1")).toEqual({
       total: 9,
@@ -293,12 +302,20 @@ describe("leftoversByAppForScan", () => {
         { name: "Loox", count: 4 },
         { name: "Privy", count: 3 },
       ],
+      removable: 5,
+      securityFound: true,
     });
   });
 
   it("never throws: a failed read counts nothing", async () => {
     vi.mocked(countFindingsByApp).mockRejectedValue(new Error("db down"));
-    expect(await leftoversByAppForScan("scan1")).toEqual({ total: 0, apps: [] });
+    // Unknown, so never All clear.
+    expect(await leftoversByAppForScan("scan1")).toEqual({
+      total: 0,
+      apps: [],
+      removable: 0,
+      securityFound: true,
+    });
   });
 });
 
@@ -424,9 +441,49 @@ describe("loadValueAction: findings labelled Included (audit r1 M4)", () => {
 
   it("trial with fewer removals left than offered: none labelled (the select page picks some)", async () => {
     mockTrial.mockResolvedValue({ ok: true, trial: { endsAt: new Date("2026-11-28T00:00:00Z") } });
-    mockCount.mockResolvedValue(Number.MAX_SAFE_INTEGER);
+    mockCount.mockResolvedValue(4); // 5-removal trial, 4 used: 1 left, 2 offered
+
     const res = await load();
     expect(res.card?.kind).toBe("clean_copy");
+    expect(res.card?.primary?.action).toBe("clean_copy");
     expect(res.cleanCopyFindingIds).toEqual([]);
+  });
+});
+
+describe("loadValueAction: security findings (audit r2)", () => {
+  const load = (kept: ReturnType<typeof finding>[] | null) =>
+    loadValueAction({
+      shop: { ...shop, plan: "Free" },
+      scan: { ...scan, themeName: "Dawn", createdAt: new Date() },
+      keptFindings: kept as never,
+      ignores: NO_IGNORES,
+      admin,
+      shopDomain: shop.domain,
+    });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockFlag.mockReturnValue(true);
+  });
+
+  it("H1: an advisory alone is not leftover code and gets no upgrade card", async () => {
+    const { card } = await load([
+      finding({ findingType: "APP_INCIDENT_ADVISORY", appName: "Hulk" }),
+    ]);
+    expect(card).toBeNull();
+  });
+
+  it("H2: ignored malicious code (not in the kept findings) still stops All clear", async () => {
+    vi.mocked(countFindingsByApp).mockResolvedValue([
+      { appName: null, findingType: "MALICIOUS_SCRIPT", count: 1 },
+    ]);
+    const { card } = await load([]);
+    expect(card).toBeNull();
+  });
+
+  it("nothing at all: All clear", async () => {
+    vi.mocked(countFindingsByApp).mockResolvedValue([]);
+    const { card } = await load([]);
+    expect(card?.kind).toBe("clear");
   });
 });

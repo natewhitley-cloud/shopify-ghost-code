@@ -27,7 +27,7 @@ const base: ValueActionInput = {
   cleanCopyOn: true,
   hasCompletedScan: true,
   themeName: "Dawn",
-  leftovers: { total: 12, apps: APPS },
+  leftovers: { total: 12, apps: APPS, removable: 12, securityFound: false },
   cleanCopy: { state: "ready", count: 12 },
   trial: null,
   lastScanDaysAgo: 2,
@@ -61,7 +61,12 @@ describe("valueActionCard", () => {
     it("says 1 piece and 1 app in the singular", () => {
       const card = valueActionCard({
         ...base,
-        leftovers: { total: 1, apps: [{ name: "Privy", count: 1 }] },
+        leftovers: {
+          total: 1,
+          apps: [{ name: "Privy", count: 1 }],
+          removable: 1,
+          securityFound: false,
+        },
         cleanCopy: { state: "ready", count: 1 },
       })!;
       expect(card.heading).toBe("Remove 1 piece of leftover code for you");
@@ -162,7 +167,7 @@ describe("valueActionCard", () => {
   describe("nothing found", () => {
     const clear: ValueActionInput = {
       ...base,
-      leftovers: { total: 0, apps: [] },
+      leftovers: { total: 0, apps: [], removable: 0, securityFound: false },
       cleanCopy: { state: "none", count: 0 },
     };
 
@@ -202,7 +207,11 @@ describe("valueActionCard", () => {
       { ...base, cleanCopy: { state: "stale", count: 0 } },
       { ...base, plan: "standard", cleanCopy: null },
       { ...base, plan: "free", cleanCopy: null },
-      { ...base, leftovers: { total: 0, apps: [] }, lastScanDaysAgo: 40 },
+      {
+        ...base,
+        leftovers: { total: 0, apps: [], removable: 0, securityFound: false },
+        lastScanDaysAgo: 40,
+      },
     ];
     for (const input of inputs) {
       const card = valueActionCard(input)!;
@@ -241,6 +250,8 @@ describe("valueActionCard: audit r1 fixes", () => {
           { name: "B", count: 3 },
           { name: "C", count: 2 },
         ],
+        removable: 2,
+        securityFound: false,
       },
       cleanCopy: { state: "ready", count: 2, apps: [{ name: "A", count: 2 }] },
     })!;
@@ -258,6 +269,8 @@ describe("valueActionCard: audit r1 fixes", () => {
           { name: "A", count: 5 },
           { name: "B", count: 5 },
         ],
+        removable: 2,
+        securityFound: false,
       },
       cleanCopy: { state: "ready", count: 2, apps: [{ name: "A", count: 2 }] },
       trial: { remaining: 1, unlocksOn: "November 28" },
@@ -276,7 +289,7 @@ describe("valueActionCard: audit r1 fixes", () => {
   });
 
   it("M7: unknown-app-only leftovers never say 0 apps", () => {
-    const unknown = { total: 3, apps: [] };
+    const unknown = { total: 3, apps: [], removable: 3, securityFound: false };
     for (const plan of ["free", "standard"] as const) {
       const card = valueActionCard({ ...base, plan, leftovers: unknown, cleanCopy: null })!;
       expect(`${card.heading} ${card.body}`).not.toMatch(/\b0 apps?\b/);
@@ -290,7 +303,7 @@ describe("valueActionCard: audit r1 fixes", () => {
     const one = valueActionCard({
       ...base,
       plan: "free",
-      leftovers: { total: 1, apps: [{ name: "A", count: 1 }] },
+      leftovers: { total: 1, apps: [{ name: "A", count: 1 }], removable: 1, securityFound: false },
       cleanCopy: null,
     })!;
     expect(one.body).toContain("It slows your pages and confuses");
@@ -305,5 +318,41 @@ describe("valueActionCard: audit r1 fixes", () => {
     expect(valueActionCard({ ...base, plan: "standard", cleanCopy: null })!.telemetryKey).toBe(
       "clean_copy_diy",
     );
+  });
+});
+
+// Audit r2 (2026-11-14): security findings are not leftover code.
+describe("valueActionCard: audit r2 fixes", () => {
+  const only = (over: Partial<ValueActionInput["leftovers"]>) => ({
+    total: 0,
+    apps: [],
+    removable: 0,
+    securityFound: false,
+    ...over,
+  });
+
+  it("H2: no All clear while a security finding is on the page (even ignored malicious code), on every plan", () => {
+    for (const plan of ["free", "standard", "professional"] as const) {
+      expect(
+        valueActionCard({ ...base, plan, leftovers: only({ securityFound: true }) }),
+      ).toBeNull();
+    }
+    expect(valueActionCard({ ...base, leftovers: only({}) })!.kind).toBe("clear");
+  });
+
+  it("H1: Free and Standard never promise removal when nothing is removable", () => {
+    const nothingRemovable = only({ total: 4, apps: [{ name: "A", count: 4 }], removable: 0 });
+    expect(
+      valueActionCard({ ...base, plan: "free", leftovers: nothingRemovable, cleanCopy: null }),
+    ).toBeNull();
+    const std = valueActionCard({
+      ...base,
+      plan: "standard",
+      leftovers: nothingRemovable,
+      cleanCopy: null,
+    })!;
+    expect(std.kind).toBe("diy");
+    expect(std.secondary).toBeNull();
+    expect(std.upsellKey).toBeNull();
   });
 });

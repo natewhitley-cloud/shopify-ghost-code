@@ -8,6 +8,8 @@
  * Admin only on Professional with the flag on and known embed status, and it
  * never throws: a failed read offers nothing.
  */
+import type { FindingType } from "@prisma/client";
+
 import { parseLiveAppHooks } from "./app-removal.server";
 import type { CleanCopyAdmin } from "./clean-copy-admin.server";
 import {
@@ -19,9 +21,12 @@ import {
 import { isFindingIgnored } from "./finding-aggregation.server";
 import { recordNudgeStageOnce } from "./nudge-stage.server";
 import { isCleanCopyEnabled } from "./soft-launch-flags.server";
-import { trialUnlockDate } from "../lib/clean-copy-view";
+import { MAX_SELECTED_FINDINGS, trialUnlockDate } from "../lib/clean-copy-view";
+import { isNeverPaywalledFindingType } from "../lib/finding-classification";
+import { CONSEQUENCE_MAP, laneForType } from "../lib/finding-consequence";
 import { logger } from "../lib/logger.server";
 import { PLANS } from "../lib/plans";
+import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import {
   valueActionCard,
   valueActionPlan,
@@ -37,6 +42,40 @@ import { getScanManifest } from "../models/scan-manifest.server";
 type OfferFinding = Parameters<typeof offerableCleanCopyFiles>[0][number] & { id: string };
 
 type LeftoverFinding = { findingType: string; appName: string | null };
+
+export type Leftovers = ValueActionInput["leftovers"];
+
+const FIXABLE: ReadonlySet<string> = new Set(FIXABLE_FINDING_TYPES);
+
+/**
+ * "Leftover code" on the card = what Home's "N leftover items" line counts: a
+ * finding with a consequence lane. Security findings (known malicious code, app
+ * advisories, code in a menu) are never leftover code and never sold as an
+ * upgrade (audit r2 H1); they only keep the card from saying All clear.
+ */
+function isLeftoverType(findingType: string): boolean {
+  return (
+    !isNeverPaywalledFindingType(findingType) &&
+    findingType in CONSEQUENCE_MAP &&
+    laneForType(findingType as FindingType) !== null
+  );
+}
+
+/** Leftovers by app (most first), how many are removable, and whether any security finding is present. */
+function summarizeLeftovers(
+  rows: Iterable<{ appName: string | null; findingType: string; count: number }>,
+): Leftovers {
+  const leftover: { appName: string | null; count: number }[] = [];
+  let removable = 0;
+  let securityFound = false;
+  for (const r of rows) {
+    if (isNeverPaywalledFindingType(r.findingType)) securityFound = true;
+    if (!isLeftoverType(r.findingType)) continue;
+    leftover.push(r);
+    if (FIXABLE.has(r.findingType)) removable += r.count;
+  }
+  return { ...summarize(leftover), removable, securityFound };
+}
 
 /** Sort named apps most first, then by name; total includes the unknown app. */
 function summarize(rows: Iterable<{ appName: string | null; count: number }>): {
@@ -56,18 +95,18 @@ function summarize(rows: Iterable<{ appName: string | null; count: number }>): {
 }
 
 /**
- * Leftover code of the kinds Clean copy removes, by named app (most first).
- * `ignores` null: the findings are already ignore-filtered (the scan page's
- * kept findings), so nothing is fingerprinted again.
+ * Leftover code by named app (most first). `ignores` null: the findings are
+ * already ignore-filtered (the scan page's kept findings), so nothing is
+ * fingerprinted again.
  */
 export function leftoversByApp(
   findings: readonly (LeftoverFinding & Partial<OfferFinding>)[],
   ignores: ShopIgnores | null,
-): { total: number; apps: ValueActionApp[] } {
-  return summarize(
+): Leftovers {
+  return summarizeLeftovers(
     findings
       .filter((f) => ignores === null || !isFindingIgnored(f as OfferFinding, ignores))
-      .map((f) => ({ appName: f.appName, count: 1 })),
+      .map((f) => ({ appName: f.appName, findingType: f.findingType, count: 1 })),
   );
 }
 
@@ -76,17 +115,16 @@ export function leftoversByApp(
  * findings list). Never throws: a failed read counts nothing (no card), and
  * the page still loads.
  */
-export async function leftoversByAppForScan(
-  scanId: string,
-): Promise<{ total: number; apps: ValueActionApp[] }> {
+export async function leftoversByAppForScan(scanId: string): Promise<Leftovers> {
   try {
-    return summarize(await countFindingsByApp(scanId));
+    return summarizeLeftovers(await countFindingsByApp(scanId));
   } catch (error) {
     logger.warn("value-action leftover count failed", {
       scanId,
       message: error instanceof Error ? error.message : String(error),
     });
-    return { total: 0, apps: [] };
+    // Unknown: count nothing, and never claim All clear on a failed read.
+    return { total: 0, apps: [], removable: 0, securityFound: true };
   }
 }
 
@@ -226,10 +264,17 @@ export async function loadValueAction(input: {
 }): Promise<{ card: ValueActionCard | null; cleanCopyFindingIds: string[] }> {
   const { shop, scan } = input;
   const now = input.now ?? new Date();
-  const leftovers =
+  let leftovers =
     input.keptFindings !== null
       ? leftoversByApp(input.keptFindings, null)
       : await leftoversByAppForScan(scan.id);
+  // Kept findings leave out ignored ones, but known malicious code shows on the
+  // page whether or not it was ignored (audit r2 H2). Before All clear, check
+  // the scan's unfiltered counts (one groupBy, only on this path).
+  if (input.keptFindings !== null && leftovers.total === 0 && !leftovers.securityFound) {
+    const all = await leftoversByAppForScan(scan.id);
+    leftovers = { ...leftovers, securityFound: all.securityFound };
+  }
   const isPro = shop.plan === PLANS.PROFESSIONAL;
   const cleanCopyOn = isCleanCopyEnabled(shop.domain);
   const offer: CleanCopyOffer | null = !isPro
@@ -270,7 +315,8 @@ export async function loadValueAction(input: {
       // finding is labelled "Included" (audit r1 M4).
       card?.primary?.action === "clean_copy" &&
       offer?.state === "ready" &&
-      (trial === null || trial.remaining >= offer.count)
+      (trial === null || trial.remaining >= offer.count) &&
+      offer.count <= MAX_SELECTED_FINDINGS
         ? offer.findingIds
         : [],
   };

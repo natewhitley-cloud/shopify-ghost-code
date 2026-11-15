@@ -637,7 +637,7 @@ export default function CleanCopySelect() {
 
   const togglePiece = (findingId: string, on: boolean) =>
     setSelected((prev) => {
-      const next = new Set(prev);
+      const next = liveSelection(groups, prev);
       if (!on) next.delete(findingId);
       else if (next.size < cap) next.add(findingId);
       return next;
@@ -689,6 +689,9 @@ export default function CleanCopySelect() {
             </p>
             {appsToConfirm.length > 0 && (
               <s-checkbox
+                // A new set of apps is a new question: remount so the box never
+                // looks ticked for apps it didn't name (audit r2 M2).
+                key={appsToConfirm.join("|")}
                 label={consentLabel(appsToConfirm)}
                 details={CONSENT_DETAILS}
                 checked={consented ? true : undefined}
@@ -724,7 +727,9 @@ export default function CleanCopySelect() {
                 key={group.appName ?? "unknown-app"}
                 group={group}
                 selected={selected}
-                onToggleApp={(on) => setSelected((prev) => toggleApp(group, prev, on, cap))}
+                onToggleApp={(on) =>
+                  setSelected((prev) => toggleApp(group, liveSelection(groups, prev), on, cap))
+                }
                 onTogglePiece={togglePiece}
                 refusedFindings={refusedFindings}
               />
