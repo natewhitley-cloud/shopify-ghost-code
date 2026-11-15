@@ -63,6 +63,11 @@ describe("nudge constants", () => {
       STALE_RESULTS: "stale_results",
       SPEED_TEASER: "speed_teaser",
       INSTALL_SOURCE: "install_source",
+      CLEAN_COPY_ACTION: "clean_copy_action",
+      CLEAN_COPY_UPSELL: "clean_copy_upsell",
+      CLEAN_COPY_DIY: "clean_copy_diy",
+      CLEAN_COPY_PREVIEW: "clean_copy_preview",
+      SCAN_HEADER: "scan_header",
     });
   });
 

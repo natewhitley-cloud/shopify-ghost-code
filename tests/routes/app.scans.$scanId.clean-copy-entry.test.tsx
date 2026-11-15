@@ -605,7 +605,9 @@ describe("scan page Clean copy entry point (rendered)", () => {
   it("puts Make a clean copy in the header and in a card above the results", async () => {
     mockGetFindingsForScan.mockResolvedValue([withSpan("a"), withSpan("b")]);
     const html = await renderPage();
-    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Make a clean copy<\/s-button>/);
+    expect(html).toMatch(
+      /<s-button slot="primary-action" variant="primary">Make a clean copy<\/s-button>/,
+    );
     expect(html).toContain("Remove 2 pieces of leftover code for you");
     expect(html).toMatch(
       /<a href="\/app\/scans\/scan-1\/clean-copy"[^>]*><s-button variant="primary">Make a clean copy<\/s-button><\/a>/,
@@ -633,7 +635,9 @@ describe("scan page Clean copy entry point (rendered)", () => {
     expect(html.match(/Included in your clean copy/g)).toHaveLength(1);
     const rowA = html.slice(html.indexOf('id="finding-a"'), html.indexOf('id="finding-c"'));
     expect(rowA).toContain("Included in your clean copy");
-    expect(rowA).toMatch(/<details><summary[^>]*>Do it yourself<\/summary>[\s\S]*Copy removal steps[\s\S]*<\/details>/);
+    expect(rowA).toMatch(
+      /<details><summary[^>]*>Do it yourself<\/summary>[\s\S]*Copy removal steps[\s\S]*<\/details>/,
+    );
     // The other finding keeps its steps and buttons in the open.
     const rowC = html.slice(html.indexOf('id="finding-c"'));
     expect(rowC.slice(0, rowC.indexOf("</li>"))).not.toContain("Do it yourself");
@@ -643,7 +647,9 @@ describe("scan page Clean copy entry point (rendered)", () => {
     vi.stubEnv("CLEAN_COPY_ENABLED", "false");
     const html = await renderPage();
     expect(html).not.toContain("clean copy");
-    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Scan again<\/s-button>/);
+    expect(html).toMatch(
+      /<s-button slot="primary-action" variant="primary">Scan again<\/s-button>/,
+    );
   });
 });
 

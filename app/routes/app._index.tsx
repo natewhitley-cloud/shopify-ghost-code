@@ -30,7 +30,7 @@ import { TopFindings } from "../components/TopFindings";
 import { ValueActionCard } from "../components/ValueActionCard";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
 import type { RemovalNotice } from "../lib/app-removal-notice";
-import { buildPricingPlansUrl , getPlanFeatures } from "../lib/billing.server";
+import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { CANVAS_THEME_HINT } from "../lib/canvas-theme";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
@@ -1749,7 +1749,9 @@ export default function Dashboard() {
             card={valueAction}
             targets={{
               cleanCopyHref: latestScanId ? `/app/scans/${latestScanId}/clean-copy` : null,
-              diyHref: latestScanId ? `/app/scans/${latestScanId}#${SCAN_FINDINGS_ANCHOR}` : "/app/scans",
+              diyHref: latestScanId
+                ? `/app/scans/${latestScanId}#${SCAN_FINDINGS_ANCHOR}`
+                : "/app/scans",
               pricingPlansUrl,
               onScan: scanLimitReached ? null : handleStartScan,
               scanning: isSubmitting,

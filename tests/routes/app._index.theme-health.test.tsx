@@ -2555,7 +2555,10 @@ describe("Home value actions (gc-np1d.4)", () => {
   };
 
   it("loads the card for the latest finished scan, reusing its kept findings", async () => {
-    vi.mocked(loadValueAction).mockResolvedValue({ card: CLEAN_COPY_CARD, cleanCopyFindingIds: [] });
+    vi.mocked(loadValueAction).mockResolvedValue({
+      card: CLEAN_COPY_CARD,
+      cleanCopyFindingIds: [],
+    });
     const data = await runLoader();
     expect(loadValueAction).toHaveBeenCalledWith(
       expect.objectContaining({ scan: expect.objectContaining({ id: SCAN.id }) }),
@@ -2564,14 +2567,27 @@ describe("Home value actions (gc-np1d.4)", () => {
   });
 
   it("no card while the latest scan is running (the 3s poll reads nothing for it)", async () => {
-    mockScans.mockResolvedValue({ items: [{ ...SCAN, status: "IN_PROGRESS" }], hasNextPage: false });
+    mockScans.mockResolvedValue({
+      items: [{ ...SCAN, status: "IN_PROGRESS" }],
+      hasNextPage: false,
+    });
     const data = await runLoader();
     expect(loadValueAction).not.toHaveBeenCalled();
     expect(data.valueAction).toBeNull();
   });
 
   it("puts Scan now in the header and the card above the findings summary", async () => {
-    vi.mocked(loadValueAction).mockResolvedValue({ card: CLEAN_COPY_CARD, cleanCopyFindingIds: [] });
+    vi.mocked(loadValueAction).mockResolvedValue({
+      card: CLEAN_COPY_CARD,
+      cleanCopyFindingIds: [],
+    });
+    // Under the cap, so the header button is enabled (the default fixture is at 1 of 1).
+    (getScanUsage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      used: 0,
+      limit: 1,
+      period: "month",
+      periodStart: new Date("2026-10-01T00:00:00Z"),
+    });
     const html = renderDashboard(await runLoader());
     expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Scan now<\/s-button>/);
     const cardAt = html.indexOf("Remove 12 pieces of leftover code for you");
@@ -2595,7 +2611,7 @@ describe("Home value actions (gc-np1d.4)", () => {
     expect(diyAt).toBeGreaterThan(-1);
     expect(upgradeAt).toBeGreaterThan(diyAt);
     expect(html).toMatch(
-      /<a href="https:\/\/admin\.shopify\.com\/store\/x\/charges\/ghostcode\/pricing_plans" target="_top"[^>]*>Upgrade to Professional to remove them for you<\/a>/,
+      /<a href="https:\/\/admin\.shopify\.com\/store\/paw-naturals-llc\/charges\/ghost-code\/pricing_plans" target="_top"[^>]*>Upgrade to Professional to remove them for you<\/a>/,
     );
   });
 

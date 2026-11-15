@@ -14,11 +14,11 @@ vi.mock("../../app/models/fix-run.server", () => ({ countTrialRemovals: vi.fn() 
 vi.mock("../../app/models/finding.server", () => ({ countFindingsByApp: vi.fn() }));
 vi.mock("../../app/services/soft-launch-flags.server", () => ({ isCleanCopyEnabled: vi.fn() }));
 
+import { countFindingsByApp } from "../../app/models/finding.server";
 import { countTrialRemovals } from "../../app/models/fix-run.server";
 import { getScanManifest } from "../../app/models/scan-manifest.server";
 import { checkCleanCopyFreshness, cleanCopyTrial } from "../../app/services/clean-copy.server";
 import { isCleanCopyEnabled } from "../../app/services/soft-launch-flags.server";
-import { countFindingsByApp } from "../../app/models/finding.server";
 import {
   cleanCopyOfferFor,
   cleanCopyTrialFor,

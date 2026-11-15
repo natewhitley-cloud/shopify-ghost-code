@@ -176,12 +176,14 @@ describe("Home scan-start controls post source=home", () => {
     });
 
     const scanButtons = clickableButtons().filter((b) => /scan/i.test(b.label));
-    // Rescan nudge, theme-change nudge, main button, trend empty state.
+    // Rescan nudge, theme-change nudge, header Scan now (gc-np1d.4), trend empty state.
     expect(scanButtons).toHaveLength(4);
     for (const b of scanButtons) {
       const posts = await clickAndCollect(b.onClick);
+      // The header button also says where it was clicked (telemetry only).
+      const via = b.label === "Scan now" ? { via: "header" } : {};
       expect(posts, b.label).toEqual([
-        { themeId: "gid://shopify/OnlineStoreTheme/1", source: "home" },
+        { themeId: "gid://shopify/OnlineStoreTheme/1", source: "home", ...via },
       ]);
     }
   });

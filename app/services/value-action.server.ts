@@ -148,7 +148,9 @@ export async function cleanCopyOfferFor(input: {
     const findingIds = offer.drafts
       .filter(
         (d) =>
-          d.blocked === null && shownFiles.has(d.finding.filename) && withMd5.has(d.finding.filename),
+          d.blocked === null &&
+          shownFiles.has(d.finding.filename) &&
+          withMd5.has(d.finding.filename),
       )
       .map((d) => d.finding.id);
     return findingIds.length > 0 ? { state: "ready", count: findingIds.length, findingIds } : NONE;

@@ -613,14 +613,19 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
       // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner,
       // gc-mgi stale-results banner), each requiring that ask's own `shown` stamp,
-      // plus the Store speed teaser (gc-iirv) when the upgrade is to Professional.
+      // plus the Store speed teaser (gc-iirv) and the Clean copy upsell
+      // (gc-np1d.5) when the upgrade is to Professional.
       const pro = plan === "Professional";
-      expect(conversionClaims()).toHaveLength(pro ? 4 : 3);
+      expect(conversionClaims()).toHaveLength(pro ? 5 : 3);
       if (pro) {
         expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "speedTeaserConvertedAt", {
           speedTeaserShownAt: { not: null },
         });
         expect(mockRecordConverted).toHaveBeenCalledWith("speed_teaser", DOMAIN);
+        expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "cleanCopyUpsellConvertedAt", {
+          cleanCopyUpsellShownAt: { not: null },
+        });
+        expect(mockRecordConverted).toHaveBeenCalledWith("clean_copy_upsell", DOMAIN);
       } else {
         expect(mockClaimStage).not.toHaveBeenCalledWith(
           DOMAIN,
@@ -637,7 +642,7 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "staleResultsConvertedAt", {
         staleResultsShownAt: { not: null },
       });
-      expect(mockRecordConverted).toHaveBeenCalledTimes(pro ? 4 : 3);
+      expect(mockRecordConverted).toHaveBeenCalledTimes(pro ? 5 : 3);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
       expect(mockRecordConverted).toHaveBeenCalledWith("stale_results", DOMAIN);
@@ -709,7 +714,7 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
     expect(mockRecordConverted).not.toHaveBeenCalled();
   });
 
-  it("Standard -> Professional (paid -> paid upgrade) converts ONLY the speed teaser (gc-iirv)", async () => {
+  it("Standard -> Professional (paid -> paid upgrade) converts ONLY the Professional asks (gc-iirv, gc-np1d.5)", async () => {
     const admin = makeAdmin([{ name: "Professional", status: "ACTIVE" }]);
 
     await reconcileShopPlan(
@@ -720,8 +725,12 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
     expect(conversionClaims()).toEqual([
       [DOMAIN, "speedTeaserConvertedAt", { speedTeaserShownAt: { not: null } }],
+      [DOMAIN, "cleanCopyUpsellConvertedAt", { cleanCopyUpsellShownAt: { not: null } }],
     ]);
-    expect(mockRecordConverted.mock.calls).toEqual([["speed_teaser", DOMAIN]]);
+    expect(mockRecordConverted.mock.calls).toEqual([
+      ["speed_teaser", DOMAIN],
+      ["clean_copy_upsell", DOMAIN],
+    ]);
   });
 
   it("does not emit when the plan already matches (no plan change)", async () => {

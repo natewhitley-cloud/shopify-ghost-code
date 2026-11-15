@@ -22,22 +22,22 @@ History, Ignored, Settings and Help are utilities with no value action.
 
 ## What each plan allows
 
-| | Free | Standard | Professional (trial) | Professional (paid) |
-|---|---|---|---|---|
-| Scan | 2 a month | 1 a week + monthly scheduled | 5 a day + weekly + on publish | same |
-| See the problem | counts + up to 5 findings in full | everything (file, line, code) | everything | everything |
-| Fix | do it yourself, only for the up to 5 shown | do it yourself (code editor + steps) | Clean copy, 5 removals total | Clean copy, unlimited |
-| Security risks | full, never paywalled | same | same | same |
+|                 | Free                                       | Standard                             | Professional (trial)          | Professional (paid)   |
+| --------------- | ------------------------------------------ | ------------------------------------ | ----------------------------- | --------------------- |
+| Scan            | 2 a month                                  | 1 a week + monthly scheduled         | 5 a day + weekly + on publish | same                  |
+| See the problem | counts + up to 5 findings in full          | everything (file, line, code)        | everything                    | everything            |
+| Fix             | do it yourself, only for the up to 5 shown | do it yourself (code editor + steps) | Clean copy, 5 removals total  | Clean copy, unlimited |
+| Security risks  | full, never paywalled                      | same                                 | same                          | same                  |
 
 ## Journey
 
-| Stage | Merchant needs | Value action |
-|---|---|---|
-| Install → first scan | start fast | "Start first scan" (onboarding card, unchanged) |
-| First result | what's wrong, what do I do | the plan's action card: remove for you / upgrade to remove |
-| Remove | confirm and run | Clean copy select page: everything pre-selected, one tick, one button |
-| After the copy | check, publish, confirm | Preview copy, publish in Themes; auto-rescan on publish confirms it's gone |
-| Return visit | anything new? what has this done for me? | top of Home: what's new, the one action, value so far |
+| Stage                | Merchant needs                           | Value action                                                               |
+| -------------------- | ---------------------------------------- | -------------------------------------------------------------------------- |
+| Install → first scan | start fast                               | "Start first scan" (onboarding card, unchanged)                            |
+| First result         | what's wrong, what do I do               | the plan's action card: remove for you / upgrade to remove                 |
+| Remove               | confirm and run                          | Clean copy select page: everything pre-selected, one tick, one button      |
+| After the copy       | check, publish, confirm                  | Preview copy, publish in Themes; auto-rescan on publish confirms it's gone |
+| Return visit         | anything new? what has this done for me? | top of Home: what's new, the one action, value so far                      |
 
 ## Pages
 
@@ -51,7 +51,7 @@ History, Ignored, Settings and Help are utilities with no value action.
 - **Action card (one, by plan and state):**
   - No scan yet: onboarding card, unchanged.
   - Professional paid, removable leftovers: "Remove N pieces of leftover code for you"
-    + why line + **Make a clean copy** (goes straight to the select page).
+    - why line + **Make a clean copy** (goes straight to the select page).
   - Professional trial: "Remove up to R now. The other N-R unlock on <date>." +
     **Make a clean copy**.
   - Professional, scan too old for Clean copy: "Scan again to remove these" + **Scan now**.
@@ -106,20 +106,20 @@ Utilities. No value action; the header primary slot stays empty rather than "Bac
 
 ## Telemetry (to add)
 
-| Event | Props |
-|---|---|
-| `action_card_shown` / `action_card_clicked` | plan, state, page |
-| `header_scan_clicked` | plan, page |
-| `upgrade_clicked` | plan, source (card, header) |
-| `diy_opened` | plan, page |
-| `clean_copy_select_viewed` / `clean_copy_run_started` / `clean_copy_run_finished` | counts removed / not removed |
-| `clean_copy_preview_clicked` | |
-| `return_after_clean_copy` | first return visit after a run |
+| Event                                                                             | Props                          |
+| --------------------------------------------------------------------------------- | ------------------------------ |
+| `action_card_shown` / `action_card_clicked`                                       | plan, state, page              |
+| `header_scan_clicked`                                                             | plan, page                     |
+| `upgrade_clicked`                                                                 | plan, source (card, header)    |
+| `diy_opened`                                                                      | plan, page                     |
+| `clean_copy_select_viewed` / `clean_copy_run_started` / `clean_copy_run_finished` | counts removed / not removed   |
+| `clean_copy_preview_clicked`                                                      |                                |
+| `return_after_clean_copy`                                                         | first return visit after a run |
 
 IDs and counts only, on the existing event sink.
 
 ## Decision log
 
-| Date | Decision |
-|---|---|
+| Date       | Decision                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-11-14 | 1A: one summary on Home, "What it's costing you". 2A: every plan sees the Clean copy card (upgrade on Free/Standard). 3A: findings grouped by app. 4B (Nathan): Standard leads with do it yourself; "Upgrade to Professional to remove them for you" is the second action. Finding cards show "Included in your clean copy" (no per-card button); scan header keeps Make a clean copy. |

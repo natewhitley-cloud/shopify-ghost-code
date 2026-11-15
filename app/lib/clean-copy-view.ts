@@ -199,7 +199,10 @@ export function groupCandidatesByApp(cands: readonly CleanCopyCandidate[]): Cand
 // ---------------------------------------------------------------------------
 
 /** Every removable piece, in page order, capped at what the trial still allows. */
-export function initialSelection(groups: readonly CandidateGroup[], remaining: number): Set<string> {
+export function initialSelection(
+  groups: readonly CandidateGroup[],
+  remaining: number,
+): Set<string> {
   const out = new Set<string>();
   for (const g of groups) {
     for (const c of g.selectable) {

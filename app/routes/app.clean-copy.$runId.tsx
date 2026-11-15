@@ -24,6 +24,7 @@ import {
 } from "../lib/clean-copy-view";
 import { buildThemeEditorUrl, storeHandleFromDomain } from "../lib/theme-editor-url";
 import { useScanPolling } from "../lib/use-scan-polling";
+import { recordValueActionClick } from "../lib/value-action";
 import { getFindingsForScan } from "../models/finding.server";
 import {
   displayedRunState,
@@ -233,7 +234,12 @@ export default function CleanCopyRun() {
         {(summary.showPreview || liveTheme) && (
           <s-stack direction="inline" gap="base">
             {summary.showPreview && preview && (
-              <s-button variant="primary" href={preview} target="_blank">
+              <s-button
+                variant="primary"
+                href={preview}
+                target="_blank"
+                onClick={() => recordValueActionClick("clean_copy_preview")}
+              >
                 Preview clean copy
               </s-button>
             )}
