@@ -11,7 +11,8 @@
  * authenticate.admin works as for any other in-app fetch.
  *
  * Records that nudge's `clicked` once per merchant only for a known `src`
- * (UPGRADE_ASK_KEYS: upgrade_preview, upgrade_return, stale_results, speed_teaser), always for the
+ * (UPGRADE_ASK_KEYS: upgrade_preview, upgrade_return, stale_results, speed_teaser,
+ * clean_copy_upsell), always for the
  * SESSION shop (never a shop from the request body), and returns 204.
  * No loader and no redirect: nothing here can be pointed at another URL.
  */

@@ -26,6 +26,8 @@ export const CLEAN_COPY_SCOPE = "write_themes";
  * and the service share it.
  */
 export const TRIAL_CLEAN_COPY_LIMIT = 5;
+/** Upper bound on one selection (ids come from a form post); the select page preselects no more. */
+export const MAX_SELECTED_FINDINGS = 500;
 
 // ---------------------------------------------------------------------------
 // Free trial limit (gc-tib.22)

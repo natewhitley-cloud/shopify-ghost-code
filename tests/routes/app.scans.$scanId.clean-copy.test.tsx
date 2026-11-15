@@ -61,6 +61,8 @@ import type {
 import {
   appsNeedingConfirmation,
   canSubmitSelection,
+  confirmedAppsFor,
+  liveSelection,
   CLEAN_COPY_ALLOW_SCOPE,
   CLEAN_COPY_INTRO,
   CLEAN_COPY_NOTHING_TO_SELECT,
@@ -571,6 +573,22 @@ describe("submit rule", () => {
     );
     // A confirmation for an app with no selection is irrelevant.
     expect(canSubmitSelection(GROUPS, new Set(["k1"]), new Set(["Klaviyo", "Loox"]))).toBe(true);
+  });
+
+  it("audit r1 M5: a tick confirms only the apps it named; an app added later is unconfirmed", () => {
+    // Ticked while only Klaviyo was selected.
+    const consented = new Set(appsNeedingConfirmation(GROUPS, new Set(["k1"])));
+    // Then Loox is selected too: the tick doesn't cover it.
+    const now = appsNeedingConfirmation(GROUPS, new Set(["k1", "l1"]));
+    const confirmed = confirmedAppsFor(now, consented);
+    expect([...confirmed]).toEqual(["Klaviyo"]);
+    expect(canSubmitSelection(GROUPS, new Set(["k1", "l1"]), confirmed)).toBe(false);
+    // Unticking everything and re-selecting never revives an old tick for a new app.
+    expect([...confirmedAppsFor(["Loox"], new Set())]).toEqual([]);
+  });
+
+  it("audit r1 L10: the selection keeps only what the page still offers", () => {
+    expect([...liveSelection(GROUPS, new Set(["k1", "gone", "l1"]))]).toEqual(["k1", "l1"]);
   });
 
   it("lists the apps that need a confirmation", () => {

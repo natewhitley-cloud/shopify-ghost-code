@@ -141,8 +141,8 @@ const NUDGE_STAGE_CLAIMS = {
   [NUDGE_KEYS.SCAN_HEADER]: {
     clicked: { column: "scanHeaderClickedAt" },
   },
-  // Clicked only by a merchant with a clean copy run (the result page is the
-  // only place Preview shows).
+  // The result page is the only place Preview shows. Not enforced: a crafted
+  // ping can stamp it for the session shop (its own telemetry only).
   [NUDGE_KEYS.CLEAN_COPY_PREVIEW]: {
     clicked: { column: "cleanCopyPreviewClickedAt" },
   },

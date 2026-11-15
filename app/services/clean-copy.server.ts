@@ -34,7 +34,7 @@ import { isFindingIgnored } from "./finding-aggregation.server";
 import { isCleanCopyEnabled } from "./soft-launch-flags.server";
 import { inngest } from "../../inngest/client";
 import db from "../db.server";
-import { TRIAL_CLEAN_COPY_LIMIT } from "../lib/clean-copy-view";
+import { MAX_SELECTED_FINDINGS, TRIAL_CLEAN_COPY_LIMIT } from "../lib/clean-copy-view";
 import { logger } from "../lib/logger.server";
 import { PLANS } from "../lib/plans";
 import { FIXABLE_FINDING_TYPES, nonCodeRanges, removalSpanFor } from "../lib/removal-span";
@@ -63,9 +63,7 @@ import { getScanManifest } from "../models/scan-manifest.server";
 import { SUCCESSFUL_SCAN_STATUSES } from "../models/scan.server";
 
 export const WRITE_THEMES_SCOPE = "write_themes";
-/** Upper bound on one selection (ids come from a form post). */
-export const MAX_SELECTED_FINDINGS = 500;
-export { TRIAL_CLEAN_COPY_LIMIT };
+export { MAX_SELECTED_FINDINGS, TRIAL_CLEAN_COPY_LIMIT };
 
 const md5 = (text: string) => createHash("md5").update(text, "utf8").digest("hex");
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
@@ -243,6 +241,12 @@ export type FreshnessRefusal =
   | "NO_MAIN_THEME"
   | "CANVAS_THEME";
 
+/**
+ * Why a scan is SCAN_STALE, for callers that word it differently (the
+ * value-action card: only CHANGED asks for a new scan). Not stored anywhere.
+ */
+export type StaleDetail = "NOT_SUCCESSFUL" | "NOT_LATEST" | "NOT_LIVE_THEME" | "CHANGED";
+
 export type FreshnessScan = {
   id: string;
   themeId: string;
@@ -262,10 +266,12 @@ export async function checkCleanCopyFreshness(input: {
   lastThemePublishAt: Date | string | null;
   scan: FreshnessScan;
   admin: CleanCopyAdmin;
-}): Promise<{ ok: true; main: ThemeInfo } | { ok: false; reason: FreshnessRefusal }> {
+}): Promise<
+  { ok: true; main: ThemeInfo } | { ok: false; reason: FreshnessRefusal; detail?: StaleDetail }
+> {
   const { scan } = input;
   if (!(SUCCESSFUL_SCAN_STATUSES as readonly string[]).includes(scan.status) || !scan.completedAt) {
-    return { ok: false, reason: "SCAN_STALE" };
+    return { ok: false, reason: "SCAN_STALE", detail: "NOT_SUCCESSFUL" };
   }
   const latest = await db.scan.findFirst({
     where: {
@@ -276,15 +282,15 @@ export async function checkCleanCopyFreshness(input: {
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: { id: true },
   });
+  if (latest?.id !== scan.id) return { ok: false, reason: "SCAN_STALE", detail: "NOT_LATEST" };
   if (
-    latest?.id !== scan.id ||
     isScanStaleAfterThemeChange({
       autoRescan: false,
       lastThemePublishAt: input.lastThemePublishAt,
       scan,
     })
   ) {
-    return { ok: false, reason: "SCAN_STALE" };
+    return { ok: false, reason: "SCAN_STALE", detail: "CHANGED" };
   }
   const mainRes = await input.admin.getMainTheme();
   if (!mainRes.ok) {
@@ -295,8 +301,10 @@ export async function checkCleanCopyFreshness(input: {
   }
   const main = mainRes.value;
   if (!main) return { ok: false, reason: "NO_MAIN_THEME" };
-  if (main.id !== scan.themeId || (main.updatedAt !== null && main.updatedAt > scan.completedAt)) {
-    return { ok: false, reason: "SCAN_STALE" };
+  if (main.id !== scan.themeId)
+    return { ok: false, reason: "SCAN_STALE", detail: "NOT_LIVE_THEME" };
+  if (main.updatedAt !== null && main.updatedAt > scan.completedAt) {
+    return { ok: false, reason: "SCAN_STALE", detail: "CHANGED" };
   }
   const canvas = canvasThemeRefusal(main);
   if (canvas !== null) return { ok: false, reason: canvas };

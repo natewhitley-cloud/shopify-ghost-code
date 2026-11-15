@@ -332,7 +332,7 @@ beforeEach(() => {
     }>;
     const counts = new Map<string | null, number>();
     for (const r of rows) {
-      if (!types.includes(r.findingType)) continue;
+      if (types && !types.includes(r.findingType)) continue;
       const key = r.appName ?? null;
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }

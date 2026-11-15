@@ -22,7 +22,6 @@ import { isCleanCopyEnabled } from "./soft-launch-flags.server";
 import { trialUnlockDate } from "../lib/clean-copy-view";
 import { logger } from "../lib/logger.server";
 import { PLANS } from "../lib/plans";
-import { FIXABLE_FINDING_TYPES } from "../lib/removal-span";
 import {
   valueActionCard,
   valueActionPlan,
@@ -65,14 +64,9 @@ export function leftoversByApp(
   findings: readonly (LeftoverFinding & Partial<OfferFinding>)[],
   ignores: ShopIgnores | null,
 ): { total: number; apps: ValueActionApp[] } {
-  const fixable: ReadonlySet<string> = new Set(FIXABLE_FINDING_TYPES);
   return summarize(
     findings
-      .filter(
-        (f) =>
-          fixable.has(f.findingType) &&
-          (ignores === null || !isFindingIgnored(f as OfferFinding, ignores)),
-      )
+      .filter((f) => ignores === null || !isFindingIgnored(f as OfferFinding, ignores))
       .map((f) => ({ appName: f.appName, count: 1 })),
   );
 }
@@ -86,7 +80,7 @@ export async function leftoversByAppForScan(
   scanId: string,
 ): Promise<{ total: number; apps: ValueActionApp[] }> {
   try {
-    return summarize(await countFindingsByApp(scanId, FIXABLE_FINDING_TYPES));
+    return summarize(await countFindingsByApp(scanId));
   } catch (error) {
     logger.warn("value-action leftover count failed", {
       scanId,
@@ -101,7 +95,7 @@ export type CleanCopyOffer = NonNullable<ValueActionInput["cleanCopy"]> & {
   findingIds: string[];
 };
 
-const NONE: CleanCopyOffer = { state: "none", count: 0, findingIds: [] };
+const NONE: CleanCopyOffer = { state: "none", count: 0, apps: [], findingIds: [] };
 
 export async function cleanCopyOfferFor(input: {
   shop: { id: string; domain: string; plan: string; lastThemePublishAt: Date | null };
@@ -134,7 +128,11 @@ export async function cleanCopyOfferFor(input: {
       admin: input.admin,
     });
     if (!fresh.ok) {
-      return fresh.reason === "SCAN_STALE" ? { state: "stale", count: 0, findingIds: [] } : NONE;
+      // Only a real theme change asks for a new scan; a draft theme's or an
+      // older scan falls back to do-it-yourself (audit r1 M3).
+      return fresh.reason === "SCAN_STALE" && fresh.detail === "CHANGED"
+        ? { state: "stale", count: 0, apps: [], findingIds: [] }
+        : NONE;
     }
     const [findings, manifest] = await Promise.all([
       input.loadFindings(),
@@ -145,15 +143,18 @@ export async function cleanCopyOfferFor(input: {
     const withMd5 = new Set(
       (manifest?.entries ?? []).filter((e) => Boolean(e[1])).map((e) => e[0]),
     );
-    const findingIds = offer.drafts
-      .filter(
-        (d) =>
-          d.blocked === null &&
-          shownFiles.has(d.finding.filename) &&
-          withMd5.has(d.finding.filename),
-      )
-      .map((d) => d.finding.id);
-    return findingIds.length > 0 ? { state: "ready", count: findingIds.length, findingIds } : NONE;
+    const offered = offer.drafts.filter(
+      (d) =>
+        d.blocked === null && shownFiles.has(d.finding.filename) && withMd5.has(d.finding.filename),
+    );
+    if (offered.length === 0) return NONE;
+    const { apps } = summarize(offered.map((d) => ({ appName: d.finding.appName, count: 1 })));
+    return {
+      state: "ready",
+      count: offered.length,
+      apps,
+      findingIds: offered.map((d) => d.finding.id),
+    };
   } catch (error) {
     logger.warn("clean-copy entry check failed", {
       shopId: shop.id,
@@ -265,7 +266,13 @@ export async function loadValueAction(input: {
   return {
     card,
     cleanCopyFindingIds:
-      card?.primary?.action === "clean_copy" && offer?.state === "ready" ? offer.findingIds : [],
+      // During a capped trial the select page picks only some of them, so no
+      // finding is labelled "Included" (audit r1 M4).
+      card?.primary?.action === "clean_copy" &&
+      offer?.state === "ready" &&
+      (trial === null || trial.remaining >= offer.count)
+        ? offer.findingIds
+        : [],
   };
 }
 

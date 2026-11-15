@@ -352,7 +352,7 @@ describe("M-i: one shared freshness check", () => {
         scan: scan(),
         admin,
       }),
-    ).toEqual({ ok: false, reason: "SCAN_STALE" });
+    ).toEqual({ ok: false, reason: "SCAN_STALE", detail: "NOT_LATEST" });
   });
 });
 

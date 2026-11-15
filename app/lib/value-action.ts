@@ -26,14 +26,19 @@ export type ValueActionInput = {
   /** The theme has a finished scan; before that the onboarding card owns the page. */
   hasCompletedScan: boolean;
   themeName: string;
-  /** Leftover code the latest scan found, by app (removable kinds only). */
+  /**
+   * Everything the scan found (every finding type, ignores left out), by app.
+   * "All clear" only when this is zero (audit r1 HIGH: counting the removable
+   * kinds only showed All clear over a list of findings).
+   */
   leftovers: { total: number; apps: ValueActionApp[] };
   /**
    * Professional only: what Clean copy can do with this scan. `ready` with the
-   * count the select page would offer; `stale` when a new scan is needed first;
-   * `none` when it can't remove any of it. Null on other plans.
+   * count the select page would offer and those findings by app; `stale` when a
+   * new scan of the live theme is needed first; `none` when it can't remove any
+   * of it. Null on other plans.
    */
-  cleanCopy: { state: "ready" | "stale" | "none"; count: number } | null;
+  cleanCopy: { state: "ready" | "stale" | "none"; count: number; apps?: ValueActionApp[] } | null;
   /** Professional free trial: removals left and the day the rest unlock. */
   trial: { remaining: number; unlocksOn: string } | null;
   lastScanDaysAgo: number;
@@ -67,8 +72,14 @@ export const RESCAN_AFTER_DAYS = 30;
 
 const pieces = (n: number) => `${n} ${n === 1 ? "piece" : "pieces"}`;
 const appsYouUninstalled = (n: number) =>
-  n === 1 ? "An app you uninstalled" : `${n} apps you uninstalled`;
+  n === 0
+    ? "Apps you uninstalled"
+    : n === 1
+      ? "An app you uninstalled"
+      : `${n} apps you uninstalled`;
+const unlock = (n: number) => (n === 1 ? "unlocks" : "unlock");
 const WHY = "It slows your pages and confuses Google and AI assistants.";
+const WHY_PLURAL = "They slow your pages and confuse Google and AI assistants.";
 const SAFE =
   "We remove it in a copy of your theme. You preview the copy and publish it when you're ready. Your live theme isn't changed.";
 
@@ -115,7 +126,11 @@ function clearCard(input: ValueActionInput): ValueActionCard {
   });
 }
 
-function diyCard(input: ValueActionInput, withUpsell: boolean): ValueActionCard {
+function diyCard(
+  input: ValueActionInput,
+  withUpsell: boolean,
+  telemetryKey: "clean_copy_diy" | null = "clean_copy_diy",
+): ValueActionCard {
   const { total, apps } = input.leftovers;
   return card({
     kind: "diy",
@@ -126,16 +141,17 @@ function diyCard(input: ValueActionInput, withUpsell: boolean): ValueActionCard 
     secondary: withUpsell
       ? { label: "Upgrade to Professional to remove them for you", action: "upgrade" }
       : null,
-    telemetryKey: "clean_copy_diy",
+    telemetryKey,
     upsellKey: withUpsell ? "clean_copy_upsell" : null,
   });
 }
 
 function professionalCard(input: ValueActionInput): ValueActionCard {
   const cc = input.cleanCopy;
-  if (!input.cleanCopyOn || cc === null || cc.state === "none") return diyCard(input, false);
-  const { apps } = input.leftovers;
+  // Professional's fallback: no do-it-yourself stamp (that funnel is Standard's).
+  if (!input.cleanCopyOn || cc === null || cc.state === "none") return diyCard(input, false, null);
   if (cc.state === "stale") {
+    const { apps } = input.leftovers;
     return card({
       kind: "scan_first",
       heading: `Scan again to remove ${pieces(input.leftovers.total)} of leftover code`,
@@ -144,12 +160,14 @@ function professionalCard(input: ValueActionInput): ValueActionCard {
       primary: SCAN_NOW,
     });
   }
+  // The card is about what the copy removes, so its apps are the offered ones.
+  const apps = cc.apps ?? input.leftovers.apps;
   const trial = input.trial;
   if (trial !== null && trial.remaining < cc.count) {
     if (trial.remaining <= 0) {
       return card({
         kind: "clean_copy",
-        heading: `${pieces(cc.count)} of leftover code unlock on ${trial.unlocksOn}`,
+        heading: `${pieces(cc.count)} of leftover code ${unlock(cc.count)} on ${trial.unlocksOn}`,
         body: "You've used the removals in your free trial. The rest unlock when your plan starts.",
         apps,
       });
@@ -157,7 +175,7 @@ function professionalCard(input: ValueActionInput): ValueActionCard {
     return card({
       kind: "clean_copy",
       heading: `Remove up to ${pieces(trial.remaining)} of leftover code now`,
-      body: `${appsYouUninstalled(apps.length)} left ${pieces(cc.count)} of code in your theme. During your free trial you can remove ${trial.remaining}. The other ${cc.count - trial.remaining} unlock on ${trial.unlocksOn}, when your plan starts. Your live theme isn't changed.`,
+      body: `${appsYouUninstalled(apps.length)} left ${pieces(cc.count)} of code in your theme. During your free trial you can remove ${trial.remaining}. The other ${cc.count - trial.remaining} ${unlock(cc.count - trial.remaining)} on ${trial.unlocksOn}, when your plan starts. Your live theme isn't changed.`,
       apps,
       primary: CLEAN_COPY,
       telemetryKey: "clean_copy_action",
@@ -187,8 +205,11 @@ export function valueActionCard(input: ValueActionInput): ValueActionCard | null
       const { total, apps } = input.leftovers;
       return card({
         kind: "upsell",
-        heading: `We found ${pieces(total)} of leftover code from ${apps.length} ${apps.length === 1 ? "app" : "apps"}`,
-        body: `${WHY.replace("It slows", "They slow")} On Professional, GhostCode removes them for you in a copy of your theme that you preview and publish yourself.`,
+        heading:
+          apps.length === 0
+            ? `We found ${pieces(total)} of leftover code`
+            : `We found ${pieces(total)} of leftover code from ${apps.length} ${apps.length === 1 ? "app" : "apps"}`,
+        body: `${total === 1 ? WHY : WHY_PLURAL} On Professional, GhostCode removes them for you in a copy of your theme that you preview and publish yourself.`,
         apps,
         primary: { label: "Upgrade to Professional", action: "upgrade" },
         secondary: { label: "Compare plans", action: "plans" },

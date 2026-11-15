@@ -433,6 +433,34 @@ describe("Home action: guard-acknowledge (gc-1q1s.6)", () => {
   });
 });
 
+describe("Home action: header Scan now click (gc-np1d.5)", () => {
+  const post = () =>
+    action({
+      request: new Request("https://example.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "gid://shopify/OnlineStoreTheme/1", via: "header" }),
+      }),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+  const headerClicks = async () => {
+    const { recordNudgeStageOnce } = await import("../../app/services/nudge-stage.server");
+    return mock(recordNudgeStageOnce).mock.calls.filter(([key]) => key === "scan_header");
+  };
+
+  it("a scan the plan refuses is not counted as a header click", async () => {
+    mock(canStartScan).mockResolvedValue({ allowed: false, reason: "Limit reached." });
+    await expect(post()).resolves.toEqual({ error: "Limit reached." });
+    expect(await headerClicks()).toEqual([]);
+  });
+
+  it("an allowed scan records the click for the session shop", async () => {
+    mock(canStartScan).mockResolvedValue({ allowed: true });
+    await post().catch(() => undefined); // the rest of the scan start isn't under test here
+    expect(await headerClicks()).toEqual([["scan_header", "clicked", SHOP.domain]]);
+  });
+});
+
 describe("Home: checkout guard email notice (gc-1q1s.7)", () => {
   const live = () => {
     process.env.STOREFRONT_GUARD_LIVE_ENABLED = "true";

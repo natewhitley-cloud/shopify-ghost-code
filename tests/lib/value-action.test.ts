@@ -228,3 +228,82 @@ describe("isValueActionPingKey", () => {
     }
   });
 });
+
+// Audit r1 (2026-11-14) regressions.
+describe("valueActionCard: audit r1 fixes", () => {
+  it("M2: the Professional card's body and chips are the offered findings, not every leftover", () => {
+    const card = valueActionCard({
+      ...base,
+      leftovers: {
+        total: 10,
+        apps: [
+          { name: "A", count: 5 },
+          { name: "B", count: 3 },
+          { name: "C", count: 2 },
+        ],
+      },
+      cleanCopy: { state: "ready", count: 2, apps: [{ name: "A", count: 2 }] },
+    })!;
+    expect(card.heading).toBe("Remove 2 pieces of leftover code for you");
+    expect(card.body).toContain("An app you uninstalled left code");
+    expect(card.apps).toEqual([{ name: "A", count: 2 }]);
+  });
+
+  it("M2: the trial body counts only the offered apps", () => {
+    const card = valueActionCard({
+      ...base,
+      leftovers: {
+        total: 10,
+        apps: [
+          { name: "A", count: 5 },
+          { name: "B", count: 5 },
+        ],
+      },
+      cleanCopy: { state: "ready", count: 2, apps: [{ name: "A", count: 2 }] },
+      trial: { remaining: 1, unlocksOn: "November 28" },
+    })!;
+    expect(card.body).toContain("An app you uninstalled left 2 pieces of code");
+    expect(card.body).toContain("The other 1 unlocks on November 28");
+  });
+
+  it("L8: singular unlock wording when trial removals are used up", () => {
+    const card = valueActionCard({
+      ...base,
+      cleanCopy: { state: "ready", count: 1, apps: [{ name: "A", count: 1 }] },
+      trial: { remaining: 0, unlocksOn: "November 28" },
+    })!;
+    expect(card.heading).toBe("1 piece of leftover code unlocks on November 28");
+  });
+
+  it("M7: unknown-app-only leftovers never say 0 apps", () => {
+    const unknown = { total: 3, apps: [] };
+    for (const plan of ["free", "standard"] as const) {
+      const card = valueActionCard({ ...base, plan, leftovers: unknown, cleanCopy: null })!;
+      expect(`${card.heading} ${card.body}`).not.toMatch(/\b0 apps?\b/);
+    }
+    expect(
+      valueActionCard({ ...base, plan: "free", leftovers: unknown, cleanCopy: null })!.heading,
+    ).toBe("We found 3 pieces of leftover code");
+  });
+
+  it("L8: Free body agrees in number with the count", () => {
+    const one = valueActionCard({
+      ...base,
+      plan: "free",
+      leftovers: { total: 1, apps: [{ name: "A", count: 1 }] },
+      cleanCopy: null,
+    })!;
+    expect(one.body).toContain("It slows your pages and confuses");
+    const many = valueActionCard({ ...base, plan: "free", cleanCopy: null })!;
+    expect(many.body).toContain("They slow your pages and confuse Google");
+  });
+
+  it("L15: Professional's do-it-yourself fallback records no Standard do-it-yourself stamp", () => {
+    const card = valueActionCard({ ...base, cleanCopy: { state: "none", count: 0 } })!;
+    expect(card.kind).toBe("diy");
+    expect(card.telemetryKey).toBeNull();
+    expect(valueActionCard({ ...base, plan: "standard", cleanCopy: null })!.telemetryKey).toBe(
+      "clean_copy_diy",
+    );
+  });
+});

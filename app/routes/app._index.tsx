@@ -1076,15 +1076,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { ignored: true };
   }
 
-  // gc-np1d.5: the header's Scan now (first click per merchant; telemetry only).
-  if (formData.get("via") === "header") {
-    await recordNudgeStageOnce(NUDGE_KEYS.SCAN_HEADER, "clicked", session.shop);
-  }
-
   // Plan-gate: check if this shop is allowed to start a new scan.
   const gate = await canStartScan(shop.id, shop.plan);
   if (!gate.allowed) {
     return { error: gate.reason ?? "Scan limit reached for your current plan." };
+  }
+
+  // gc-np1d.5: the header's Scan now (first click per merchant; telemetry only).
+  // After the gate, so a refused scan is not counted as a header click.
+  if (formData.get("via") === "header") {
+    await recordNudgeStageOnce(NUDGE_KEYS.SCAN_HEADER, "clicked", session.shop);
   }
 
   const selectedThemeId = formData.get("themeId") as string | null;

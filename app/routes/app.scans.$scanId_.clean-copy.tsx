@@ -17,7 +17,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   data,
@@ -47,6 +47,7 @@ import {
   findingRefusalCopy,
   groupCandidatesByApp,
   initialSelection,
+  MAX_SELECTED_FINDINGS,
   runRefusalCopy,
   selectionHeading,
   toggleApp,
@@ -68,7 +69,6 @@ import {
   checkCleanCopyFreshness,
   cleanCopyTrial,
   offerableCleanCopyFiles,
-  MAX_SELECTED_FINDINGS,
   requestCleanCopy,
   TRIAL_CLEAN_COPY_LIMIT,
 } from "../services/clean-copy.server";
@@ -399,6 +399,27 @@ export function appsNeedingConfirmation(
 }
 
 /**
+ * The apps the merchant has confirmed for THIS selection: only the ones named
+ * when they ticked the line. An app selected after the tick is unconfirmed
+ * until they tick again (audit r1 M5).
+ */
+export function confirmedAppsFor(
+  appsToConfirm: readonly string[],
+  consentedApps: ReadonlySet<string>,
+): Set<string> {
+  return new Set(appsToConfirm.filter((app) => consentedApps.has(app)));
+}
+
+/** The selection limited to what the page can still offer (after a reload; audit r1 L10). */
+export function liveSelection(
+  groups: readonly CandidateGroup[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  const offered = new Set(groups.flatMap((g) => g.selectable.map((c) => c.findingId)));
+  return new Set([...selected].filter((id) => offered.has(id)));
+}
+
+/**
  * The submit rule: something selected, no more than the trial still allows
  * (gc-tib.22), and every app with a selection confirmed.
  */
@@ -594,17 +615,21 @@ export default function CleanCopySelect() {
   const navigation = useNavigation();
   const submit = useSubmit();
   const remaining = trialRemaining(trial);
-  // gc-np1d.1: everything removable starts selected; the merchant unticks what to keep.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(() =>
-    initialSelection(groups, remaining),
-  );
-  const [consented, setConsented] = useState(false);
+  // gc-np1d.1: everything removable starts selected; the merchant unticks what to
+  // keep. Never more than the server accepts in one request (audit r1 L9).
+  const cap = Math.min(remaining, MAX_SELECTED_FINDINGS);
+  const [picked, setSelected] = useState<ReadonlySet<string>>(() => initialSelection(groups, cap));
+  const selected = liveSelection(groups, picked);
+  const [consentedApps, setConsentedApps] = useState<ReadonlySet<string>>(() => new Set());
   const [scopeNote, setScopeNote] = useState<string | null>(null);
+  // One submit at a time, including while Shopify's permission dialog is open (audit r1 L11).
+  const inFlight = useRef(false);
 
   const submitting = navigation.state === "submitting";
   const overTrial = selected.size > remaining;
   const appsToConfirm = appsNeedingConfirmation(groups, selected);
-  const confirmed = new Set(consented ? appsToConfirm : []);
+  const confirmed = confirmedAppsFor(appsToConfirm, consentedApps);
+  const consented = appsToConfirm.length > 0 && confirmed.size === appsToConfirm.length;
   const canSubmit = canSubmitSelection(groups, selected, confirmed, remaining) && !submitting;
   const trialBanner = trial ? trialNotice(trial) : null;
   const refusedFindings = new Map((actionData?.findings ?? []).map((f) => [f.findingId, f.reason]));
@@ -614,24 +639,29 @@ export default function CleanCopySelect() {
     setSelected((prev) => {
       const next = new Set(prev);
       if (!on) next.delete(findingId);
-      else if (next.size < remaining) next.add(findingId);
+      else if (next.size < cap) next.add(findingId);
       return next;
     });
 
   async function handleSubmit() {
-    if (!canSubmit) return;
-    setScopeNote(null);
-    if (!hasWriteScope) {
-      const res = await requestWriteScope();
-      if (!res.granted) {
-        setScopeNote(res.note);
-        return;
+    if (!canSubmit || inFlight.current) return;
+    inFlight.current = true;
+    try {
+      setScopeNote(null);
+      if (!hasWriteScope) {
+        const res = await requestWriteScope();
+        if (!res.granted) {
+          setScopeNote(res.note);
+          return;
+        }
       }
+      const form = new FormData();
+      for (const id of selected) form.append("findingIds", id);
+      for (const app of confirmed) form.append("confirmedApps", app);
+      submit(form, { method: "post" });
+    } finally {
+      inFlight.current = false;
     }
-    const form = new FormData();
-    for (const id of selected) form.append("findingIds", id);
-    for (const app of appsToConfirm) form.append("confirmedApps", app);
-    submit(form, { method: "post" });
   }
 
   const hasSelectable = groups.some((g) => g.selectable.length > 0);
@@ -662,7 +692,9 @@ export default function CleanCopySelect() {
                 label={consentLabel(appsToConfirm)}
                 details={CONSENT_DETAILS}
                 checked={consented ? true : undefined}
-                onChange={(e: unknown) => setConsented(readChecked(e))}
+                onChange={(e: unknown) =>
+                  setConsentedApps(new Set(readChecked(e) ? appsToConfirm : []))
+                }
               />
             )}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
@@ -692,7 +724,7 @@ export default function CleanCopySelect() {
                 key={group.appName ?? "unknown-app"}
                 group={group}
                 selected={selected}
-                onToggleApp={(on) => setSelected((prev) => toggleApp(group, prev, on, remaining))}
+                onToggleApp={(on) => setSelected((prev) => toggleApp(group, prev, on, cap))}
                 onTogglePiece={togglePiece}
                 refusedFindings={refusedFindings}
               />

@@ -169,7 +169,7 @@ model Shop {
   speedTeaserConvertedAt       DateTime?
   // Value-action funnels (gc-np1d.5, Nathan 2026-11-14): first time each value
   // action was shown / clicked / completed, once per merchant via claimShopStamp.
-  // Clean copy card (Professional): converted = first run started after seeing it.
+  // Clean copy card (Professional): converted = first run that removed code (completed or partial) after seeing it.
   cleanCopyActionShownAt       DateTime?
   cleanCopyActionClickedAt     DateTime?
   cleanCopyActionConvertedAt   DateTime?

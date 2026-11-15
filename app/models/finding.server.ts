@@ -138,11 +138,14 @@ export async function getFindingsForScan(
  */
 export async function countFindingsByApp(
   scanId: string,
-  findingTypes: readonly string[],
+  findingTypes: readonly string[] | null = null,
 ): Promise<Array<{ appName: string | null; count: number }>> {
   const rows = await db.finding.groupBy({
     by: ["appName"],
-    where: { scanId, findingType: { in: findingTypes as FindingType[] } },
+    where: {
+      scanId,
+      ...(findingTypes === null ? {} : { findingType: { in: findingTypes as FindingType[] } }),
+    },
     _count: { _all: true },
   });
   return rows.map((r) => ({ appName: r.appName, count: r._count._all }));
