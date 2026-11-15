@@ -1,6 +1,7 @@
 /**
  * "Start here" top findings (gc-bn0x): the bounded reads behind the pure
- * ranking in app/lib/top-findings.ts, shared by the scan page and Home.
+ * ranking in app/lib/top-findings.ts: the scan page's Start here (Standard and
+ * Professional; Free has none since gc-np1d.6) and Sidekick's scan summary.
  *
  * Plan safety: a plan that shows every finding in full (Standard and
  * Professional) ranks over the whole scan. Free ranks ONLY over what Free
@@ -142,33 +143,21 @@ export async function getFullListTopFindings(
 /**
  * The scan's top findings for a Free shop: ranked only over the Free preview
  * rows and the scan's non-ignored never-paywalled findings (malicious code and
- * affected-app advisories; all shown in full on Free). Pass `loaded` when the
- * caller already read them (the scan page); otherwise they are read here,
- * bounded (see the file header).
+ * affected-app advisories; all shown in full on Free), read here, bounded
+ * (see the file header). Sidekick's scan summary is the only caller: the Free
+ * scan page has no Start here (gc-np1d.6, 2026-11-15).
  *
  * `byType` is the ignore-filtered summary aggregate the preview formula uses;
  * `withheld` is findingTypesWithheldByPlan (never shown in full on this plan,
  * so never in the preview and never in the top 3). Never-paywalled findings
  * are never withheld.
- *
- * `loaded.alwaysShown` is the caller's non-ignored never-paywalled rows other
- * than malicious (getOwnSectionFindings).
  */
 export async function getFreeTopFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
   keptFindings: readonly FindingRow[] | null,
   withheld: readonly FindingType[],
-  loaded?: {
-    preview: readonly FindingRow[];
-    malicious: readonly FindingRow[];
-    alwaysShown?: readonly FindingRow[];
-  },
 ): Promise<FindingRow[]> {
-  if (loaded) {
-    return pickTopFindings([...loaded.malicious, ...(loaded.alwaysShown ?? []), ...loaded.preview]);
-  }
-
   // At most TOP_FINDINGS_MAX rows of each never-paywalled type can be picked.
   const neverPaywalled = async (): Promise<FindingRow[]> => {
     if (keptFindings !== null) {

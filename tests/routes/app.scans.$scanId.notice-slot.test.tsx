@@ -648,7 +648,7 @@ describe("one notice slot", () => {
     expect(claimedColumns()).not.toContain("staleResultsShownAt");
     // The teaser is no longer inside the Free findings card.
     expect(html.indexOf("more findings on Professional")).toBeLessThan(
-      html.indexOf("Preview: Top"),
+      html.indexOf("Preview: your top"),
     );
   });
 

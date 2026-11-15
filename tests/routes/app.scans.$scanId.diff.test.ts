@@ -213,9 +213,12 @@ describe("app.scans.$scanId.diff loader", () => {
   it("returns the computed diff for an eligible plan with a previous scan", async () => {
     const result = (await loader(makeLoaderArgs("scan-1"))) as {
       scanDiff: typeof DIFF_RESULT;
+      scanId: string;
     };
 
     expect(result.scanDiff).toEqual(DIFF_RESULT);
+    // Audit M1: the page shows a diff only for the scan it answers for.
+    expect(result.scanId).toBe("scan-1");
     expect(mockDiffScans).toHaveBeenCalledWith([CURRENT_FINDING], PREVIOUS_SCAN.findings, {
       skippedCategories: [HOMEPAGE_MALICIOUS_COVERAGE_KEY],
       skippedFiles: [],

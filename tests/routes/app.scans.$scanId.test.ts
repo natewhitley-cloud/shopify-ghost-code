@@ -2423,7 +2423,7 @@ describe("app.scans.$scanId loader", () => {
       },
     );
 
-    it("Free: every top finding is one of the visible preview rows, with no extra read", async () => {
+    it("Free: has no Start here rows (Nathan, 2026-11-15), and reads nothing extra", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       scanWith(MANY);
@@ -2432,25 +2432,19 @@ describe("app.scans.$scanId loader", () => {
 
       const visible = result.previewFindings.map((f) => f.id);
       expect(visible).toHaveLength(5);
-      expect(result.topFindings).toHaveLength(3);
-      for (const f of result.topFindings) expect(visible).toContain(f.id);
-      // The hidden HIGH scripts never surface (a full-list plan would show 3).
-      expect(result.topFindings.map((f) => f.id)).toEqual(["script-1", "snippet", "pixel"]);
-      // Free links stay on the unfiltered page (its preview rows).
-      expect(result.topFindings[0].href).toBe("/app/scans/scan-1#finding-script-1");
+      expect(result.topFindings).toEqual([]);
       expect(mockGetTypeSeverityCounts).not.toHaveBeenCalled();
       expect(mockGetTopFindingsInGroup).not.toHaveBeenCalled();
     });
 
-    it("Free: a malicious finding leads (shown in full on every plan), linked to the alert", async () => {
+    it("Free: a malicious finding gets no Start here row (it is in the security alert)", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       scanWith([...MANY, row("mal", "MALICIOUS_SCRIPT", "HIGH", 20)]);
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
 
-      expect(result.topFindings.map((f) => f.id)).toEqual(["mal", "script-1", "snippet"]);
-      expect(result.topFindings[0].href).toBe("/app/scans/scan-1#finding-mal");
+      expect(result.topFindings).toEqual([]);
     });
 
     it("excludes ignored findings, including an ignored malicious one", async () => {
@@ -2525,27 +2519,27 @@ describe("app.scans.$scanId loader", () => {
       );
     }
 
-    it("renders on a Free page, and every link target row is on that page", async () => {
+    it("renders no Start here on a Free page; the preview and alert rows keep their anchors", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       scanWith([...MANY, row("mal", "MALICIOUS_SCRIPT", "HIGH", 20)]);
 
       const html = await renderPage();
 
-      expect(html).toMatch(/<h2 id="top-findings-heading"[^>]*>Start here<\/h2>/);
-      const hrefs = [...html.matchAll(/href="\/app\/scans\/scan-1#(finding-[^"]+)"/g)].map(
-        (m) => m[1],
-      );
-      expect(hrefs).toEqual(["finding-mal", "finding-script-1", "finding-snippet"]);
-      for (const id of hrefs) expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
-      // Each anchor is a finding list item (the security alert and the preview).
-      for (const id of hrefs) expect(html).toContain(`<li id="${id}" `);
+      // Nathan, 2026-11-15: Free has no Start here (it repeated the preview rows).
+      expect(html).not.toContain("Start here");
+      expect(html).not.toContain("top-findings-heading");
+      expect(html).not.toMatch(/href="\/app\/scans\/scan-1#finding-/);
+      // The alert row and the preview rows are still anchored list items.
+      const ids = ["finding-mal", "finding-script-1", "finding-snippet"];
+      for (const id of ids) expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      for (const id of ids) expect(html).toContain(`<li id="${id}" `);
       expect(html.match(/<ul class="findings-list">/g)).toHaveLength(2);
       expect(html).not.toContain("findings-table");
       expect(html).not.toContain("<table");
       // The preview sits in a white card like Home's; Free gets no ignore controls.
       expect(html).toMatch(
-        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>Preview: Top 5 Findings/,
+        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>\d+ findings detected<\/s-heading><span[^>]*>Preview: your top 5<\/span>/,
       );
       expect(html).not.toMatch(/Ignore this finding|Ignore all from|name="findingId"/);
       // Nor the Ignore disclosure, its reason field or a form: not in the
@@ -2560,13 +2554,8 @@ describe("app.scans.$scanId loader", () => {
       for (const [, style] of freeCards) {
         expect(style).toMatch(/padding:16px;border:1px solid #c9cccf;border-radius:10px/);
       }
-      // The summary above it is a white card too, not an <s-card> on the grey page.
-      expect(html).toMatch(
-        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>\d+ findings detected<\/s-heading>/,
-      );
+      // The count heads that same white card (not an <s-card> on the grey page).
       expect(html).not.toMatch(/<s-card><s-stack[^>]*><s-heading>\d+ findings detected/);
-      // The block sits above the preview list.
-      expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("Preview: Top 5 Findings"));
     });
 
     it("renders on a Standard page above the findings list, list rows anchored", async () => {
@@ -2671,7 +2660,7 @@ describe("app.scans.$scanId loader", () => {
       expect(html).toContain("No leftover code detected in this scan.");
     });
 
-    it("a downgraded Free shop never sees old plan-gated findings in full (preview or top 3)", async () => {
+    it("a downgraded Free shop never sees old plan-gated findings in full (preview; no Start here)", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       scanWith([
@@ -2687,13 +2676,13 @@ describe("app.scans.$scanId loader", () => {
         upgradePreview: { hiddenCount: number } | null;
       };
 
-      const shown = [...result.previewFindings, ...result.topFindings].map((f) => f.id);
+      const shown = result.previewFindings.map((f) => f.id);
       expect(shown).not.toContain("broken-1");
       expect(shown).not.toContain("broken-2");
       expect(shown).not.toContain("checkout");
       // 6 findings -> 3 shown, all visible types; the 3 withheld stay locked.
       expect(result.previewFindings.map((f) => f.id)).toEqual(["script", "pixel", "orphan"]);
-      expect(result.topFindings.map((f) => f.id)).toEqual(["script", "pixel", "orphan"]);
+      expect(result.topFindings).toEqual([]);
       expect(result.upgradePreview?.hiddenCount).toBe(3);
     });
 
@@ -4062,11 +4051,11 @@ describe("copyRemovalStepsLabels", () => {
 
 describe("freePreviewHeading (gc-97k.10)", () => {
   it("keeps the single-row heading for one preview row", () => {
-    expect(freePreviewHeading(1)).toBe("Preview: Highest Severity Finding");
+    expect(freePreviewHeading(1)).toBe("Preview: your top finding");
   });
 
   it.each([2, 5])("reads as a top-%i list for several rows", (n) => {
-    expect(freePreviewHeading(n)).toBe(`Preview: Top ${n} Findings`);
+    expect(freePreviewHeading(n)).toBe(`Preview: your top ${n}`);
   });
 });
 
@@ -5423,9 +5412,8 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(html).not.toContain(">Show all findings</a>");
       expect(html).toContain("<s-heading>4 findings from Yotpo</s-heading>");
       expect(html.indexOf("no longer active")).toBeLessThan(html.indexOf("4 findings from Yotpo"));
-      // Neutral type badges for X's findings only (no Privy pixels).
-      expect(html).toMatch(/<s-badge tone="neutral">Scripts: 2<\/s-badge>/);
-      expect(html).not.toMatch(/<s-badge tone="neutral">[^<]*: 6<\/s-badge>/);
+      // No finding-type count chips on Free (Nathan, 2026-11-15).
+      expect(html).not.toMatch(/<s-badge tone="neutral">[^<]*: \d+<\/s-badge>/);
       expect(html).not.toContain("10 findings detected");
       expect(html).toContain("2 more findings on Professional");
       // One upgrade ask on the page.
@@ -5756,29 +5744,22 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
     });
 
-    it("Start here is eligible on Free: the advisory leads and links to its row on this page", async () => {
+    it("Free has no Start here: the advisory is in its Security risk banner only", async () => {
       scanWith([...SCRIPTS, ADVISORY]);
 
-      const { topFindings } = await load();
+      const { topFindings, alwaysShownFindings } = await load();
 
-      expect(topFindings[0]).toMatchObject({
-        id: "adv",
-        typeLabel: "App Security Advisories",
-        href: "/app/scans/scan-1#finding-adv",
-        // gc-q5z8: the entry's own wording, and the title names the app.
-        cost: "On 10 October 2026, a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store.",
-        title: "Hulk Product Options is in your theme and was named in a security incident",
-      });
-      expect(topFindings).toHaveLength(3);
+      expect(topFindings).toEqual([]);
+      expect(alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
     });
 
-    it("ranks below malicious code and above every preview row", async () => {
+    it("Free: malicious code and the advisory both show, with no Start here ranking", async () => {
       const mal = row("mal", "MALICIOUS_SCRIPT", "LOW", 59);
       scanWith([...SCRIPTS, ADVISORY, mal]);
 
       const { topFindings, maliciousFindings } = await load();
 
-      expect(topFindings.map((f) => f.id)).toEqual(["mal", "adv", "script-0"]);
+      expect(topFindings).toEqual([]);
       expect(maliciousFindings.map((f) => f.id)).toEqual(["mal"]);
     });
 
@@ -5816,7 +5797,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(offHtml).not.toContain("2 security risks");
       // Malicious code is untouched: still its banner and still first.
       expect(off.maliciousFindings.map((f) => f.id)).toEqual(["mal"]);
-      expect(off.topFindings[0].id).toBe("mal");
+      expect(off.topFindings).toEqual([]);
       expect(offHtml).toContain(">Security risk</span>");
 
       process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
@@ -5910,7 +5891,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(advisory).toContain(">Security risk</span>");
       expect(html.indexOf('<section id="finding-adv"')).toBeGreaterThan(-1);
       expect(html.indexOf('<section id="finding-adv"')).toBeLessThan(
-        html.indexOf("Preview: Top 2 Findings"),
+        html.indexOf("Preview: your top 2"),
       );
       expect(advisory).toContain(
         "Hulk Product Options is in your theme, and it was named in a security incident report",
@@ -5931,9 +5912,9 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       // On the scan page the steps are inline: no "See what to check" button.
       expect(advisory).not.toContain("See what to check</s-button>");
       expect(advisory).not.toContain("Verify first");
-      // Exactly one anchor: the Start here link's target.
+      // Exactly one anchor; Free has no Start here link to it.
       expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
-      expect(html).toContain('href="/app/scans/scan-1#finding-adv"');
+      expect(html).not.toContain('href="/app/scans/scan-1#finding-adv"');
       // Not malicious code: no malicious banner on the page.
       expect(html).not.toContain('id="security-risk-');
       expect(html).not.toContain("linked to malicious code");
@@ -5944,7 +5925,8 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
       expect(advisory).toContain(">Ignore this finding<");
       // The summary counts it as a finding.
       expect(html).toContain("5 findings detected");
-      expect(html).toContain("App Security Advisories: 1");
+      // Free has no finding-type count chips.
+      expect(html).not.toContain("App Security Advisories: 1");
     });
 
     it("an advisory alone never reads 'No leftover code detected'", async () => {
@@ -5985,6 +5967,22 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
         }),
       );
     }
+
+    // Audit LOW 8: the loader's advisoryStartHereCopy wiring, guarded on a
+    // paid plan now that Free has no Start here (gc-np1d.6).
+    it("Standard: Start here leads with the advisory, in its own wording", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const { topFindings } = await load();
+
+      expect(topFindings[0]).toMatchObject({
+        id: "adv",
+        typeLabel: "App Security Advisories",
+        cost: "On 10 October 2026, a public report described Hulk Product Options delivering code that sent shoppers to a fake checkout page on at least one store.",
+        title: "Hulk Product Options is in your theme and was named in a security incident",
+      });
+    });
 
     it.each(["Standard", "Professional"])(
       "%s: the advisory is returned for its own section and excluded from the list read",
@@ -6692,12 +6690,17 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
           );
         }
       }
-      // 5. Start here leads with malicious code, then the advisory, when present.
+      // 5. Start here (paid plans only; Free has none) leads with malicious code,
+      // then the advisory, when present.
       const top = data.topFindings.map((f) => f.id);
-      expect(top.includes("adv")).toBe(advisories > 0);
-      if (malicious > 0) expect(top[0]).toBe("mal");
-      if (advisories > 0) expect(top[malicious > 0 ? 1 : 0]).toBe("adv");
-      expect(top.length).toBeLessThanOrEqual(3);
+      if (!paid) {
+        expect(top).toEqual([]);
+      } else {
+        expect(top.includes("adv")).toBe(advisories > 0);
+        if (malicious > 0) expect(top[0]).toBe("mal");
+        if (advisories > 0) expect(top[malicious > 0 ? 1 : 0]).toBe("adv");
+        expect(top.length).toBeLessThanOrEqual(3);
+      }
     });
 
     it("'1 finding detected' is singular on the Free summary (the plural bug)", async () => {

@@ -197,16 +197,6 @@ describe("getFullListTopFindings", () => {
 });
 
 describe("getFreeTopFindings", () => {
-  it("with loaded rows, ranks malicious + preview and reads nothing", async () => {
-    const top = await getFreeTopFindings("scan-1", {}, null, [], {
-      preview: [f("p1", "GHOST_SCRIPT", "HIGH"), f("p2", "ORPHAN_ASSET", "LOW")] as never,
-      malicious: [f("m", "MALICIOUS_SCRIPT", "MEDIUM")] as never,
-    });
-    expect(ids(top)).toEqual(["m", "p1", "p2"]);
-    expect(mockOfTypes).not.toHaveBeenCalled();
-    expect(mockGroup).not.toHaveBeenCalled();
-  });
-
   it("only ever returns preview rows or malicious rows (the Free subset guarantee)", async () => {
     let seed = 11;
     const rand = (n: number) => {

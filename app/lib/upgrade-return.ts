@@ -4,7 +4,7 @@
  *
  * Pure and client-safe. The banner reuses the Free teaser's copy source
  * (upgradePreviewCopy: the hidden count + lane breakdown, and the trial vs
- * "Upgrade to Standard" CTA), so this module owns only WHEN it shows.
+ * "Upgrade to Professional" CTA), so this module owns only WHEN it shows.
  *
  * Episodes: the nudge re-shows at most weekly. An episode starts on the first
  * page view that renders it (Shop.upgradeReturnLastShownAt := now) and lasts

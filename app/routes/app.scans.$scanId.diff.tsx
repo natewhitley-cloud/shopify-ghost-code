@@ -90,5 +90,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   sortDiffFindingsBySeverity(scanDiff.newFindings);
   sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
 
-  return { scanDiff };
+  // scanId: the page shows a diff only for the scan it answers for (audit M1).
+  return { scanId: scan.id, scanDiff };
 };

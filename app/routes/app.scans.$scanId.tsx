@@ -81,6 +81,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
+import { diffForScan, sinceLastScanLine } from "../lib/scan-diff-line";
 import { pickScanNotice, scanTeaserHeld, visibleScanNotice } from "../lib/scan-notice";
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import {
@@ -163,7 +164,7 @@ import { advisoryStartHereCopy, buildSecurityRisks } from "../services/security-
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
 import { loadGuardHome } from "../services/storefront-guard-home.server";
-import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
+import { getFullListTopFindings } from "../services/top-findings.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrade-return.server";
@@ -425,7 +426,7 @@ export function RemovalContextBody({
  * unchanged from the one-row preview; several rows read as a top-N list.
  */
 export function freePreviewHeading(shown: number): string {
-  return shown === 1 ? "Preview: Highest Severity Finding" : `Preview: Top ${shown} Findings`;
+  return shown === 1 ? "Preview: your top finding" : `Preview: your top ${shown}`;
 }
 
 /**
@@ -1586,7 +1587,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // A shop with ignores passes the summary's already-read kept findings, so
   // the preview never reads the full findings a second time.
   // Types this plan may not see in full (a downgraded shop's old Broken links
-  // or checkout-sunset findings) are never previewed, so never in the top 3;
+  // or checkout-sunset findings) are never previewed;
   // they stay counted as locked in the teaser.
   const withheldTypes = findingTypesWithheldByPlan(getPlanFeatures(shop.plan));
   // On an app-scoped Free view the same formula and pick run over X's
@@ -1648,22 +1649,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // "Start here" block (gc-bn0x): the scan's top 3 findings, on the
   // unfiltered results view of a successful scan only (a filtered list is
-  // already narrowed, and the block's own links filter by type). Free ranks
-  // ONLY the preview rows, the non-ignored malicious rows and the non-ignored
-  // advisories, all already loaded above and all shown in full on Free, so it
-  // adds no query and can never surface a hidden finding. Full-list plans rank the whole scan: no
-  // query for a shop with ignores (the summary's kept rows), else one
-  // (type, severity) groupBy plus at most a few `take <= 3` reads.
+  // already narrowed, and the block's own links filter by type). Free has no
+  // Start here (Nathan, 2026-11-15: it repeated the preview rows). Full-list
+  // plans rank the whole scan: no query for a shop with ignores (the summary's
+  // kept rows), else one (type, severity) groupBy plus at most a few
+  // `take <= 3` reads.
   const unfiltered = !severity && !findingType && !appName && !lane;
   const topFindingRows =
-    scanSuccessful && unfiltered
-      ? canViewDetails
-        ? await getFullListTopFindings(scanId, keptFindings)
-        : await getFreeTopFindings(scanId, findingSummary.byType, keptFindings, withheldTypes, {
-            preview: rawPreviewFindings,
-            malicious: enrichedMaliciousFindings.filter((f) => !f.isIgnored),
-            alwaysShown: alwaysShownFindings,
-          })
+    scanSuccessful && unfiltered && canViewDetails
+      ? await getFullListTopFindings(scanId, keptFindings)
       : [];
   const topFindings = toTopFindingViews(
     scanId,
@@ -2292,10 +2286,11 @@ export default function ScanDetail() {
 
   // Diff is loaded lazily via a resource route to avoid blocking the main page
   // render on the expensive full-findings load for two scans (PRF-2).
-  const diffFetcher = useFetcher<{ scanDiff: ScanDiff | null }>();
-  // Ref prevents the diff from being re-requested on subsequent renders
-  // (e.g. after a poll revalidate while scan was still running).
-  const diffLoadTriggered = useRef(false);
+  const diffFetcher = useFetcher<{ scanId?: string; scanDiff: ScanDiff | null }>();
+  // The scan id the diff was requested for: no re-request on later renders
+  // (e.g. a poll revalidate), but a new request when the route moves to
+  // another scan (the component stays mounted on a param change, audit M1).
+  const diffLoadedFor = useRef<string | null>(null);
 
   // Return-visit banner "Not now" (gc-97k.9): hide optimistically, then post
   // the dismissal to this route's action (same idiom as the home-page nudges).
@@ -2365,8 +2360,8 @@ export default function ScanDetail() {
   // The ref guard prevents re-loading on subsequent poll-triggered re-renders.
   const isCompleted = isSuccessfulScan(scan.status);
   useEffect(() => {
-    if (!isCompleted || !canUseDiffing || diffLoadTriggered.current) return;
-    diffLoadTriggered.current = true;
+    if (!isCompleted || !canUseDiffing || diffLoadedFor.current === scan.id) return;
+    diffLoadedFor.current = scan.id;
     diffFetcher.load(`/app/scans/${scan.id}/diff`);
     // diffFetcher is a stable object; isCompleted, canUseDiffing, scan.id
     // are the meaningful dependencies here.
@@ -2378,8 +2373,9 @@ export default function ScanDetail() {
   const isFailed = scan.status === "FAILED";
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
 
-  // Diff from the lazy resource route — null until the fetcher resolves.
-  const scanDiff = diffFetcher.data?.scanDiff ?? null;
+  // Diff from the lazy resource route: null until this scan's diff resolves.
+  const scanDiff = canUseDiffing ? diffForScan(scan.id, diffFetcher.data) : null;
+  const sinceLastScan = sinceLastScanLine(scanDiff);
 
   // Findings the LIST can hold: everything but the advisories shown above it.
   const listTotal = findingSummary.total - alwaysShownFindings.length;
@@ -2649,6 +2645,13 @@ export default function ScanDetail() {
               <span>
                 Completed <FormattedDate value={scan.completedAt} includeTime />
               </span>
+            </>
+          )}
+          {/* gc-np1d.6 decision 3A: what changed since the last scan, plain text. */}
+          {sinceLastScan && (
+            <>
+              <span className="scan-status-bar__separator">|</span>
+              <span className="scan-diff-note">{sinceLastScan}</span>
             </>
           )}
           {/* gc-np1d.6: the stale-results fact when its notice lost the slot
@@ -2999,7 +3002,10 @@ export default function ScanDetail() {
           ) : (
             /* Free tier with findings: summary + up to 5 preview rows + upgrade prompt */
             <>
-              {/* Summary header: total count + category breakdown */}
+              {/* One card: the count heads it, then the preview rows (gc-97k.10),
+                grouped by app like the paid list (gc-np1d.6). No preview rows
+                when every finding is a plan-withheld type (a downgraded shop's
+                Broken links). The upgrade teaser is in the notice slot. */}
               <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <s-heading>
@@ -3007,48 +3013,29 @@ export default function ScanDetail() {
                       ? scopedFindingsHeading(freeScope.appName, freeScope.total)
                       : `${findingSummary.total} ${findingSummary.total === 1 ? "finding" : "findings"} detected`}
                   </s-heading>
-                  <s-stack direction="inline" gap="base">
-                    {(
-                      Object.entries(freeScope?.byType ?? findingSummary.byType) as [
-                        string,
-                        number,
-                      ][]
-                    )
-                      .filter(([, count]) => count > 0)
-                      .map(([type, count]) => (
-                        <s-badge key={type} tone="neutral">
-                          {FINDING_TYPE_LABELS[type] ?? type}: {count}
-                        </s-badge>
-                      ))}
-                  </s-stack>
+                  {previewFindings.length > 0 && (
+                    <>
+                      <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                        {freePreviewHeading(previewFindings.length)}
+                      </span>
+                      <FindingGroups
+                        findings={previewFindings}
+                        groups={previewGroups}
+                        showShown
+                        renderRow={(finding) => (
+                          <FindingRow
+                            key={finding.id}
+                            finding={finding}
+                            shopDomain={shopDomain}
+                            themeId={scan.themeId}
+                            anchor
+                          />
+                        )}
+                      />
+                    </>
+                  )}
                 </s-stack>
               </div>
-
-              {/* Preview rows (gc-97k.10), grouped by app like the paid list
-                (gc-np1d.6). None when every finding is a plan-withheld type (a
-                downgraded shop's Broken links). The upgrade teaser is in the
-                notice slot. */}
-              {previewFindings.length > 0 && (
-                <div style={{ ...sectionCard, marginBottom: 0 }}>
-                  <s-stack direction="block" gap="base">
-                    <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
-                    <FindingGroups
-                      findings={previewFindings}
-                      groups={previewGroups}
-                      showShown
-                      renderRow={(finding) => (
-                        <FindingRow
-                          key={finding.id}
-                          finding={finding}
-                          shopDomain={shopDomain}
-                          themeId={scan.themeId}
-                          anchor
-                        />
-                      )}
-                    />
-                  </s-stack>
-                </div>
-              )}
             </>
           ))}
 

@@ -10,7 +10,7 @@
  *     on Home: the total and the consequence lanes ("Customers see it",
  *     "Found by Google & AI", "Speed", ...), from the same computeLaneSummary.
  *     Impact areas, not severity: the app leads with what a finding costs.
- *   - Top findings are Home's "Start here" rows: getFullListTopFindings
+ *   - Top findings use the "Start here" ranking: getFullListTopFindings
  *     (`showFindingDetails`: Standard / Professional) or getFreeTopFindings
  *     (Free: only its preview rows plus the never-paywalled findings, all
  *     shown in full to a Free shop), then toTopFindingViews with Home's

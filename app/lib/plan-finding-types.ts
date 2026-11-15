@@ -6,8 +6,8 @@
  * (DANGLING_REFERENCE, gc-m4h.7) and checkout.liquid sunset (CHECKOUT_SUNSET,
  * gc-b3c). The worker never produces them for a Free scan, but a shop that
  * downgrades (Pro -> Free, or a trial that ends) keeps its earlier scans, and
- * those can hold such findings. The Free preview, and so the Free "Start here"
- * block, must never show them in full. They still count as locked findings in
+ * those can hold such findings. The Free preview (and Sidekick's Free top
+ * findings, ranked from it) must never show them in full. They still count as locked findings in
  * the teaser and the lanes (they are exactly what Standard adds).
  *
  * Pure and client-safe; `PlanFeatures` is a type-only import.

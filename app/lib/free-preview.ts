@@ -48,10 +48,10 @@ export type PreviewCandidate = RankableFinding;
 /**
  * The picker's order is the shared "Start here" importance ranking
  * (gc-bn0x, app/lib/top-findings.ts): severity, then consequence urgency, then
- * lane order, then createdAt and id. Using the same ranking keeps the Free
- * preview and the Free "Start here" block in agreement: the block's top 3 are
- * ranked from the preview rows, and the preview's own first rows are the best
- * ones that ranking can find without breaking one-per-lane.
+ * lane order, then createdAt and id. The preview's own first rows are the best
+ * ones that ranking can find without breaking one-per-lane (Free has no
+ * "Start here" block since gc-np1d.6; Sidekick ranks Free's preview rows the
+ * same way).
  *
  * Within one (lane, urgency) bucket this reduces to (severity, createdAt, id),
  * which is the DB read's ORDER BY (app/services/free-preview.server.ts reads

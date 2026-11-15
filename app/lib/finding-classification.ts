@@ -518,8 +518,8 @@ export function exportLocation(finding: {
  *
  * This is the ONE list behind every PLAN-GATING exemption: the Free preview
  * (never takes a preview slot, never raises the preview count), the upgrade
- * teaser and return banner (never counted as hidden), and Free's "Start here"
- * (always eligible). Adding a type here exempts it at all of those sites.
+ * teaser and return banner (never counted as hidden), and Sidekick's Free top
+ * findings (always eligible). Adding a type here exempts it at all of those sites.
  *
  * It is NOT the "shows regardless of ignores" rule. That one is malicious-only
  * (filterIgnoredExceptMalicious, the findings tile, the trend chart, the

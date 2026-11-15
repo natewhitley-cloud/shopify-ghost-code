@@ -395,27 +395,6 @@ describe("never paywalled: Free's Start here (getFreeTopFindings)", () => {
     expect(mockGroup).not.toHaveBeenCalled();
   });
 
-  it("with loaded rows (the scan page) ranks malicious, the always-shown rows and the preview, reading nothing", async () => {
-    const top = await getFreeTopFindings("scan-1", {}, null, [], {
-      preview: [f("p1", "GHOST_SCRIPT", "HIGH"), f("p2", "ORPHAN_ASSET", "LOW")] as never,
-      malicious: [f("m", "MALICIOUS_SCRIPT", "MEDIUM")] as never,
-      alwaysShown: [advisory()] as never,
-    });
-
-    expect(ids(top)).toEqual(["m", "adv", "p1"]);
-    expect(mockOfTypes).not.toHaveBeenCalled();
-    expect(mockGroup).not.toHaveBeenCalled();
-    expect(mockAll).not.toHaveBeenCalled();
-  });
-
-  it("loaded rows without `alwaysShown` behave exactly as before (malicious + preview)", async () => {
-    const top = await getFreeTopFindings("scan-1", {}, null, [], {
-      preview: [f("p1", "GHOST_SCRIPT", "HIGH")] as never,
-      malicious: [f("m", "MALICIOUS_SCRIPT", "MEDIUM")] as never,
-    });
-    expect(ids(top)).toEqual(["m", "p1"]);
-  });
-
   it("with ignores: an ignored advisory is gone, a kept one is ranked, and nothing is read", async () => {
     const adv = advisory();
     const all = [adv, f("s1", "GHOST_SCRIPT"), f("s2", "GHOST_SNIPPET")];

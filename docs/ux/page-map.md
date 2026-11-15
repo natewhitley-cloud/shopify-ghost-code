@@ -123,7 +123,11 @@ History, Ignored, Settings and Help are utilities with no value action.
   (Professional): an "Included in your clean copy" label, with the manual steps in a
   "Do it yourself" disclosure; no per-card button (the header and the action card hold
   Make a clean copy). Standard: **Open in code editor** stays primary (that is its fix).
-  Free: locked rows as today; the up to 5 shown keep their steps.
+  Free: locked rows as today; the up to 5 shown keep their steps. Free has no "Start
+  here" block and no finding-type count chips (Nathan, 2026-11-15: Start here repeated
+  3 of the preview rows; the chips were a second breakdown of the count beside the
+  teaser's). One card holds "N findings detected", then "Preview: your top 5", then the
+  grouped preview rows. Paid plans keep Start here.
 - **Notice slot (decision A, 2026-11-15):** at most one, directly below the action card:
   upgrade-return banner, else the UpgradePreview teaser (Free; Standard has no teaser
   on this page; both pitch Professional, like the Free action card), else the stale results notice. Quiet: tertiary buttons only. Only the
@@ -141,9 +145,12 @@ History, Ignored, Settings and Help are utilities with no value action.
 - **No summary tiles** (screenshot check vs the approved mockup, audit r1): the "Total
   Findings / Severity Breakdown / Performance Impact" tiles between the action card and
   the findings are gone, with the Total findings note under them; they repeated the
-  counts. Gone with them and shown nowhere else on the page: the "+N new / -M resolved"
-  line and the per-severity change since the previous scan (new findings keep their "New"
-  badge in the list), and the scripts / stylesheets count.
+  counts. The "+N new / -M resolved" line moved to the status bar as plain text (Nathan,
+  2026-11-15, 3A): "Since your last scan: 3 new, 5 fixed." on plans with scan diffing,
+  hidden with no earlier scan or when both are 0. Gone and shown nowhere else: the
+  per-severity change since the previous scan (new findings keep their "New" badge in
+  the list), the scripts / stylesheets count, and Free's per-severity counts (3B: not
+  restored; rows keep their severity badges).
 - **Supporting:** filters, exports, App Impact Map, unrecognized scripts.
 
 ### Clean copy: select
@@ -198,3 +205,4 @@ IDs and counts only, on the existing event sink.
 | 2026-11-15 | A (Nathan, audit r1 M6): the Free scan page showed up to 3 upgrade asks. The UpgradePreview teaser and the upgrade-return banner fold into the scan page's one notice slot (slice 2); slice 1 ships as is.                                                                                                                                                                             |
 | 2026-11-15 | Value-tied notices outrank the multi-theme upsell (audit H1).                                                                                                                                                                                                                                                                                                                          |
 | 2026-11-15 | Nathan: the Free teaser and return banner pitch Professional ("N more findings on Professional", "Try Professional free for 7 days"), so Free sees one plan named on the scan page. The stale notice's "scan every week" ask stays Standard.                                                                                                                                           |
+| 2026-11-15 | Nathan (artifact 4LMLev9V): Free scan page drops Start here and the type chips, the count heads the preview card (2). Professional (the plan with scan diffing) gets "Since your last scan: N new, M fixed." in the status bar (3A). Free severity counts stay out (3B).                                                                                                               |

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { sinceLastScanLine } from "../../app/lib/scan-diff-line";
+import { diffForScan, sinceLastScanLine } from "../../app/lib/scan-diff-line";
 
 const rows = (n: number) => Array.from({ length: n }, () => ({}));
 const diff = (added: number, gone: number) => ({
@@ -29,5 +29,25 @@ describe("sinceLastScanLine", () => {
 
   it("is null with no diff (no earlier scan, plan without diffing, or not loaded yet)", () => {
     expect(sinceLastScanLine(null)).toBeNull();
+  });
+});
+
+describe("diffForScan (audit M1: a diff belongs to the scan it answers for)", () => {
+  it("returns the diff the route answered for this scan", () => {
+    const d = diff(4, 2);
+    expect(diffForScan("scan-a", { scanId: "scan-a", scanDiff: d })).toBe(d);
+  });
+
+  it("is null for another scan of the same route (param change keeps the old data)", () => {
+    expect(diffForScan("scan-b", { scanId: "scan-a", scanDiff: diff(4, 2) })).toBeNull();
+  });
+
+  it("is null before any load, and for a null diff", () => {
+    expect(diffForScan("scan-a", undefined)).toBeNull();
+    expect(diffForScan("scan-a", { scanId: "scan-a", scanDiff: null })).toBeNull();
+  });
+
+  it("is null for a response without a scan id", () => {
+    expect(diffForScan("scan-a", { scanDiff: diff(1, 1) })).toBeNull();
   });
 });
