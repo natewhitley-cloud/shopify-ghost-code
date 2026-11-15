@@ -692,3 +692,73 @@ describe("monthly speed schedule (gc-d0ui)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-np1d.6: the costliest app's leftovers link
+// ---------------------------------------------------------------------------
+
+describe("speedLeftoversLink", () => {
+  const leftovers = (apps: { name: string; count: number }[]) => ({ scanId: "scan-9", apps });
+
+  it("exact match: the count and the scan page filtered to the finding's app name", () => {
+    expect(speed.speedLeftoversLink("Klaviyo", leftovers([{ name: "Klaviyo", count: 3 }]))).toEqual(
+      { href: "/app/scans/scan-9?app=Klaviyo", label: "See its 3 leftovers" },
+    );
+  });
+
+  it("encodes names with & and spaces", () => {
+    const link = speed.speedLeftoversLink(
+      "Judge.me Reviews & Q&A",
+      leftovers([{ name: "Judge.me Reviews & Q&A", count: 2 }]),
+    );
+    expect(link?.href).toBe("/app/scans/scan-9?app=Judge.me%20Reviews%20%26%20Q%26A");
+    expect(new URL(link!.href, "https://x.test").searchParams.get("app")).toBe(
+      "Judge.me Reviews & Q&A",
+    );
+  });
+
+  it("one leftover reads singular", () => {
+    expect(
+      speed.speedLeftoversLink("Klaviyo", leftovers([{ name: "Klaviyo", count: 1 }]))?.label,
+    ).toBe("See its 1 leftover");
+  });
+
+  it("case and surrounding whitespace still match; the URL keeps the finding's own name", () => {
+    const link = speed.speedLeftoversLink("  KLAVIYO ", leftovers([{ name: "klaviyo", count: 4 }]));
+    expect(link).toEqual({ href: "/app/scans/scan-9?app=klaviyo", label: "See its 4 leftovers" });
+  });
+
+  it.each([
+    ["a substring of the app", "Klav"],
+    ["the app inside a longer name", "Klaviyo Forms"],
+    ["a near name", "Klavio"],
+    ["an inner space difference", "Kla viyo"],
+  ])("never matches %s", (_why, rowName) => {
+    expect(
+      speed.speedLeftoversLink(rowName, leftovers([{ name: "Klaviyo", count: 3 }])),
+    ).toBeNull();
+  });
+
+  it("count 0, no leftovers, a blank or missing name: no link", () => {
+    expect(
+      speed.speedLeftoversLink("Klaviyo", leftovers([{ name: "Klaviyo", count: 0 }])),
+    ).toBeNull();
+    expect(speed.speedLeftoversLink("Klaviyo", null)).toBeNull();
+    expect(speed.speedLeftoversLink("Klaviyo", undefined)).toBeNull();
+    expect(speed.speedLeftoversLink("  ", leftovers([{ name: "  ", count: 2 }]))).toBeNull();
+    expect(speed.speedLeftoversLink(null, leftovers([{ name: "Klaviyo", count: 2 }]))).toBeNull();
+  });
+
+  it("costliestAppName: the most processing time, only apps with any", () => {
+    const row = (name: string, mainThreadMs: number) => ({
+      name,
+      mainThreadMs,
+      transferBytes: 1,
+      unusedPct: null,
+      requestCount: 1,
+    });
+    expect(speed.costliestAppName([row("A", 10), row("B", 900), row("C", 50)])).toBe("B");
+    expect(speed.costliestAppName([row("A", 0)])).toBeNull();
+    expect(speed.costliestAppName([])).toBeNull();
+  });
+});

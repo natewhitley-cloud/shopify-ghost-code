@@ -701,6 +701,23 @@ export async function getFirstSuccessfulScanCompletedAt(shopId: string): Promise
 }
 
 /**
+ * Id of the shop's LATEST successful (COMPLETED or PARTIAL) scan of one theme,
+ * or null when it has none. ONE read on the (shopId, createdAt) index. The
+ * Store speed page reads it for the live theme (gc-np1d.6).
+ */
+export async function getLatestSuccessfulScanIdForTheme(
+  shopId: string,
+  themeId: string,
+): Promise<string | null> {
+  const row = await db.scan.findFirst({
+    where: { shopId, themeId, status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  return row?.id ?? null;
+}
+
+/**
  * Non-malicious finding count of the shop's LATEST successful (COMPLETED or
  * PARTIAL) scan, or null when it has none: ONE indexed query (the latest scan
  * plus a filtered relation _count over Finding's scanId index), no finding rows

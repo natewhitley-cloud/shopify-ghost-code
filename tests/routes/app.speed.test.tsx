@@ -42,6 +42,9 @@ vi.mock("../../app/services/trial-eligibility.server", () => ({
 vi.mock("../../app/services/nudge-stage.server", () => ({
   recordNudgeStageOnce: vi.fn(),
 }));
+vi.mock("../../app/services/speed-leftovers.server", () => ({
+  readSpeedAppLeftovers: vi.fn(),
+}));
 
 import * as billing from "../../app/lib/billing.server";
 import type { SpeedPageResult } from "../../app/lib/speed-report";
@@ -55,6 +58,7 @@ import {
 import StoreSpeed, { action, LockedTeaser, loader, StatusBanner } from "../../app/routes/app.speed";
 import type { SpeedLoaderData } from "../../app/routes/app.speed";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
+import { readSpeedAppLeftovers } from "../../app/services/speed-leftovers.server";
 import {
   requestFreeSpeedTest,
   requestSpeedReportRunNow,
@@ -73,6 +77,7 @@ const mockRunCount = countFreeSpeedTestAttempts as ReturnType<typeof vi.fn>;
 const mockFeatures = billing.getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockTrial = getTrialEligibility as ReturnType<typeof vi.fn>;
 const mockNudge = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
+const mockLeftovers = readSpeedAppLeftovers as ReturnType<typeof vi.fn>;
 
 const DOMAIN = "paw-naturals.myshopify.com";
 const PRO = {
@@ -125,6 +130,7 @@ beforeEach(async () => {
   mockReports.mockResolvedValue([]);
   mockRequestedAt.mockResolvedValue(null);
   mockTrial.mockResolvedValue(false);
+  mockLeftovers.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -1377,5 +1383,166 @@ describe("Security risk from the speed test (gc-0htk)", () => {
     expect(html).toContain("this may no longer be current");
     expect(html).not.toContain("In your latest store speed test");
     expect(html).not.toContain("\u2014");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-np1d.6: the costliest app links to its leftovers
+// ---------------------------------------------------------------------------
+
+describe("Store speed value action: the costliest app's leftovers link", () => {
+  const ADMIN = { graphql: vi.fn() };
+  /** Recharge is the product page's costliest app (Klaviyo the homepage's). */
+  const PRODUCT_RECHARGE: SpeedPageResult = {
+    ...PRODUCT_PAGE,
+    apps: [
+      { name: "Klaviyo", mainThreadMs: 100, transferBytes: 1000, unusedPct: 10, requestCount: 1 },
+      { name: "Recharge", mainThreadMs: 900, transferBytes: 2000, unusedPct: 20, requestCount: 1 },
+    ],
+  };
+  const LEFTOVERS = {
+    scanId: "scan-9",
+    apps: [
+      { name: "Klaviyo", count: 3 },
+      { name: "Recharge", count: 2 },
+    ],
+  };
+
+  beforeEach(() => {
+    mockAuth.mockResolvedValue({ session: { shop: DOMAIN }, admin: ADMIN });
+  });
+
+  const links = (html: string) =>
+    (html.match(/<a [^>]*href="\/app\/scans\/[^"]*"[^>]*>[^<]*<\/a>/g) ?? []).map((a) =>
+      a.replace(' data-discover="true"', ""),
+    );
+
+  it("loader (report): asks for each tested section's costliest app, for the session shop", async () => {
+    mockReports.mockResolvedValue([row("SCHEDULED", "COMPLETED", [HOME_PAGE, PRODUCT_RECHARGE])]);
+    mockLeftovers.mockResolvedValue(LEFTOVERS);
+    const data = await loader(loaderArgs());
+    expect(mockLeftovers).toHaveBeenCalledWith({
+      shopId: "shop-1",
+      shopDomain: DOMAIN,
+      admin: ADMIN,
+      appNames: ["Klaviyo", "Recharge"],
+    });
+    expect(data.appLeftovers).toEqual(LEFTOVERS);
+  });
+
+  it("loader: the same costliest app on both pages is asked for once; a failed page is skipped", async () => {
+    mockReports.mockResolvedValue([
+      row("SCHEDULED", "COMPLETED", [
+        HOME_PAGE,
+        PRODUCT_PAGE,
+        {
+          page: "product",
+          status: "FAILED",
+          url: null,
+          runsAttempted: 3,
+          runsOk: 0,
+          apps: PRODUCT_RECHARGE.apps,
+        },
+      ]),
+    ]);
+    await loader(loaderArgs());
+    expect(mockLeftovers.mock.calls[0][0].appNames).toEqual(["Klaviyo"]);
+  });
+
+  it("loader: no match (or a failed read, which returns null): no key, the page still loads", async () => {
+    mockReports.mockResolvedValue([row("SCHEDULED", "COMPLETED", [HOME_PAGE])]);
+    const data = await loader(loaderArgs());
+    expect(data.access).toBe("report");
+    expect("appLeftovers" in data).toBe(false);
+    const html = render(data);
+    expect(html).toContain("Apps slowing your store");
+    expect(html).not.toContain("See its");
+    expect(links(html)).toHaveLength(0);
+  });
+
+  it("loader (free test used): asks for the free test's one app", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockUsedAt.mockResolvedValue(new Date("2026-10-11T08:20:00.000Z"));
+    mockReports.mockResolvedValue([row("FREE_TEST", "COMPLETED", [HOME_PAGE])]);
+    mockLeftovers.mockResolvedValue({ scanId: "scan-9", apps: [{ name: "Klaviyo", count: 3 }] });
+    const data = await loader(loaderArgs());
+    expect(mockLeftovers.mock.calls[0][0].appNames).toEqual(["Klaviyo"]);
+    expect(data.appLeftovers).toEqual({ scanId: "scan-9", apps: [{ name: "Klaviyo", count: 3 }] });
+  });
+
+  it("loader (locked, or no results): no app is named", async () => {
+    mockFeatures.mockReturnValue({ ...billing.getPlanFeatures("free"), freeSpeedTest: false });
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    await loader(loaderArgs());
+    expect(mockLeftovers.mock.calls[0][0].appNames).toEqual([]);
+  });
+
+  it("render: only the costliest row links, with its count and the filtered scan page", () => {
+    const latest = report("COMPLETED", [HOME_PAGE]);
+    const html = render(pro({ latest, lastResults: latest, appLeftovers: LEFTOVERS }));
+    expect(links(html)).toEqual([
+      '<a href="/app/scans/scan-9?app=Klaviyo">See its 3 leftovers</a>',
+    ]);
+    expect(html).not.toContain("See its 2 leftovers");
+    // In Klaviyo's row, before Recharge's.
+    expect(html.indexOf("See its 3 leftovers")).toBeGreaterThan(html.indexOf("Klaviyo"));
+    expect(html.indexOf("See its 3 leftovers")).toBeLessThan(html.indexOf("Recharge"));
+  });
+
+  it("render: each page section links its own costliest app (Standard too)", () => {
+    const latest = report("COMPLETED", [HOME_PAGE, PRODUCT_RECHARGE]);
+    const html = render(standard({ latest, lastResults: latest, appLeftovers: LEFTOVERS }));
+    expect(links(html)).toEqual([
+      '<a href="/app/scans/scan-9?app=Klaviyo">See its 3 leftovers</a>',
+      '<a href="/app/scans/scan-9?app=Recharge">See its 2 leftovers</a>',
+    ]);
+  });
+
+  it("render: the costliest app without leftovers gets no link, and no other row takes it", () => {
+    const latest = report("COMPLETED", [HOME_PAGE]);
+    const html = render(
+      pro({
+        latest,
+        lastResults: latest,
+        appLeftovers: { scanId: "scan-9", apps: [{ name: "Recharge", count: 2 }] },
+      }),
+    );
+    expect(html).not.toContain("See its");
+  });
+
+  it("render: the link is a plain link, never a button (primary or otherwise)", () => {
+    const latest = report("COMPLETED", [HOME_PAGE]);
+    const html = render(pro({ latest, lastResults: latest, appLeftovers: LEFTOVERS }));
+    expect(html).not.toMatch(/<s-button[^>]*>[^<]*See its/);
+    expect(html).not.toMatch(/<s-button[^>]*href="\/app\/scans/);
+    expect(html).not.toMatch(/variant="primary"[^>]*>(?:(?!<\/s-button>).)*See its/s);
+    expect(links(html)).toHaveLength(1);
+  });
+
+  it("render (free test used): the link follows the costliest-app line; the one upgrade ask stays", () => {
+    const html = render({
+      access: "free",
+      freeTest: {
+        state: "used",
+        result: {
+          reportId: "rep-f",
+          createdAt: "2026-10-11T08:12:00.000Z",
+          metrics: { score: 28, lcpMs: 1, tbtMs: 1, totalBytes: 1, requestCount: 1 },
+          costliestApp: { name: "Klaviyo", mainThreadMs: 4123, transferBytes: 1851000 },
+        },
+        lastAttempt: null,
+      },
+      runAvailableAt: null,
+      pricingPlansUrl: "https://admin.shopify.com/store/x/charges/ghost-code/pricing_plans",
+      trialEligible: false,
+      appLeftovers: { scanId: "scan-9", apps: [{ name: "Klaviyo", count: 3 }] },
+    });
+    expect(links(html)).toEqual([
+      '<a href="/app/scans/scan-9?app=Klaviyo">See its 3 leftovers</a>',
+    ]);
+    expect(html.indexOf("See its 3 leftovers")).toBeGreaterThan(
+      html.indexOf("Klaviyo used 4.1 s of processing time"),
+    );
+    expect((html.match(/<a [^>]*pricing_plans[^>]*>/g) ?? []).length).toBe(1);
   });
 });

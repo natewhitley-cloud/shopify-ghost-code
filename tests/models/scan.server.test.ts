@@ -84,6 +84,7 @@ import {
   hasAnyScans,
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
+  getLatestSuccessfulScanIdForTheme,
   getLatestSuccessfulScanNonMaliciousCount,
 } from "../../app/models/scan.server";
 
@@ -2039,5 +2040,24 @@ describe("getScanIdsForThemeBetween (gc-ol95)", () => {
     await expect(
       getScanIdsForThemeBetween(SHOP_ID, THEME_ID, new Date(0), new Date(1)),
     ).resolves.toEqual([]);
+  });
+});
+
+describe("getLatestSuccessfulScanIdForTheme (gc-np1d.6)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reads the newest COMPLETED or PARTIAL scan of that theme for that shop", async () => {
+    mockDb.scan.findFirst.mockResolvedValue({ id: "scan-7" });
+    expect(await getLatestSuccessfulScanIdForTheme(SHOP_ID, THEME_ID)).toBe("scan-7");
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID, themeId: THEME_ID, status: { in: ["COMPLETED", "PARTIAL"] } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+  });
+
+  it("none: null", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+    expect(await getLatestSuccessfulScanIdForTheme(SHOP_ID, THEME_ID)).toBeNull();
   });
 });

@@ -31,6 +31,7 @@ import { securityRiskAnchorId, type MaliciousRisk } from "../lib/security-risk";
 import {
   appCostHeadline,
   costliestAppLine,
+  costliestAppName,
   formatBytes,
   formatSeconds,
   formatSpeedDelta,
@@ -64,11 +65,13 @@ import {
   speedFailureMessage,
   speedPageDelta,
   speedRegressionBadges,
+  speedLeftoversLink,
   speedScoreTone,
 } from "../lib/speed-report";
 import type {
   FreeSpeedTestResult,
   FreeSpeedTestView,
+  SpeedAppLeftovers,
   SpeedCostRow,
   SpeedPageResult,
   SpeedReportSummaryView,
@@ -80,7 +83,9 @@ import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
+import { readSpeedAppLeftovers } from "../services/speed-leftovers.server";
 import { readSpeedPageData } from "../services/speed-page-data.server";
+import type { SpeedPageReport } from "../services/speed-page-data.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { requestFreeSpeedTest, requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -114,7 +119,14 @@ type UpgradeAsk = { pricingPlansUrl: string; trialEligible: boolean };
  */
 type SpeedSecurityRisks = { securityRisks?: MaliciousRisk[]; securityRisksTestedAt?: string };
 
+/**
+ * gc-np1d.6: leftover code for the costliest app(s) the page names, from the
+ * latest successful scan of the live theme. Present only when one matches.
+ */
+type SpeedLeftovers = { appLeftovers?: SpeedAppLeftovers };
+
 export type SpeedLoaderData = SpeedSecurityRisks &
+  SpeedLeftovers &
   (
     | ({ access: "locked" } & UpgradeAsk)
     | ({
@@ -134,8 +146,26 @@ export type SpeedLoaderData = SpeedSecurityRisks &
       } & SpeedReportView)
   );
 
+/**
+ * The speed rows that can carry the leftovers link: the costliest app of each
+ * tested page section (what its headline names first), or the free test's
+ * costliest app. The same rule the components use, so they always agree.
+ */
+function costliestSpeedAppNames(report: SpeedPageReport): string[] {
+  if (report.access === "free") {
+    const name = report.freeTest.result?.costliestApp?.name;
+    return name ? [name] : [];
+  }
+  if (report.access !== "report") return [];
+  const names = (report.view.lastResults?.pages ?? [])
+    .filter((page) => page.status === "OK" && page.metrics)
+    .map((page) => costliestAppName(page.apps ?? []))
+    .filter((name): name is string => name !== null);
+  return [...new Set(names)];
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoaderData> => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   if (!isSpeedReportLive()) throw new Response("Not found", { status: 404 });
 
   const shop = await getShopMetadata(session.shop);
@@ -148,10 +178,18 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   const now = new Date();
   // One read of the speed reports on paid plans (gc-3y89 item 4).
   const { report, security: speedRisks } = await readSpeedPageData(shop, now);
-  const security: SpeedSecurityRisks =
-    speedRisks.testedAt && speedRisks.risks.length > 0
+  const appLeftovers = await readSpeedAppLeftovers({
+    shopId: shop.id,
+    shopDomain: session.shop,
+    admin,
+    appNames: costliestSpeedAppNames(report),
+  });
+  const security: SpeedSecurityRisks & SpeedLeftovers = {
+    ...(speedRisks.testedAt && speedRisks.risks.length > 0
       ? { securityRisks: speedRisks.risks, securityRisksTestedAt: speedRisks.testedAt }
-      : {};
+      : {}),
+    ...(appLeftovers ? { appLeftovers } : {}),
+  };
   if (report.access === "report") {
     return {
       ...security,
@@ -260,6 +298,7 @@ function CostTable({
   nameHeading,
   label,
   badges,
+  leftoversLink,
 }: {
   rows: SpeedCostRow[];
   nameHeading: string;
@@ -267,6 +306,8 @@ function CostTable({
   label: string;
   /** gc-vgqc: badges by app name ("New", "Up 0.5 s", "Up 120 KB"). */
   badges?: ReadonlyMap<string, string[]>;
+  /** gc-np1d.6: the ONE row (the costliest app) that links to its leftovers. */
+  leftoversLink?: { rowName: string; href: string; label: string } | null;
 }) {
   return (
     // gc-hlvu: scrolls inside its own box on narrow screens (390px), so the
@@ -297,6 +338,11 @@ function CostTable({
                     ))}
                   </div>
                 )}
+                {leftoversLink?.rowName === row.name && (
+                  <div style={{ marginTop: "4px" }}>
+                    <Link to={leftoversLink.href}>{leftoversLink.label}</Link>
+                  </div>
+                )}
               </td>
               <td>{formatSeconds(row.mainThreadMs)}</td>
               <td>{formatBytes(row.transferBytes)}</td>
@@ -322,11 +368,14 @@ export function SpeedPageSection({
   page,
   previous,
   showRegressions = false,
+  leftovers,
 }: {
   page: SpeedPageResult;
   previous: SpeedPageResult | undefined;
   /** Badge new / costlier apps (Professional's weekly report only, gc-vgqc). */
   showRegressions?: boolean;
+  /** gc-np1d.6: leftover counts for the costliest app's link. */
+  leftovers?: SpeedAppLeftovers;
 }) {
   const label = SPEED_PAGE_LABELS[page.page];
   const path = pathOf(page.url);
@@ -359,6 +408,8 @@ export function SpeedPageSection({
   const apps = page.apps ?? [];
   const others = page.otherThirdParty ?? [];
   const headline = appCostHeadline(apps, page.page);
+  const costliest = costliestAppName(apps);
+  const link = speedLeftoversLink(costliest, leftovers);
   // The same apps the summary email names (one pure function, gc-vgqc).
   const badges = new Map(
     (showRegressions ? speedAppRegressions(page, previous) : []).map((r) => [
@@ -407,7 +458,13 @@ export function SpeedPageSection({
       </h3>
       {headline && <s-paragraph>{headline}</s-paragraph>}
       {apps.length > 0 ? (
-        <CostTable rows={apps} nameHeading="App" label="Apps slowing your store" badges={badges} />
+        <CostTable
+          rows={apps}
+          nameHeading="App"
+          label="Apps slowing your store"
+          badges={badges}
+          leftoversLink={link && costliest ? { rowName: costliest, ...link } : null}
+        />
       ) : (
         <s-paragraph>No known app added measurable load to this page.</s-paragraph>
       )}
@@ -601,8 +658,16 @@ function FreeAttemptBanner({
   );
 }
 
-export function FreeTestResult({ result }: { result: FreeSpeedTestResult }) {
+export function FreeTestResult({
+  result,
+  leftovers,
+}: {
+  result: FreeSpeedTestResult;
+  /** gc-np1d.6: leftover counts for the costliest app's link. */
+  leftovers?: SpeedAppLeftovers;
+}) {
   const m = result.metrics;
+  const link = speedLeftoversLink(result.costliestApp?.name, leftovers);
   const tone = speedScoreTone(m.score);
   return (
     <div style={{ ...sectionCard, marginBottom: 0 }}>
@@ -634,6 +699,11 @@ export function FreeTestResult({ result }: { result: FreeSpeedTestResult }) {
         <s-paragraph>
           {result.costliestApp ? costliestAppLine(result.costliestApp) : FREE_TEST_NO_APP}
         </s-paragraph>
+        {link && (
+          <s-paragraph>
+            <Link to={link.href}>{link.label}</Link>
+          </s-paragraph>
+        )}
       </div>
       <div style={{ ...textSubduedSm, marginTop: "12px" }}>{SPEED_CAVEAT}</div>
     </div>
@@ -644,15 +714,19 @@ export function FreeSpeedTest({
   freeTest,
   runAvailableAt,
   pollingTimedOut,
+  leftovers,
 }: {
   freeTest: FreeSpeedTestView;
   runAvailableAt: string | null;
   pollingTimedOut: boolean;
+  leftovers?: SpeedAppLeftovers;
 }) {
   if (freeTest.state === "used") {
     // Read-only: no further runs. A used stamp without its report (should not
     // happen) still shows no run control.
-    return freeTest.result ? <FreeTestResult result={freeTest.result} /> : null;
+    return freeTest.result ? (
+      <FreeTestResult result={freeTest.result} leftovers={leftovers} />
+    ) : null;
   }
   if (freeTest.state === "exhausted") {
     // The retry cap was reached without a result: no run control (the action
@@ -737,6 +811,7 @@ export default function StoreSpeed() {
               freeTest={data.freeTest}
               runAvailableAt={data.runAvailableAt}
               pollingTimedOut={pollingTimedOut}
+              leftovers={data.appLeftovers}
             />
             {/* The page's one upgrade ask. */}
             <LockedTeaser
@@ -783,6 +858,7 @@ export default function StoreSpeed() {
                 page={page}
                 previous={data.previousResults?.pages.find((p) => p.page === page.page)}
                 showRegressions={data.cadence === "weekly"}
+                leftovers={data.appLeftovers}
               />
             ))}
             {data.lastResults && <div style={textSubduedSm}>{SPEED_CAVEAT}</div>}

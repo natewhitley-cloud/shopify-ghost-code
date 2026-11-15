@@ -140,8 +140,13 @@ History, Ignored, Settings and Help are utilities with no value action.
 ### Store speed
 
 - **Job:** "Is my store slow, and what's slowing it?"
-- **Value action:** the costliest app's row links to removing its leftovers (Clean copy
-  filtered to that app; other plans: the upgrade card).
+- **Value action:** the costliest app's row links to its leftovers ("See its N leftovers"):
+  the scan page of the live theme's latest successful scan, filtered to that app
+  (`/app/scans/<id>?app=<name>`), where the plan's own action card leads (Clean copy on
+  Professional, the upgrade elsewhere). Only the costliest app of each page section (and the
+  free test's one app line) links; a plain link on every plan, never a primary button. A row
+  links only on an exact app name match (trim + lower-case) with leftover code above 0, ignored
+  findings and security findings left out; an app still installed has none, so it has no link.
 
 ### History, Ignored, Settings, Help
 

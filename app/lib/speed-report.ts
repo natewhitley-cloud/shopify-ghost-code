@@ -449,6 +449,47 @@ export function costliestAppLine(app: {
   return `${app.name} used ${formatSeconds(app.mainThreadMs)} of processing time and ${formatBytes(app.transferBytes)} on your homepage.`;
 }
 
+/** The costliest app's name (the one appCostHeadline names first), or null. */
+export function costliestAppName(apps: readonly SpeedCostRow[]): string | null {
+  return topCostlyApps(apps, 1)[0]?.name ?? null;
+}
+
+/**
+ * gc-np1d.6: leftover code by app (the finding's own appName, most first) in
+ * the latest successful scan of the live theme, for the Store speed link.
+ */
+export type SpeedAppLeftovers = { scanId: string; apps: { name: string; count: number }[] };
+
+const leftoverKey = (name: string) => name.trim().toLowerCase();
+
+/**
+ * The scan app a speed row names: an EXACT name match after trim and
+ * lower-case, with leftovers above 0. Never fuzzy, alias or substring (a
+ * PageSpeed entity name is not our app signature, and a live app has none).
+ */
+export function matchSpeedLeftoverApp(
+  rowName: string | null | undefined,
+  apps: SpeedAppLeftovers["apps"],
+): SpeedAppLeftovers["apps"][number] | null {
+  const key = rowName ? leftoverKey(rowName) : "";
+  if (key === "") return null;
+  return apps.find((a) => a.count > 0 && leftoverKey(a.name) === key) ?? null;
+}
+
+/** "See its 3 leftovers" to the scan page filtered to that app, or null. */
+export function speedLeftoversLink(
+  rowName: string | null | undefined,
+  leftovers: SpeedAppLeftovers | null | undefined,
+): { href: string; label: string } | null {
+  if (!leftovers) return null;
+  const app = matchSpeedLeftoverApp(rowName, leftovers.apps);
+  if (!app) return null;
+  return {
+    href: `/app/scans/${encodeURIComponent(leftovers.scanId)}?app=${encodeURIComponent(app.name)}`,
+    label: `See its ${app.count} ${app.count === 1 ? "leftover" : "leftovers"}`,
+  };
+}
+
 /**
  * "These 3 apps cost your homepage 4.2 s of processing time." over the top
  * apps by main-thread time (only apps with any). Null when no app has any.
