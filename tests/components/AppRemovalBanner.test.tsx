@@ -45,6 +45,15 @@ function text(html: string): string {
 }
 
 describe("AppRemovalBanner", () => {
+  it("never renders a primary or secondary button (Home's quiet notice slot, gc-np1d.6)", () => {
+    const html = render([
+      ["Yotpo", 3, "REMOVED"],
+      ["Privy", 1, "REMOVED"],
+    ]);
+    expect(html).not.toMatch(/variant="(primary|secondary)"/);
+    expect(html.match(/<s-button variant="tertiary"/g)).toHaveLength(2);
+  });
+
   it("one app, paid: info banner, heading, body, Review N items to the filtered scan, Dismiss", () => {
     const html = render([["Yotpo", 3]]);
     expect(html).toMatch(
@@ -52,17 +61,17 @@ describe("AppRemovalBanner", () => {
     );
     expect(html).toContain("<s-paragraph>It left 3 items behind.</s-paragraph>");
     expect(html).toMatch(
-      /<a href="\/app\/scans\/scan-9\?app=Yotpo"[^>]*><s-button variant="primary">Review 3 items<\/s-button><\/a>/,
+      /<a href="\/app\/scans\/scan-9\?app=Yotpo"[^>]*><s-button variant="tertiary">Review 3 items<\/s-button><\/a>/,
     );
-    expect(html).toMatch(/<s-button variant="secondary">Dismiss<\/s-button>/);
+    expect(html).toMatch(/<s-button variant="tertiary">Dismiss<\/s-button>/);
     expect(html).not.toContain("<ul");
   });
 
-  it("one app, Free: the primary says 'See what {App} left' (same link)", () => {
+  it("one app, Free: the main action says 'See what {App} left' (same link)", () => {
     const html = render([["Yotpo", 1]], { fullList: false });
     expect(html).toContain("It left 1 item behind.");
     expect(html).toMatch(
-      /href="\/app\/scans\/scan-9\?app=Yotpo"[^>]*><s-button variant="primary">See what Yotpo left</,
+      /href="\/app\/scans\/scan-9\?app=Yotpo"[^>]*><s-button variant="tertiary">See what Yotpo left</,
     );
   });
 
@@ -87,7 +96,7 @@ describe("AppRemovalBanner", () => {
       ["/app/scans/scan-9?app=Yotpo", "Yotpo: 5 items"],
       ["/app/scans/scan-9?app=Privy", "Privy: 2 items"],
     ]);
-    expect(html).toMatch(/<s-button variant="primary">Review Yotpo<\/s-button>/);
+    expect(html).toMatch(/<s-button variant="tertiary">Review Yotpo<\/s-button>/);
     expect(html).not.toContain("more");
   });
 
@@ -120,15 +129,15 @@ describe("AppRemovalBanner", () => {
     expect(html).not.toContain("more");
   });
 
-  it("cleaned, one app: success banner, Dismiss only (no link, no primary)", () => {
+  it("cleaned, one app: success banner, Dismiss only (no link, no review button)", () => {
     const html = render([["Privy", 2, "CLEANED"]]);
     expect(html).toMatch(
       /<s-banner tone="success" heading="Privy&#x27;s leftovers are cleaned up">/,
     );
     expect(html).toContain("The 2 items Privy left behind are gone as of this scan.");
-    expect(html).not.toContain('variant="primary"');
+    expect(html.match(/<s-button/g)).toHaveLength(1);
     expect(html).not.toContain("<a ");
-    expect(html).toMatch(/<s-button variant="secondary">Dismiss<\/s-button>/);
+    expect(html).toMatch(/<s-button variant="tertiary">Dismiss<\/s-button>/);
   });
 
   it("cleaned, several apps", () => {

@@ -48,6 +48,9 @@ History, Ignored, Settings and Help are utilities with no value action.
   "Next scan <date>" and an upgrade link. Theme picker (Professional) and the usage line
   sit in one small row under the header, not in a card at the bottom.
 - **Allowed above the action card:** security risk banners and checkout-guard incidents.
+  Backup (gc-np1d.6): when the latest scan found known malicious code and no security
+  banner names it (e.g. its read failed), a critical "Your last scan found known
+  malicious code" banner links to the scan, on every plan.
 - **Action card (one, by plan and state):**
   - No scan yet: onboarding card, unchanged.
   - Professional paid, removable leftovers: "Remove N pieces of leftover code for you"
@@ -78,14 +81,17 @@ History, Ignored, Settings and Help are utilities with no value action.
   line keeps the slot after "Turn on"), feedback ask, multi-theme upsell, app-removed
   notice, new-high-findings notice. The two consent notices were not in the spec's
   list; they rank first because they record consent. Dismissing or answering the
-  winner hands the slot to the next. Each keeps its existing copy, buttons and
-  dismiss intent, still as a Polaris banner. Only the winner records a "shown" stamp:
+  winner hands the slot to the next. Each keeps its existing copy, actions and
+  dismiss intent, as a Polaris banner whose buttons are all tertiary: the slot is
+  quiet, so Home's only primary actions stay the header Scan now and the action card. Only the winner records a "shown" stamp:
   while a consent notice is offered, or was claimed in the last 24h (it may still be
   on screen), the loader resolves no opt-in or feedback prompt at all.
   Outside the slot: the scan-start error, security and checkout-guard banners, the
   scan-limit copy, the rescan and theme-changed nudges, the install-source card.
 - **Supporting content (quieter):** "What it's costing you" (the one summary, decision
-  1A); its Start here chip follows the lane ranking. Removed from Home in gc-np1d.6
+  1A); its Start here chip follows the lane ranking. Its "You're all clear" state
+  shows only when there is no action card; when the card says "All clear", the
+  lanes card is left out (one all-clear on the page). Removed from Home in gc-np1d.6
   (no second summary of the same findings): the findings count tile and its change
   since the last scan, "Most recent findings", the Start here findings block, the
   Theme health checklist and the findings trend chart (and its empty state).

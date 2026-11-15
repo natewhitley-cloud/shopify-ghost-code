@@ -171,6 +171,11 @@ const HOME_SECURITY_TYPES: readonly FindingType[] = [
   FindingType.MENU_INJECTION,
 ];
 
+/** Home's malicious-code backup banner (gc-np1d.6), shown on every plan. */
+export const MALICIOUS_FALLBACK_HEADING = "Your last scan found known malicious code";
+export const MALICIOUS_FALLBACK_BODY =
+  "Code from a known malicious source is in your theme or on your live homepage. It can steal shopper data or send your customers to other sites. Open the scan to see where it is and what to do.";
+
 /** The scan action's error when no published theme is found (gc-tib.12: with the Canvas hint). */
 const NO_PUBLISHED_THEME_ERROR = `No published theme found. Please publish a theme before scanning. ${CANVAS_THEME_HINT}`;
 
@@ -1383,6 +1388,24 @@ export default function Dashboard() {
             </SecurityRiskBanner>
           ))}
 
+        {/* Known malicious code backup (gc-np1d.6): the latest scan found
+          malicious code (ignored or not) but no banner above names it, e.g.
+          because the banners' read failed. Every plan, never paywalled. */}
+        {maliciousFound &&
+          latestScanId &&
+          !(securityRisks ?? []).some((risk) => risk.kind === "malicious") && (
+            <s-banner tone="critical" heading={MALICIOUS_FALLBACK_HEADING}>
+              <s-stack direction="block" gap="base">
+                <s-paragraph>{MALICIOUS_FALLBACK_BODY}</s-paragraph>
+                <div>
+                  <Link to={`/app/scans/${latestScanId}`}>
+                    <s-button variant="secondary">See what to check</s-button>
+                  </Link>
+                </div>
+              </s-stack>
+            </s-banner>
+          )}
+
         {/* Checkout guard (gc-1q1s.6): incidents the scan banners above do not
           already name, on EVERY plan, then the guard's status line. */}
         {guardMerge.standalone.map((incident) => (
@@ -1760,12 +1783,17 @@ export default function Dashboard() {
               says so. It is also left out when the only findings have no lane
               (an affected-app advisory): "You're all clear" would be false,
               and the security banner names it. Likewise while a checkout
-              guard incident has its own banner at the top (audit fix). */}
+              guard incident has its own banner at the top (audit fix), and
+              while the action card already says "All clear" (gc-np1d.6: one
+              all-clear on the page). */}
             {hasResults &&
               latestScan &&
               !(
                 laneSummary.length === 0 &&
-                (maliciousFound || currentTotal > 0 || guardMerge.standalone.length > 0)
+                (maliciousFound ||
+                  currentTotal > 0 ||
+                  guardMerge.standalone.length > 0 ||
+                  valueAction?.kind === "clear")
               ) && (
                 <div style={{ ...sectionCard, marginBottom: 0 }}>
                   <s-stack direction="block" gap="base">
@@ -1861,14 +1889,17 @@ export default function Dashboard() {
         )}
 
         {/* Home's one notice slot (gc-np1d.6, pickHomeNotice): at most one of
-          the notices below, at the bottom of the page. */}
+          the notices below, at the bottom of the page. Quiet, per the
+          mockup: every action is a tertiary button or a link, so the only
+          primary actions on Home stay the header Scan now and the action
+          card. */}
         {/* Checkout guard alerts are on (gc-1q1s.7): the one-time consent notice. */}
         {homeNotice === "guard_email" && visibleGuardNotice && (
           <s-banner tone="info" heading={GUARD_NOTICE_HEADING}>
             <s-stack direction="block" gap="base">
               <s-paragraph>{guardNoticeLead(visibleGuardNotice.email)}</s-paragraph>
               <s-stack direction="inline" gap="base">
-                <s-button variant="secondary" onClick={handleGuardEmailOff}>
+                <s-button variant="tertiary" onClick={handleGuardEmailOff}>
                   {GUARD_NOTICE_TURN_OFF}
                 </s-button>
                 <s-button variant="tertiary" onClick={() => setGuardNoticeAnswer("ok")}>
@@ -1888,7 +1919,7 @@ export default function Dashboard() {
                 <Link to="/app/settings">Settings</Link>.
               </s-paragraph>
               <div>
-                <s-button variant="secondary" onClick={handleDismissSummaryNotice}>
+                <s-button variant="tertiary" onClick={handleDismissSummaryNotice}>
                   {SUMMARY_NOTICE_DISMISS}
                 </s-button>
               </div>
@@ -1905,10 +1936,10 @@ export default function Dashboard() {
                 {summaryOptInBody(visibleSummaryOptIn.email, visibleSummaryOptIn.cadence)}
               </s-paragraph>
               <s-stack direction="inline" gap="base">
-                <s-button variant="primary" onClick={() => handleSummaryOptIn("accept")}>
+                <s-button variant="tertiary" onClick={() => handleSummaryOptIn("accept")}>
                   {SUMMARY_OPTIN_ACCEPT}
                 </s-button>
-                <s-button variant="secondary" onClick={() => handleSummaryOptIn("decline")}>
+                <s-button variant="tertiary" onClick={() => handleSummaryOptIn("decline")}>
                   {SUMMARY_OPTIN_DECLINE}
                 </s-button>
               </s-stack>
@@ -1953,7 +1984,7 @@ export default function Dashboard() {
                 latest scan.
               </s-paragraph>
               <Link to={`/app/scans/${latestScanId}`}>
-                <s-button variant="primary">Review</s-button>
+                <s-button variant="tertiary">Review</s-button>
               </Link>
             </s-stack>
           </s-banner>
@@ -1967,7 +1998,7 @@ export default function Dashboard() {
                 Your store has more than one theme. Upgrade to Professional to scan any theme, not
                 just your published one.
               </s-paragraph>
-              <s-button variant="primary" onClick={() => navigate("/app/settings")}>
+              <s-button variant="tertiary" onClick={() => navigate("/app/settings")}>
                 Upgrade to Professional
               </s-button>
             </s-stack>
@@ -1981,10 +2012,10 @@ export default function Dashboard() {
             <s-stack direction="block" gap="base">
               <s-paragraph>{FEEDBACK_NUDGE_COPY.body}</s-paragraph>
               <s-stack direction="inline" gap="base">
-                <s-button variant="primary" onClick={() => navigate(FEEDBACK_NUDGE_HREF)}>
+                <s-button variant="tertiary" onClick={() => navigate(FEEDBACK_NUDGE_HREF)}>
                   {FEEDBACK_NUDGE_COPY.cta}
                 </s-button>
-                <s-button variant="secondary" onClick={handleDismissFeedbackNudge}>
+                <s-button variant="tertiary" onClick={handleDismissFeedbackNudge}>
                   {FEEDBACK_NUDGE_COPY.dismiss}
                 </s-button>
               </s-stack>

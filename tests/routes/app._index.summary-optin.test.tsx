@@ -297,8 +297,8 @@ describe("Home loader: summary-email opt-in (gc-xorg)", () => {
     const html = renderDashboard(data);
     expect(html).toMatch(/<s-banner[^>]*tone="info"[^>]*heading="New: summary emails"/);
     expect(html).toContain(WEEKLY_BODY);
-    expect(html).toMatch(/<s-button[^>]*variant="primary"[^>]*>Turn on<\/s-button>/);
-    expect(html).toMatch(/<s-button[^>]*variant="secondary"[^>]*>No thanks<\/s-button>/);
+    expect(html).toMatch(/<s-button[^>]*variant="tertiary"[^>]*>Turn on<\/s-button>/);
+    expect(html).toMatch(/<s-button[^>]*variant="tertiary"[^>]*>No thanks<\/s-button>/);
     expect(html).not.toContain(FEEDBACK_NUDGE_COPY.heading);
     expect(html).not.toContain("Summary emails are on");
     expect(html).not.toMatch(/[—–]/);

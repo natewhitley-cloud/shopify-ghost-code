@@ -140,7 +140,11 @@ import {
   hasCompletedScans,
 } from "../../app/models/scan.server";
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
-import Dashboard, { loader } from "../../app/routes/app._index";
+import Dashboard, {
+  loader,
+  MALICIOUS_FALLBACK_BODY,
+  MALICIOUS_FALLBACK_HEADING,
+} from "../../app/routes/app._index";
 import { getFilteredFindingSummaryAndKept } from "../../app/services/finding-aggregation.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
@@ -352,6 +356,140 @@ describe("Home has one summary: no theme health, tile, trend or Start here (gc-n
 // findings, so with every malicious finding ignored and nothing else found the
 // lanes card must not say the theme is clean. The security banner at the top
 // speaks for the malicious code (the removed checklist's red line used to).
+// gc-np1d.6: one "all clear" on the page. The action card's All clear state
+// replaces the lanes card's; with no action card the lanes card says it.
+describe("Home: one all-clear (gc-np1d.6)", () => {
+  const CLEAR_CARD: ValueActionCard = {
+    kind: "clear",
+    heading: "All clear: no leftover code in Dawn - live",
+    body: "We'll keep checking. Scan again any time you add or remove an app.",
+    note: null,
+    apps: [],
+    primary: null,
+    secondary: null,
+    telemetryKey: null,
+    upsellKey: null,
+  };
+
+  beforeEach(() => {
+    // A clean scan: no findings at all.
+    mockTypeCounts.mockResolvedValue({});
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map([["scan-1", { HIGH: 0, MEDIUM: 0, LOW: 0 }]]),
+    );
+  });
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: the action card says All clear, so the lanes all-clear card does not render",
+    async (plan) => {
+      setPlan(plan);
+      vi.mocked(loadValueAction).mockResolvedValue({ card: CLEAR_CARD, cleanCopyFindingIds: [] });
+
+      const html = renderDashboard(await runLoader());
+
+      expect(html).toContain("All clear: no leftover code in Dawn - live");
+      expect(html).not.toContain("You&#x27;re all clear");
+      expect(html).not.toContain("No leftover code found. Your theme is clean.");
+    },
+  );
+
+  it("no action card: the lanes all-clear card renders exactly as before", async () => {
+    vi.mocked(loadValueAction).mockResolvedValue({ card: null, cleanCopyFindingIds: [] });
+
+    const html = renderDashboard(await runLoader());
+
+    expect(html).toMatch(/<h2 class="dashboard-section-title">You&#x27;re all clear<\/h2>/);
+    expect(html).toContain("No leftover code found. Your theme is clean.");
+  });
+
+  it("a non-clear action card leaves the lanes card alone", async () => {
+    vi.mocked(loadValueAction).mockResolvedValue({
+      card: { ...CLEAR_CARD, kind: "scan_first", heading: "Scan again to remove these" },
+      cleanCopyFindingIds: [],
+    });
+
+    expect(renderDashboard(await runLoader())).toContain("You&#x27;re all clear");
+  });
+});
+
+// gc-np1d.6: the theme health checklist used to back up the malicious-code
+// banner. Its replacement: when the latest scan found malicious code and no
+// banner names it (e.g. the banners' read failed), a critical fallback banner.
+describe("Home: known malicious code backup banner (gc-np1d.6)", () => {
+  const BILIING = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "biliing.top")!;
+  const ROW = {
+    id: "m1",
+    scanId: "scan-1",
+    findingType: "MALICIOUS_SCRIPT",
+    severity: "HIGH",
+    filename: "layout/theme.liquid",
+    lineNumber: 12,
+    appName: null,
+    codeSnippet: '<script src="https://biliing.top/x.js"></script>',
+    description: maliciousDescription(BILIING),
+    createdAt: new Date("2026-10-11T10:00:00Z"),
+  };
+
+  beforeEach(() => {
+    mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 1 });
+  });
+
+  it("the banner rendered: no fallback (no duplicate)", async () => {
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_id: string, f?: { findingType?: string }) =>
+        [ROW].filter((r) => !f?.findingType || r.findingType === f.findingType),
+    );
+
+    const html = renderDashboard(await runLoader());
+
+    expect(html).toContain("Your theme references biliing.top, a domain linked to malicious code");
+    expect(html).not.toContain(MALICIOUS_FALLBACK_HEADING);
+  });
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: the banners' read failed: the critical fallback, linked to the latest scan, never paywalled",
+    async (plan) => {
+      setPlan(plan);
+      (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+      const data = await runLoader();
+      const html = renderDashboard(data);
+
+      expect(data.securityRisks).toEqual([]);
+      expect(data.maliciousFound).toBe(true);
+      const start = html.indexOf(
+        `<s-banner tone="critical" heading="${MALICIOUS_FALLBACK_HEADING}"`,
+      );
+      expect(start).toBeGreaterThan(-1);
+      const banner = html.slice(start, html.indexOf("</s-banner>", start));
+      expect(banner).toContain(MALICIOUS_FALLBACK_BODY);
+      expect(banner).toMatch(
+        /<a href="\/app\/scans\/scan-1"[^>]*><s-button[^>]*>See what to check</,
+      );
+      expect(banner).not.toMatch(/pricing_plans|Upgrade|free trial/i);
+      // In the security area: above the lanes card and the notice slot.
+      expect(start).toBeLessThan(html.indexOf("What it&#x27;s costing you"));
+    },
+  );
+
+  it("no malicious code: no fallback, even when the banners' read failed", async () => {
+    mockTypeCounts.mockResolvedValue(TYPE_COUNTS);
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+    expect(renderDashboard(await runLoader())).not.toContain(MALICIOUS_FALLBACK_HEADING);
+  });
+
+  it("while a scan runs: no fallback (the last completed scan's banners speak for it)", async () => {
+    mockScans.mockResolvedValue({
+      items: [{ ...SCAN, id: "scan-2", status: "IN_PROGRESS", completedAt: null }, SCAN],
+      hasNextPage: false,
+    });
+    (getFindingsForScan as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+
+    expect(renderDashboard(await runLoader())).not.toContain(MALICIOUS_FALLBACK_HEADING);
+  });
+});
+
 describe("Home lanes card: known malicious code is never 'all clear'", () => {
   const ALL_CLEAR = ["You&#x27;re all clear", "Your theme is clean"];
   const BILIING = KNOWN_MALICIOUS_DOMAINS.find((d) => d.domain === "biliing.top")!;

@@ -333,14 +333,14 @@ describe("Home render: app-removal banner (gc-frda)", () => {
   it("paid: 'Review 3 items' links to the app's filtered scan view", async () => {
     const html = renderDashboard(await load({ rows: [removed("Yotpo", 3)] }));
     expect(html).toMatch(
-      /href="\/app\/scans\/scan-2\?app=Yotpo"[^>]*><s-button variant="primary">Review 3 items</,
+      /href="\/app\/scans\/scan-2\?app=Yotpo"[^>]*><s-button variant="tertiary">Review 3 items</,
     );
   });
 
   it("Free: 'See what Yotpo left' to the same view", async () => {
     const html = renderDashboard(await load({ rows: [removed("Yotpo", 3)], plan: "free" }));
     expect(html).toMatch(
-      /href="\/app\/scans\/scan-2\?app=Yotpo"[^>]*><s-button variant="primary">See what Yotpo left</,
+      /href="\/app\/scans\/scan-2\?app=Yotpo"[^>]*><s-button variant="tertiary">See what Yotpo left</,
     );
   });
 
@@ -358,7 +358,7 @@ describe("Home render: app-removal banner (gc-frda)", () => {
     expect(html).toContain('heading="7 apps are no longer active in your store"');
     expect(html.match(/<li><a href="\/app\/scans\/scan-2\?app=/g)).toHaveLength(5);
     expect(html).toContain("and 2 more");
-    expect(html).toMatch(/<s-button variant="primary">Review A<\/s-button>/);
+    expect(html).toMatch(/<s-button variant="tertiary">Review A<\/s-button>/);
   });
 
   it("cleaned: success tone, Dismiss only", async () => {

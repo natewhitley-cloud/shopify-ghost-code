@@ -19,6 +19,8 @@ import type { RemovalNotice } from "../lib/app-removal-notice";
  * heading, a paragraph, then the actions. Every link goes to that app's
  * filtered view of the scan (`?app=`), where Free sees the app-scoped preview.
  * Dismiss is per scan (the page wires it to the dismiss-removal-notice intent).
+ * It sits in Home's quiet notice slot (gc-np1d.6): tertiary buttons only, so
+ * it never competes with the page's primary actions.
  */
 export function AppRemovalBanner({
   notice,
@@ -59,10 +61,10 @@ export function AppRemovalBanner({
         <s-stack direction="inline" gap="base">
           {inactive && (
             <Link to={removalAppHref(scanId, first.appName, linkParams)}>
-              <s-button variant="primary">{removalNoticePrimaryLabel(notice, fullList)}</s-button>
+              <s-button variant="tertiary">{removalNoticePrimaryLabel(notice, fullList)}</s-button>
             </Link>
           )}
-          <s-button variant="secondary" onClick={onDismiss}>
+          <s-button variant="tertiary" onClick={onDismiss}>
             {REMOVAL_NOTICE_DISMISS_LABEL}
           </s-button>
         </s-stack>

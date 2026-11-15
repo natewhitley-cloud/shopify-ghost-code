@@ -369,6 +369,34 @@ describe("Home render: one notice slot (gc-np1d.6)", () => {
     expect(html.indexOf(FEEDBACK_NUDGE_COPY.heading)).toBeGreaterThan(lanes);
   });
 
+  // The slot is quiet (mockup): its notice never renders a primary or
+  // secondary button, so the page's primary actions stay the header Scan now
+  // and the action card. (The rescan nudge's button is outside the slot.)
+  it.each<[string, Candidates]>([
+    ["guard_email", { guard: true }],
+    ["summary_notice", { summaryNotice: true }],
+    ["summary_optin", { prompt: "summary_optin" }],
+    ["feedback", { prompt: "feedback" }],
+    ["multi_theme", { multiTheme: true }],
+    ["app_removed", { removal: true }],
+  ])("%s in the slot: no primary or secondary button, only tertiary ones", async (key, c) => {
+    const html = await renderHome(c);
+
+    expect(slotNotices(html)).toEqual([key]);
+    // The slot is the page's last banner.
+    const slot = html.slice(html.lastIndexOf("<s-banner"));
+    expect(slot).not.toMatch(/variant="(primary|secondary)"/);
+    expect(slot).toMatch(/<s-button[^>]*variant="tertiary"/);
+    expect(html).toMatch(/<s-button slot="primary-action" variant="primary">Scan now/);
+  });
+
+  it("the multi-theme upsell keeps its copy and its Settings action, as a tertiary button", async () => {
+    const html = await renderHome({ multiTheme: true });
+
+    expect(html).toContain(MULTI_THEME_COPY);
+    expect(html).toMatch(/<s-button variant="tertiary">Upgrade to Professional<\/s-button>/);
+  });
+
   it("every candidate at once: one notice, the guard email notice", async () => {
     const html = await renderHome({
       guard: true,
