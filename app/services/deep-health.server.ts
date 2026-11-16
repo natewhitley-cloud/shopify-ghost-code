@@ -4,7 +4,7 @@
  * The read-only checks that back the /health/deep probe, extracted here so BOTH
  * the route (app/routes/health.deep.tsx, hit at deploy by the smoke gate) and the
  * internal continuous-monitor cron (inngest/functions/monitor-deep-health.ts, hit
- * hourly) run ONE implementation. The route owns transport concerns (token
+ * every 2h) run ONE implementation. The route owns transport concerns (token
  * gate, deployedSha, HTTP status); this module owns the checks and the derived
  * status only.
  *
